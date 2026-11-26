@@ -44,6 +44,7 @@ from typing import (
     cast,
 )
 
+from nominal_refactor_advisor.analysis import DetectorAnalysisWorkerPlan
 from nominal_refactor_advisor.type_checker_session import DeferredTypeChecker, SourceTexts, TypeErrors
 from nominal_refactor_advisor.implementation_identity import AnswerFreeDeclaration
 from nominal_refactor_advisor.module_node_index import ModuleImportStatements
@@ -3760,12 +3761,28 @@ class FindingRecipePlanBuilder:
                 idx,
             ),
         )
-        num_workers = min(4, len(scoped))
+        num_workers = DetectorAnalysisWorkerPlan(
+            requested_worker_count=0,
+            work_item_count=len(scoped),
+            minimum_auto_work_items=4,
+            max_auto_worker_count=4,
+        ).effective_worker_count
+        if num_workers <= 1:
+            return tuple(
+                FindingRecipeSynthesisAttempt(
+                    finding=finding,
+                    selector_context=snapshot,
+                ).evaluate()
+                for finding in scoped
+            )
         buckets = [
             tuple(prioritized_indices[worker_idx::num_workers])
             for worker_idx in range(num_workers)
         ]
         gc_was_enabled = gc.isenabled()
+        froze_here = gc_was_enabled and gc.get_freeze_count() == 0
+        if froze_here:
+            gc.freeze()
         if gc_was_enabled:
             gc.disable()
         children: dict[int, tuple[int, bytearray]] = {}
@@ -3868,6 +3885,8 @@ class FindingRecipePlanBuilder:
                 os.waitpid(pid, 0)
             if gc_was_enabled:
                 gc.enable()
+            if froze_here:
+                gc.unfreeze()
         return tuple(cast(FindingRecipeSynthesisRecord, rec) for rec in ordered_records)
 
     def plan(

@@ -2980,20 +2980,21 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             dirty = False
             for module in changed_or_created:
                 old_module = before_by_path.get(module.file_path)
-                if old_module is None or not old_module.has_family_batch(family):
+                if old_module is None:
                     dirty = True
                     break
-                if module.family_batch(family).items != old_module.family_batch(family).items:
+                old_batch = old_module.cached_family_batch(family)
+                if old_batch is None or module.family_batch(family).items != old_batch.items:
                     dirty = True
                     break
             if not dirty and removed_paths:
                 for path in removed_paths:
                     old_module = before_by_path.get(path)
-                    if (
-                        old_module is None
-                        or not old_module.has_family_batch(family)
-                        or old_module.family_batch(family).items
-                    ):
+                    if old_module is None:
+                        dirty = True
+                        break
+                    old_batch = old_module.cached_family_batch(family)
+                    if old_batch is None or old_batch.items:
                         dirty = True
                         break
             if dirty:
