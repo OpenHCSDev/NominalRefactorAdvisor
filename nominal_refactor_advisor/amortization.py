@@ -36,7 +36,6 @@ from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_pr
 from nominal_refactor_advisor.probe_owner import ReceiverSpan, ScannedClasses
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.type_checker_session import (
-    InferredReceiverType,
     ReceiverType,
     TypeCheckerSession,
 )
@@ -539,8 +538,8 @@ def _inheritance_amortization_incremental(
         candidate_symbols: set[str] = set()
         seen_file_call_keys: set[tuple[tuple[str, ...], str]] = set()
         for answer, method_name, count, entry_consumers in summary:
-            if record_base and isinstance(answer, InferredReceiverType) and len(answer.classes) == 1:
-                candidate_symbols.add(answer.classes[0])
+            if record_base:
+                answer.record_single_inferred_class(candidate_symbols)
             symbols = symbols_by_answer.get(answer)
             if symbols is None:
                 symbols = answer.owner(classes).class_symbols()

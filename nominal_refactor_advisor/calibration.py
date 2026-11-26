@@ -349,6 +349,11 @@ class CalibrationTargetResult(DataclassJsonReport):
     def detector_counts(self) -> tuple[FindingDetectorCount, ...]:
         return self.finding_summary.detector_counts
 
+    def append_unavailable_reason(self, lines):
+        """Append the unavailable diagnostic line when this calibration target failed."""
+        if self.unavailable_reason is not None:
+            lines.append(f'     unavailable: {self.unavailable_reason}')
+
 
 @dataclass(frozen=True)
 class CalibrationReport(DataclassJsonReport):
@@ -493,8 +498,7 @@ def format_calibration_markdown(report: CalibrationReport) -> str:
         )
         if counts:
             lines.append(f"     detectors: {counts}")
-        if target_result.unavailable_reason is not None:
-            lines.append(f"     unavailable: {target_result.unavailable_reason}")
+        target_result.append_unavailable_reason(lines)
         if target_result.regression_reasons:
             lines.append(
                 "     target reasons: " + ", ".join(target_result.regression_reasons)

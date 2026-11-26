@@ -573,6 +573,17 @@ class CachedSourceFileSignature(FileStat):
         owner.entries_by_path[self.path] = self
         return self.semantic_hash
 
+    def resolved_semantic_hash(self, owner, source):
+        """Return the cached semantic hash or compute and record it via cache."""
+        if self.semantic_hash is not None:
+            return self.semantic_hash
+        return owner.record_semantic_hash(self.with_semantic_hash(source))
+
+    def append_if_pending_semantic_hash(self, pending):
+        """Append this signature when its semantic hash has not been computed yet."""
+        if self.semantic_hash is None:
+            pending.append(self)
+
 
 @dataclass(frozen=True)
 class SourceFileSignatureCachePayload:
@@ -1929,9 +1940,7 @@ class SourceFileSignatureCache:
         """Return the comment-insensitive hash behind local detector shards."""
         self.source_file_signature(path)
         signature = self.entries_by_path[str(lexical_absolute_path(path))]
-        if signature.semantic_hash is not None:
-            return signature.semantic_hash
-        return self.record_semantic_hash(signature.with_semantic_hash(source))
+        return signature.resolved_semantic_hash(self, source)
 
     def pending_semantic_hashes(
         self, paths: Iterable[Path],
@@ -1941,8 +1950,7 @@ class SourceFileSignatureCache:
         for path in paths:
             self.source_file_signature(path)
             signature = self.entries_by_path[str(lexical_absolute_path(path))]
-            if signature.semantic_hash is None:
-                pending.append(signature)
+            signature.append_if_pending_semantic_hash(pending)
         return tuple(pending)
 
     def record_semantic_hash(self, signature: CachedSourceFileSignature) -> str:

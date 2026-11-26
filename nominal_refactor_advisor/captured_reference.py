@@ -1541,6 +1541,12 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
         if self.after is not None:
             raise ValueError("Function entry requires the callee declaration's fresh body interval")
 
+    def require_parent_cut(self, child):
+        """Require this prefix to end at a concrete parent cut position."""
+        if self.position is None:
+            raise ValueError('Child entry requires a parent cut and a fresh child interval')
+        child.require_fresh_child_interval()
+
 
 @dataclass(frozen=True, eq=False)
 class CapturedFlowPrefix(SingleFlowPrefix):
@@ -1589,9 +1595,7 @@ class ChildExecutionPrefix(AdmittedExecutionPrefixABC):
             raise ValueError("Child entry requires its actual parent definition event")
         if self.definition.target.owner is not child.context.flow.owner:
             raise ValueError("Child entry requires the definition's actual flow owner")
-        if parent.position is None:
-            raise ValueError('Child entry requires a parent cut and a fresh child interval')
-        child.require_fresh_child_interval()
+        parent.require_parent_cut(child)
 
     @property
     def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:
@@ -1622,10 +1626,9 @@ class FunctionInvocationPrefix(AdmittedExecutionPrefixABC):
             raise ValueError(
                 "Function entry requires its original parent invocation cut"
             )
-        if child.context.flow.owner is not self.declaration or child.after is not None:
-            raise ValueError(
-                "Function entry requires the callee declaration's fresh body interval"
-            )
+        if child.context.flow.owner is not self.declaration:
+            raise ValueError("Function entry requires the callee declaration's fresh body interval")
+        child.require_fresh_body_interval()
 
     @property
     def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:

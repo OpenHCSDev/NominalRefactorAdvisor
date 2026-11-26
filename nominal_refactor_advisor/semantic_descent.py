@@ -33,7 +33,10 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
+from nominal_refactor_advisor.ast_field_decoders import (
+    declared_annotations,
+    variadic_parameters,
+)
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
@@ -5742,7 +5745,13 @@ class ProjectionTypeScope:
         return cls(
             type_names_by_value=type_names_by_value,
             return_type_names=(
-                () if node.returns is None else cls.annotation_type_names(node.returns)
+                next(
+                    (
+                        cls.annotation_type_names(declared_annotation)
+                        for declared_annotation in declared_annotations(node)
+                    ),
+                    (),
+                )
             ),
         )
 

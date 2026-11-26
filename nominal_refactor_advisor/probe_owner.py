@@ -172,6 +172,10 @@ class ReceiverType(ABC):
 
         raise NotImplementedError
 
+    def record_single_inferred_class(self, candidate_symbols):
+        """Record this receiver's sole inferred class symbol when present."""
+        pass
+
 
 @dataclass(frozen=True)
 class InferredReceiverType(ReceiverType):
@@ -221,6 +225,10 @@ class InferredReceiverType(ReceiverType):
         return UnresolvedProbeOwner(
             f"the type checker infers `{self.spelled}`, not one class"
         )
+
+    def record_single_inferred_class(self, candidate_symbols):
+        if len(self.classes) == 1:
+            candidate_symbols.add(self.classes[0])
 
 
 @dataclass(frozen=True)

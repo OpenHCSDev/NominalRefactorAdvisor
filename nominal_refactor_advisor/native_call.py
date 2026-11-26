@@ -585,7 +585,7 @@ class NativeReturnedClosureFactorySource:
             closure.decorator_list
             or closure.args.defaults
             or any(default is not None for default in closure.args.kw_defaults)
-            or closure.returns is not None
+            or declared_annotations(closure)
             or any(
                 bool(declared_annotations(argument))
                 for argument in (
@@ -594,8 +594,7 @@ class NativeReturnedClosureFactorySource:
                     *closure.args.kwonlyargs,
                 )
             )
-            or closure.args.vararg is not None
-            or closure.args.kwarg is not None
+            or variadic_parameters(closure.args)
             or TYPE_PARAMETERS.names(closure)
         ):
             raise ValueError("Returned closure creation has executable header inputs")
