@@ -77,6 +77,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     OrElseGuardedStatementDispatchSite,
     PrefixGuardedOrDispatchSite,
     PrefixGuardedStatementDispatchSite,
+    ResolvedMethodAnnotations,
     ReturningStatementDispatchSite,
     StatementDispatchSite,
     TernaryDispatchSite,
@@ -1650,6 +1651,7 @@ class ConstantAnswerPushProof:
     is_async: bool
     method_name: str
     docstring: str | None
+    outer_receiver_param: str | None = None
 
     @classmethod
     def proved(
@@ -1796,6 +1798,7 @@ class ConstantAnswerPushProof:
             )
 
         # Rewrite bodies cleanly for either in-place or pushed family method.
+        outer_receiver_param: str | None = None
         if in_place:
             all_raw = (raw_body_for(base_value), *(raw_body_for(v) for _, v in override_symbols))
             if any(_contains_super_call(body) for body in all_raw):
@@ -1906,6 +1909,7 @@ class ConstantAnswerPushProof:
             is_async=is_async,
             method_name=method_name,
             docstring=docstring.strip() if docstring else None,
+            outer_receiver_param=outer_receiver_param,
         )
 
     def consumed_attribute_ids(self) -> frozenset[int]:
@@ -1934,8 +1938,36 @@ class ConstantAnswerPushProof:
             call = f"await {call}"
         return start, end, site.render_call_replacement(call, line_indent)
 
+    def _resolved_annotations(
+        self, snapshot: CodemodSourceSnapshot, rationale: str
+    ) -> ResolvedMethodAnnotations:
+        site = self.branch_site.dispatch
+        parsed_source = snapshot.parsed_module_for_source_path(self.source_path)
+        all_destinations = (
+            self.family.base,
+            *(target_cls for target_cls, _body in self.overrides),
+        )
+        return ResolvedMethodAnnotations.for_push(
+            snapshot,
+            parsed_source,
+            self.test_line,
+            self.enclosure,
+            self.function,
+            site.kind.receiver,
+            self.outer_receiver_param,
+            self.captured_args,
+            all_destinations,
+            propagates_function_return_type=site.propagates_function_return_type,
+            is_void_method=site.is_void_method,
+            constant_bool_return=site.returns_constant_bool,
+            rationale=rationale,
+        )
+
     def appended_methods(
-        self, snapshot: CodemodSourceSnapshot, source_geometry: SourceTextGeometry
+        self,
+        snapshot: CodemodSourceSnapshot,
+        source_geometry: SourceTextGeometry,
+        rationale: str = "",
     ) -> tuple[tuple[str, ResolvedClassTarget, str], ...]:
         """Return `(class_symbol, target_cls, rendered_method)` entries this push adds."""
 
@@ -1954,6 +1986,8 @@ class ConstantAnswerPushProof:
 
         site = self.branch_site.dispatch
         param_names = tuple(arg.param_name for arg in self.captured_args)
+        method_annotations = self._resolved_annotations(snapshot, rationale)
+        param_annotations = method_annotations.param_map
         base_method = _render_method(
             site.kind,
             self.method_name,
@@ -1961,6 +1995,8 @@ class ConstantAnswerPushProof:
             self.base_body,
             is_async=self.is_async,
             docstring=self.docstring,
+            param_annotations=param_annotations,
+            return_annotation=method_annotations.return_annotation,
         )
         entries.append((self.family.base_symbol, self.family.base, base_method))
         for target_cls, override_body in self.overrides:
@@ -1970,6 +2006,8 @@ class ConstantAnswerPushProof:
                 param_names,
                 override_body,
                 is_async=self.is_async,
+                param_annotations=param_annotations,
+                return_annotation=method_annotations.return_annotation,
             )
             entries.append((target_cls.required_symbol(snapshot), target_cls, override_method))
         return tuple(entries)
@@ -1983,11 +2021,16 @@ class ConstantAnswerPushProof:
                 for arg in ast.walk(self.function.args)
                 if isinstance(arg, ast.arg)
             )
+            annotation_imports: tuple[NominalSourceEdit, ...] = ()
         else:
             param_names = tuple(arg.param_name for arg in self.captured_args)
             local_exclusions = frozenset((self.branch_site.dispatch.kind.receiver, *param_names))
+            annotation_imports = self._resolved_annotations(
+                snapshot, rationale
+            ).import_edits
         parsed_source = snapshot.parsed_module_for_source_path(self.source_path)
         extra: list[NominalSourceEdit] = [
+            *annotation_imports,
             *_cross_module_imports_for_body(
                 snapshot,
                 parsed_source,
@@ -2115,7 +2158,9 @@ class PushConstantSubtypeAnswerOperation(RepositorySourceReprovedOperation):
             source_geom = geometry(proof.source_path)
             start, end, replacement = proof.consumer_replacement(source_geom)
             add_span(proof.source_path, start, end, replacement)
-            for sym, target_cls, rendered in proof.appended_methods(snapshot, source_geom):
+            for sym, target_cls, rendered in proof.appended_methods(
+                snapshot, source_geom, rationale
+            ):
                 bucket = appended_by_class.setdefault(sym, (target_cls, []))
                 bucket[1].append((proof.method_name, rendered))
             extra_edits.extend(proof.cross_module_import_edits(snapshot, rationale))

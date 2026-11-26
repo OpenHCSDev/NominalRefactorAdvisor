@@ -275,6 +275,18 @@ class DispatchSite(ABC):
             expr for arm in self.arms for expr in arm.tested_exprs
         )
 
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return self.is_whole_function
+
+    @property
+    def is_void_method(self) -> bool:
+        return False
+
+    @property
+    def returns_constant_bool(self) -> bool:
+        return False
+
 
 @dataclass(frozen=True)
 class TernaryDispatchSite(DispatchSite):
@@ -294,6 +306,16 @@ class BooleanPredicateDispatchSite(DispatchSite):
 
     def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
         return geometry.required_node_offsets(self.predicate_expr)
+
+    @property
+    def returns_constant_bool(self) -> bool:
+        return all(
+            len(body) == 1
+            and isinstance(body[0], ast.Return)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, bool)
+            for body in (*(arm.body for arm in self.arms), self.default_body)
+        )
 
 
 @dataclass(frozen=True)
@@ -345,6 +367,14 @@ class StatementDispatchSite(DispatchSite):
     def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
         return self.replaced_nodes
 
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return False
+
+    @property
+    def is_void_method(self) -> bool:
+        return True
+
 
 @dataclass(frozen=True)
 class ReturningStatementDispatchSite(StatementDispatchSite):
@@ -352,6 +382,14 @@ class ReturningStatementDispatchSite(StatementDispatchSite):
 
     @property
     def checks_local_store_escapes(self) -> bool:
+        return False
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return True
+
+    @property
+    def is_void_method(self) -> bool:
         return False
 
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
@@ -390,6 +428,14 @@ class PrefixGuardedOrDispatchSite(StatementDispatchSite):
 
     @property
     def checks_local_store_escapes(self) -> bool:
+        return not self.returns_value
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return self.returns_value
+
+    @property
+    def is_void_method(self) -> bool:
         return not self.returns_value
 
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
@@ -2273,6 +2319,18 @@ class FunctionEnclosure(ABC):
     def enclosing_local_names(self) -> frozenset[str]:
         return frozenset()
 
+    def enclosing_function_chain(self) -> tuple[FunctionNode, ...]:
+        return ()
+
+    def enclosing_receiver_annotation(
+        self, function: FunctionNode, receiver: str
+    ) -> ast.expr | None:
+        del function, receiver
+        return None
+
+    def enclosing_type_param_names(self) -> frozenset[str]:
+        return frozenset()
+
     def class_receiver_symbol(self, snapshot):
         """Return enclosing class symbol for ClassEnclosure or None."""
         return None
@@ -2328,6 +2386,35 @@ class ClassEnclosure(FunctionEnclosure):
     def class_receiver_symbol(self, snapshot):
         return self.receiver_symbol(snapshot)
 
+    def enclosing_receiver_annotation(
+        self, function: FunctionNode, receiver: str
+    ) -> ast.expr | None:
+        positional = (*function.args.posonlyargs, *function.args.args)
+        if not positional or positional[0].arg != receiver:
+            return None
+        if any(
+            isinstance(dec, ast.Name) and dec.id == "staticmethod"
+            for dec in function.decorator_list
+        ):
+            return None
+        owner_expr = _qualname_expr(self.owner.qualname)
+        is_classmethod = any(
+            isinstance(dec, ast.Name) and dec.id == "classmethod"
+            for dec in function.decorator_list
+        )
+        if is_classmethod:
+            return ast.Subscript(
+                value=ast.Name(id="type", ctx=ast.Load()),
+                slice=owner_expr,
+                ctx=ast.Load(),
+            )
+        return owner_expr
+
+    def enclosing_type_param_names(self) -> frozenset[str]:
+        return frozenset(
+            tp.name for tp in getattr(self.owner.node, "type_params", ())
+        )
+
     def dispatch_kind_for_receiver(self, subject, first_param, function, source_path, snapshot):
         if isinstance(subject, ast.Name) and subject.id == first_param:
             is_cm = any((isinstance(dec, ast.Name) and dec.id == 'classmethod' for dec in function.decorator_list))
@@ -2350,6 +2437,29 @@ class NestedFunctionEnclosure(FunctionEnclosure):
         return frozenset().union(
             *(_function_local_names(fn) for fn in self.enclosing_functions)
         )
+
+    def enclosing_function_chain(self) -> tuple[FunctionNode, ...]:
+        return self.enclosing_functions
+
+    def enclosing_receiver_annotation(
+        self, function: FunctionNode, receiver: str
+    ) -> ast.expr | None:
+        del function
+        if self.enclosing_class is None or not self.enclosing_functions:
+            return None
+        return self.enclosing_class.enclosing_receiver_annotation(
+            self.enclosing_functions[0], receiver
+        )
+
+    def enclosing_type_param_names(self) -> frozenset[str]:
+        names = set(
+            self.enclosing_class.enclosing_type_param_names()
+            if self.enclosing_class is not None
+            else ()
+        )
+        for fn in self.enclosing_functions:
+            names.update(tp.name for tp in getattr(fn, "type_params", ()))
+        return frozenset(names)
 
 
 def _find_child_function(
@@ -2609,6 +2719,363 @@ def _cross_module_imports_for_body(
     return tuple(imports)
 
 
+def _qualname_expr(qualname: str) -> ast.expr:
+    parts = [part for part in qualname.split(".") if part]
+    expr: ast.expr = ast.Name(id=parts[0], ctx=ast.Load())
+    for part in parts[1:]:
+        expr = ast.Attribute(value=expr, attr=part, ctx=ast.Load())
+    return expr
+
+
+def _has_future_annotations(module: ast.Module) -> bool:
+    for stmt in module.body:
+        match stmt:
+            case ast.ImportFrom(module="__future__", names=aliases):
+                if any(alias.name == "annotations" for alias in aliases):
+                    return True
+    return False
+
+
+def _is_bound_before_line(module: ast.Module, name: str, line: int) -> bool:
+    """Whether `name` is unconditionally bound at top-level of `module` strictly before `line`."""
+
+    for stmt in module.body:
+        if stmt.lineno >= line:
+            break
+        match stmt:
+            case ast.Import(names=aliases) | ast.ImportFrom(names=aliases):
+                for alias in aliases:
+                    bound = alias.asname or alias.name.split(".", 1)[0]
+                    if bound == name:
+                        return True
+            case (
+                ast.ClassDef(name=decl_name)
+                | ast.FunctionDef(name=decl_name)
+                | ast.AsyncFunctionDef(name=decl_name)
+            ) if decl_name == name:
+                return True
+            case ast.Assign(targets=targets):
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id == name:
+                        return True
+            case ast.AnnAssign(target=ast.Name(id=target_name)) if target_name == name:
+                return True
+            case ast.TypeAlias(name=ast.Name(id=target_name)) if target_name == name:
+                return True
+    return False
+
+
+def _module_typevar_names(module: ast.Module) -> frozenset[str]:
+    """Top-level names bound to `TypeVar`, `ParamSpec`, or `TypeVarTuple`."""
+
+    typevar_ctors = frozenset(("TypeVar", "ParamSpec", "TypeVarTuple"))
+    names: set[str] = set()
+    for stmt in module.body:
+        target_name: str | None = None
+        value: ast.expr | None = None
+        match stmt:
+            case ast.Assign(targets=[ast.Name(id=bound)], value=rhs):
+                target_name = bound
+                value = rhs
+            case ast.AnnAssign(target=ast.Name(id=bound), value=rhs) if rhs is not None:
+                target_name = bound
+                value = rhs
+        if target_name is None or not isinstance(value, ast.Call):
+            continue
+        match value.func:
+            case ast.Name(id=ctor) | ast.Attribute(attr=ctor) if ctor in typevar_ctors:
+                names.add(target_name)
+    return frozenset(names)
+
+
+def _contains_forward_ref_string(expr: ast.expr) -> bool:
+    """Whether `expr` contains a string literal outside `Literal[...]`."""
+
+    match expr:
+        case ast.Constant(value=str()):
+            return True
+        case ast.Subscript(
+            value=ast.Name(id="Literal") | ast.Attribute(attr="Literal")
+        ):
+            return False
+    return any(
+        _contains_forward_ref_string(child)
+        for child in ast.iter_child_nodes(expr)
+        if isinstance(child, ast.expr)
+    )
+
+
+def _function_has_yield(function: FunctionNode) -> bool:
+    stack: list[ast.AST] = list(function.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Yield, ast.YieldFrom)):
+            return True
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def _external_import_source_for_name(
+    module: ast.Module,
+    name: str,
+    scanned_module_names: frozenset[str],
+) -> str | None:
+    """Return an import statement for `name` from `module` when it targets a non-scanned module."""
+
+    for stmt in module.body:
+        match stmt:
+            case ast.Import(names=aliases):
+                for alias in aliases:
+                    bound = alias.asname or alias.name.split(".", 1)[0]
+                    if bound != name:
+                        continue
+                    top_mod = alias.name.split(".", 1)[0]
+                    if (
+                        alias.name in scanned_module_names
+                        or top_mod in scanned_module_names
+                    ):
+                        return None
+                    if alias.asname:
+                        return f"import {alias.name} as {alias.asname}"
+                    return f"import {alias.name}"
+            case ast.ImportFrom(module=mod_name, names=aliases, level=0) if (
+                mod_name is not None and mod_name != "__future__"
+            ):
+                for alias in aliases:
+                    if alias.name == "*":
+                        continue
+                    bound = alias.asname or alias.name
+                    if bound != name:
+                        continue
+                    top_mod = mod_name.split(".", 1)[0]
+                    if (
+                        mod_name in scanned_module_names
+                        or top_mod in scanned_module_names
+                    ):
+                        return None
+                    if alias.asname:
+                        return f"from {mod_name} import {alias.name} as {alias.asname}"
+                    return f"from {mod_name} import {alias.name}"
+    return None
+
+
+def _parameter_annotation_in_scope(
+    function: FunctionNode,
+    enclosing_functions: tuple[FunctionNode, ...],
+    name: str,
+) -> ast.expr | None:
+    """Find the declared annotation for parameter or annotated local `name` in lexical scope."""
+
+    for fn in (function, *reversed(enclosing_functions)):
+        for arg in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs):
+            if arg.arg == name:
+                return arg.annotation
+        if (fn.args.vararg is not None and fn.args.vararg.arg == name) or (
+            fn.args.kwarg is not None and fn.args.kwarg.arg == name
+        ):
+            return None
+        ann_candidates: list[ast.expr] = []
+        assigned_without_ann = False
+        for _container, _idx, stmt, _in_loop in _statement_list_children(fn.body):
+            match stmt:
+                case ast.AnnAssign(target=ast.Name(id=target_name), annotation=ann) if (
+                    target_name == name
+                ):
+                    ann_candidates.append(ann)
+                case ast.Assign(targets=targets):
+                    for target in targets:
+                        if any(
+                            isinstance(node, ast.Name) and node.id == name
+                            for node in ast.walk(target)
+                        ):
+                            assigned_without_ann = True
+        if ann_candidates:
+            dumps = {ast.dump(ann) for ann in ann_candidates}
+            return ann_candidates[0] if len(dumps) == 1 else None
+        if assigned_without_ann:
+            return None
+    return None
+
+
+@dataclass(frozen=True)
+class ResolvedMethodAnnotations:
+    """Sound parameter and return annotations resolved across every destination class."""
+
+    param_annotations: tuple[tuple[str, ast.expr], ...] = ()
+    return_annotation: ast.expr | None = None
+    import_edits: tuple[ModuleImportMutation, ...] = ()
+
+    @property
+    def param_map(self) -> dict[str, ast.expr]:
+        return dict(self.param_annotations)
+
+    def annotation_nodes(self) -> tuple[ast.expr, ...]:
+        nodes = [ann for _name, ann in self.param_annotations]
+        if self.return_annotation is not None:
+            nodes.append(self.return_annotation)
+        return tuple(nodes)
+
+    @classmethod
+    def for_push(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        source_module: ParsedModule,
+        source_line: int,
+        enclosure: FunctionEnclosure,
+        function: FunctionNode,
+        receiver: str,
+        outer_receiver_param: str | None,
+        captured_args: tuple[CapturedArgument, ...],
+        destinations: Sequence[ResolvedClassTarget],
+        *,
+        propagates_function_return_type: bool,
+        is_void_method: bool,
+        constant_bool_return: bool = False,
+        rationale: str,
+    ) -> ResolvedMethodAnnotations:
+        bindings = snapshot.module_binding_proof
+        import_graph = snapshot.module_import_graph
+        scanned_module_names = frozenset(import_graph.source_files_by_module_name)
+        enclosing_chain = enclosure.enclosing_function_chain()
+        forbidden_names = (
+            frozenset(tp.name for tp in getattr(function, "type_params", ()))
+            | enclosure.enclosing_type_param_names()
+            | _module_typevar_names(source_module.module)
+        )
+
+        def resolve_expr(
+            expr: ast.expr,
+        ) -> tuple[ast.expr, dict[tuple[str, str], ModuleImportMutation]] | None:
+            if _contains_forward_ref_string(expr):
+                return None
+            names = sorted(
+                {
+                    node.id
+                    for node in ast.walk(expr)
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                }
+            )
+            if any(name in forbidden_names for name in names):
+                return None
+            needed_imports: dict[tuple[str, str], ModuleImportMutation] = {}
+            for name in names:
+                reference = ast.Name(id=name, ctx=ast.Load())
+                expected = bindings.reference_or_builtin_witness_at(
+                    source_module, reference, line=source_line
+                )
+                if expected is None:
+                    if name in builtins.__dict__:
+                        continue
+                    return None
+                if expected.qualified_name in ("typing.Self", "typing_extensions.Self"):
+                    return None
+                for dest in destinations:
+                    dest_module = snapshot.parsed_module_for_source_path(dest.file_path)
+                    future_ann = _has_future_annotations(dest_module.module)
+                    lookup_line = (
+                        dest_module.module.body[-1].end_lineno
+                        or dest_module.module.body[-1].lineno
+                        if future_ann and dest_module.module.body
+                        else dest.node.lineno
+                    )
+                    actual = bindings.reference_or_builtin_witness_at(
+                        dest_module, reference, line=lookup_line
+                    )
+                    if actual is not None:
+                        if actual.qualified_name != expected.qualified_name:
+                            return None
+                        if not future_ann and name not in builtins.__dict__:
+                            if not _is_bound_before_line(
+                                dest_module.module, name, dest.node.lineno
+                            ):
+                                return None
+                        continue
+                    if dest.file_path == source_module.file_path:
+                        return None
+                    targets = snapshot.source_index.targets_matching_repository_symbol(
+                        expected.qualified_name
+                    )
+                    import_source: str | None = None
+                    if len(targets) == 1:
+                        try:
+                            import_source = import_graph.required_import_source(
+                                importing_file_path=dest.file_path,
+                                imported_file_path=targets[0].file_path,
+                                imported_name=name,
+                            )
+                        except ValueError:
+                            return None
+                    else:
+                        import_source = _external_import_source_for_name(
+                            source_module.module, name, scanned_module_names
+                        )
+                    if import_source is None:
+                        return None
+                    key = (dest.file_path, import_source)
+                    if key not in needed_imports:
+                        needed_imports[key] = ModuleImportMutation.from_source(
+                            file_path=dest.file_path,
+                            import_source=import_source,
+                            rationale=rationale,
+                        )
+            return expr, needed_imports
+
+        all_imports: dict[tuple[str, str], ModuleImportMutation] = {}
+        resolved_params: list[tuple[str, ast.expr]] = []
+        for arg in captured_args:
+            if outer_receiver_param is not None and arg.param_name == outer_receiver_param:
+                candidate = _parameter_annotation_in_scope(
+                    function, enclosing_chain, receiver
+                )
+                if candidate is None:
+                    candidate = enclosure.enclosing_receiver_annotation(
+                        function, receiver
+                    )
+            else:
+                candidate = _parameter_annotation_in_scope(
+                    function, enclosing_chain, arg.call_expr
+                )
+            if candidate is None:
+                continue
+            resolved = resolve_expr(candidate)
+            if resolved is None:
+                continue
+            ann, imports = resolved
+            resolved_params.append((arg.param_name, ann))
+            for key, mut in imports.items():
+                all_imports.setdefault(key, mut)
+
+        return_candidate: ast.expr | None = None
+        if is_void_method:
+            return_candidate = ast.Constant(value=None)
+        elif (
+            propagates_function_return_type
+            and function.returns is not None
+            and not _function_has_yield(function)
+        ):
+            return_candidate = function.returns
+        elif constant_bool_return:
+            return_candidate = ast.Name(id="bool", ctx=ast.Load())
+
+        resolved_return: ast.expr | None = None
+        if return_candidate is not None:
+            resolved = resolve_expr(return_candidate)
+            if resolved is not None:
+                resolved_return, imports = resolved
+                for key, mut in imports.items():
+                    all_imports.setdefault(key, mut)
+
+        return cls(
+            param_annotations=tuple(resolved_params),
+            return_annotation=resolved_return,
+            import_edits=tuple(all_imports.values()),
+        )
+
+
 def _render_method(
     kind: DispatchKind,
     method_name: str,
@@ -2617,10 +3084,24 @@ def _render_method(
     *,
     is_async: bool,
     docstring: str | None = None,
+    param_annotations: Mapping[str, ast.expr] = {},
+    return_annotation: ast.expr | None = None,
 ) -> str:
     prefix = "async def" if is_async else "def"
-    sig_params = ", ".join((kind.receiver, *params))
-    lines: list[str] = [*kind.decorators, f"{prefix} {method_name}({sig_params}):"]
+    rendered_params = [kind.receiver]
+    for name in params:
+        ann = param_annotations.get(name)
+        rendered_params.append(
+            name if ann is None else f"{name}: {ast.unparse(ann)}"
+        )
+    sig_params = ", ".join(rendered_params)
+    ret_suffix = (
+        "" if return_annotation is None else f" -> {ast.unparse(return_annotation)}"
+    )
+    lines: list[str] = [
+        *kind.decorators,
+        f"{prefix} {method_name}({sig_params}){ret_suffix}:",
+    ]
     if docstring:
         lines.append(f'    """{docstring}"""')
     for stmt in body:
@@ -2861,6 +3342,8 @@ class TypeTestDispatchProof:
     is_async: bool
     method_name: str
     docstring: str | None
+    enclosure: FunctionEnclosure = ModuleEnclosure()
+    outer_receiver_param: str | None = None
 
     @classmethod
     def locate_function(
@@ -3174,6 +3657,8 @@ class TypeTestDispatchProof:
             is_async=is_async,
             method_name=method_name,
             docstring=docstring.strip() if docstring else None,
+            enclosure=enclosure,
+            outer_receiver_param=outer_receiver_param,
         )
 
     @staticmethod
@@ -3355,6 +3840,27 @@ class TypeTestDispatchProof:
         )
 
         # 2. Base method and per-arm overrides (commutative class-member insertions).
+        parsed_source = snapshot.parsed_module_for_source_path(self.source_path)
+        all_destinations = (
+            self.base,
+            *(target_cls for arm in self.arms for target_cls in arm.targets),
+        )
+        method_annotations = ResolvedMethodAnnotations.for_push(
+            snapshot,
+            parsed_source,
+            self.test_line,
+            self.enclosure,
+            self.function,
+            self.site.kind.receiver,
+            self.outer_receiver_param,
+            self.captured_args,
+            all_destinations,
+            propagates_function_return_type=self.site.propagates_function_return_type,
+            is_void_method=self.site.is_void_method,
+            constant_bool_return=self.site.returns_constant_bool,
+            rationale=rationale,
+        )
+        param_annotations = method_annotations.param_map
         base_method = _render_method(
             self.site.kind,
             self.method_name,
@@ -3362,6 +3868,8 @@ class TypeTestDispatchProof:
             self.default_body,
             is_async=self.is_async,
             docstring=self.docstring,
+            param_annotations=param_annotations,
+            return_annotation=method_annotations.return_annotation,
         )
         member_edits: list[NominalSourceEdit] = [
             *_class_append_edits(
@@ -3380,6 +3888,8 @@ class TypeTestDispatchProof:
                 param_names,
                 resolved_arm.body,
                 is_async=self.is_async,
+                param_annotations=param_annotations,
+                return_annotation=method_annotations.return_annotation,
             )
             for target_cls in resolved_arm.targets:
                 member_edits.extend(
@@ -3394,10 +3904,10 @@ class TypeTestDispatchProof:
                 )
 
         # 3. Cross-module imports for moved bodies and obsolete-import cleanup at consumer.
-        parsed_source = snapshot.parsed_module_for_source_path(self.source_path)
         local_exclusions = frozenset((self.site.kind.receiver, *param_names))
         extra_edits: list[NominalSourceEdit] = [
             *member_edits,
+            *method_annotations.import_edits,
             *_cross_module_imports_for_body(
                 snapshot,
                 parsed_source,
@@ -3422,6 +3932,10 @@ class TypeTestDispatchProof:
                     )
                 )
         retained_in_source = set(_names_loaded_in_source(replacement_text))
+        if any(dest.file_path == self.source_path for dest in all_destinations):
+            retained_in_source.update(
+                _names_loaded_in(method_annotations.annotation_nodes())
+            )
         if self.base.file_path == self.source_path:
             retained_in_source.update(_names_loaded_in(self.default_body))
         for resolved_arm in self.arms:

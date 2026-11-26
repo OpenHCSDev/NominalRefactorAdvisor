@@ -63,8 +63,11 @@ from nominal_refactor_advisor.refactors.optional_ast_field import (
 from nominal_refactor_advisor.refactors.type_test_dispatch import (
     CapturedArgument,
     DispatchSite,
+    FunctionEnclosure,
     FunctionNode,
     InstanceDispatchKind,
+    ModuleEnclosure,
+    ResolvedMethodAnnotations,
     TypeTestDispatchProof,
     _always_terminates,
     _always_void_terminates,
@@ -236,6 +239,14 @@ class AbsenceBranchSite(ABC):
     def checks_local_store_escapes(self) -> bool:
         return False
 
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return self.is_whole_function
+
+    @property
+    def is_void_method(self) -> bool:
+        return False
+
     def covers_lines(self, lines: Sequence[int]) -> bool:
         nodes = self.replaced_ast_nodes()
         if not nodes:
@@ -283,6 +294,10 @@ class ReturningAbsenceBranchSite(AbsenceBranchSite):
     def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
         return self.replaced_nodes
 
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return True
+
 
 @dataclass(frozen=True)
 class VoidAbsenceBranchSite(AbsenceBranchSite):
@@ -305,6 +320,14 @@ class VoidAbsenceBranchSite(AbsenceBranchSite):
     @property
     def checks_local_store_escapes(self) -> bool:
         return not self.is_whole_function
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return False
+
+    @property
+    def is_void_method(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True)
@@ -338,6 +361,14 @@ class PrefixGuardedOrAbsenceBranchSite(AbsenceBranchSite):
 
     @property
     def checks_local_store_escapes(self) -> bool:
+        return not self.returns_value
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return self.returns_value
+
+    @property
+    def is_void_method(self) -> bool:
         return not self.returns_value
 
 
@@ -380,6 +411,14 @@ class PrefixGuardedAndAbsenceBranchSite(AbsenceBranchSite):
 
     @property
     def checks_local_store_escapes(self) -> bool:
+        return True
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return False
+
+    @property
+    def is_void_method(self) -> bool:
         return True
 
 
@@ -1060,6 +1099,7 @@ class OwnerAbsenceMethodTarget(ABC):
     def owner_edits(
         self,
         proof: ForeignAbsenceBranchProof,
+        snapshot: CodemodSourceSnapshot,
         owner_geometry: SourceTextGeometry,
         rationale: str,
     ) -> tuple[NominalSourceEdit, ...]:
@@ -1086,10 +1126,11 @@ class ExistingOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
     def owner_edits(
         self,
         proof: ForeignAbsenceBranchProof,
+        snapshot: CodemodSourceSnapshot,
         owner_geometry: SourceTextGeometry,
         rationale: str,
     ) -> tuple[NominalSourceEdit, ...]:
-        del proof, owner_geometry, rationale
+        del proof, snapshot, owner_geometry, rationale
         return ()
 
     def import_edits(
@@ -1115,13 +1156,37 @@ class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
 
     docstring: str | None = None
 
+    def _resolved_annotations(
+        self,
+        proof: ForeignAbsenceBranchProof,
+        snapshot: CodemodSourceSnapshot,
+        rationale: str,
+    ) -> ResolvedMethodAnnotations:
+        source_module = snapshot.parsed_module_for_source_path(proof.source_path)
+        return ResolvedMethodAnnotations.for_push(
+            snapshot,
+            source_module,
+            proof.test_line,
+            proof.enclosure,
+            proof.function,
+            "self",
+            proof.outer_receiver_param,
+            proof.captured_args,
+            (proof.owner,),
+            propagates_function_return_type=proof.site.propagates_function_return_type,
+            is_void_method=proof.site.is_void_method,
+            rationale=rationale,
+        )
+
     def owner_edits(
         self,
         proof: ForeignAbsenceBranchProof,
+        snapshot: CodemodSourceSnapshot,
         owner_geometry: SourceTextGeometry,
         rationale: str,
     ) -> tuple[NominalSourceEdit, ...]:
         params = tuple(arg.param_name for arg in proof.captured_args)
+        method_annotations = self._resolved_annotations(proof, snapshot, rationale)
         method_source = _render_method(
             InstanceDispatchKind(),
             self.method_name,
@@ -1129,6 +1194,8 @@ class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
             proof.method_body,
             is_async=proof.is_async,
             docstring=self.docstring,
+            param_annotations=method_annotations.param_map,
+            return_annotation=method_annotations.return_annotation,
         )
         return _class_append_edits(
             proof.owner.file_path,
@@ -1153,14 +1220,18 @@ class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
                 *_names_stored_in(proof.method_body),
             )
         )
-        return _cross_module_imports_for_body(
-            snapshot,
-            source_module,
-            proof.test_line,
-            proof.owner,
-            proof.method_body,
-            local_exclusions,
-            rationale=rationale,
+        method_annotations = self._resolved_annotations(proof, snapshot, rationale)
+        return (
+            *method_annotations.import_edits,
+            *_cross_module_imports_for_body(
+                snapshot,
+                source_module,
+                proof.test_line,
+                proof.owner,
+                proof.method_body,
+                local_exclusions,
+                rationale=rationale,
+            ),
         )
 
     def rationale(self, proof: ForeignAbsenceBranchProof) -> str:
@@ -1185,6 +1256,8 @@ class ForeignAbsenceBranchProof:
     is_async: bool
     method_target: OwnerAbsenceMethodTarget
     matching_existing_methods: tuple[str, ...] = ()
+    enclosure: FunctionEnclosure = ModuleEnclosure()
+    outer_receiver_param: str | None = None
 
     @property
     def method_name(self) -> str:
@@ -1326,6 +1399,8 @@ class ForeignAbsenceBranchProof:
             is_async=is_async,
             method_target=method_target,
             matching_existing_methods=matching_existing,
+            enclosure=enclosure,
+            outer_receiver_param=outer_receiver_param,
         )
 
     def rationale(self) -> str:
@@ -1338,7 +1413,9 @@ class ForeignAbsenceBranchProof:
         owner_geometry = SourceTextGeometry(
             snapshot.sources_by_file_path[self.owner.file_path]
         )
-        owner_edits = self.method_target.owner_edits(self, owner_geometry, rationale)
+        owner_edits = self.method_target.owner_edits(
+            self, snapshot, owner_geometry, rationale
+        )
 
         subject_source = ast.unparse(self.site.subject)
         call_args = ", ".join(arg.call_expr for arg in self.captured_args)
