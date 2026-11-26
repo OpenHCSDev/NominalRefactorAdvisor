@@ -553,3 +553,112 @@ def test_cross_module_free_global_constant_is_refused(tmp_path: Path) -> None:
     assert "_SENTINEL" in ev.rejection_reason
     assert ev.needs == (NeededInput.SOURCE_CHANGE,)
 
+
+def test_reuses_existing_identical_owner_method_without_owner_pick_or_duplication(
+    tmp_path: Path,
+) -> None:
+    """When the owner class already declares a method with the exact normalized body
+    (including alpha-equivalent parameter names), NRA reuses it as a zero-pick
+    executable candidate instead of asking for a pick or creating a duplicate method."""
+
+    _write(
+        tmp_path,
+        {
+            "reuse/__init__.py": "",
+            "reuse/flow.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class FlowPrefix:\n"
+                "    owner: str\n"
+                "    after: int | None\n\n"
+                "    def require_fresh_body_interval(self) -> None:\n"
+                "        '''Raise when this prefix already carries an after cut.'''\n"
+                "        if self.after is not None:\n"
+                "            raise ValueError('fresh body required')\n\n"
+                "    def append_if_present(self, bucket: list[int]) -> None:\n"
+                "        if self.after is not None:\n"
+                "            bucket.append(self.after)\n\n\n"
+                "def check_entry(prefix: FlowPrefix, expected: str) -> None:\n"
+                "    if prefix.owner != expected or prefix.after is not None:\n"
+                "        raise ValueError('fresh body required')\n\n\n"
+                "def record_after(prefix: FlowPrefix, out: list[int]) -> int:\n"
+                "    before = len(out)\n"
+                "    if prefix.after is not None:\n"
+                "        out.append(prefix.after)\n"
+                "    return len(out) - before\n"
+            ),
+        },
+    )
+
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"check_entry", "record_after"}
+
+    # Both synthesize with ZERO owner picks and reuse the existing methods!
+    for sym in ("check_entry", "record_after"):
+        _mods, snap, cur = _scan(tmp_path)
+        finding = next(f for f in cur if f.primary_evidence.symbol == sym)
+        _apply_one(finding, snap)
+
+    after = (tmp_path / "reuse" / "flow.py").read_text()
+    assert after.count("def require_fresh_body_interval") == 1
+    assert after.count("def append_if_present") == 1
+    assert "prefix.require_fresh_body_interval()" in after
+    assert "prefix.append_if_present(out)" in after
+    _after_mods, _after_snap, remaining = _scan(tmp_path)
+    assert remaining == []
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "reuse/flow.py"), "exec"), ns)
+    FlowPrefix = ns["FlowPrefix"]
+    ns["check_entry"](FlowPrefix("a", None), "a")  # type: ignore[operator]
+    for args in ((FlowPrefix("b", None), "a"), (FlowPrefix("a", 1), "a")):
+        try:
+            ns["check_entry"](*args)  # type: ignore[operator]
+            raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
+    out: list[int] = []
+    assert ns["record_after"](FlowPrefix("a", None), out) == 0  # type: ignore[operator]
+    assert ns["record_after"](FlowPrefix("a", 7), out) == 1  # type: ignore[operator]
+    assert out == [7]
+
+
+def test_does_not_reuse_existing_method_overridden_by_descendant(
+    tmp_path: Path,
+) -> None:
+    """If a subclass overrides the matching method, calling it could change runtime
+    behavior on subclass instances, so NRA must not auto-reuse it."""
+
+    _write(
+        tmp_path,
+        {
+            "sub/__init__.py": "",
+            "sub/flow.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class FlowPrefix:\n"
+                "    after: int | None\n\n"
+                "    def require_fresh(self) -> None:\n"
+                "        if self.after is not None:\n"
+                "            raise ValueError('fresh required')\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class CustomPrefix(FlowPrefix):\n"
+                "    def require_fresh(self) -> None:\n"
+                "        return None\n\n\n"
+                "def check(prefix: FlowPrefix, flag: bool) -> None:\n"
+                "    if flag:\n"
+                "        return\n"
+                "    if prefix.after is not None:\n"
+                "        raise ValueError('fresh required')\n"
+            ),
+        },
+    )
+
+    _mods, snap, findings = _scan(tmp_path)
+    (finding,) = findings
+    ev = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(finding, snap)
+    assert ev.recipe is None
+    assert ev.needs == (NeededInput.OWNER_PICK,)
+
+
