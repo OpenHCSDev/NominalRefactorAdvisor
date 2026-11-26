@@ -6,7 +6,7 @@ import ast
 from dataclasses import dataclass
 from functools import cached_property
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
@@ -19,6 +19,26 @@ from nominal_refactor_advisor.probe_owner import (
     InferredReceiverType,
     ProbeOwnerResolver,
     ReceiverSpan,
+)
+
+_PROTOCOL_BASES: frozenset[str] = frozenset(
+    {
+        f"{Protocol.__module__}.{Protocol.__qualname__}",
+        "typing_extensions.Protocol",
+    }
+)
+_UNIVERSAL_SUPERTYPES: frozenset[str] = _PROTOCOL_BASES | frozenset(
+    {
+        f"{object.__module__}.{object.__qualname__}",
+        object.__qualname__,
+        "typing.Any",
+        "Any",
+    }
+)
+_FOREIGN_STRUCTURAL_PREFIXES: tuple[str, ...] = (
+    "collections.abc.",
+    "typing.",
+    "typing_extensions.",
 )
 
 
@@ -51,6 +71,69 @@ class AnsweredMethod:
         """Every class whose instances answer the method by inheriting it."""
 
         return self.descendants | {self.symbol}
+
+    @cached_property
+    def lineage(self) -> frozenset[str]:
+        """Every family class and every scanned ancestor of one: the classes whose
+        bindings a family receiver's lookup can reach."""
+
+        index = self.snapshot.required_class_family_index
+        return self.family | frozenset(
+            ancestor for symbol in self.family for ancestor in index.ancestor_symbols(symbol)
+        )
+
+    @cached_property
+    def _foreign_ancestors(self) -> tuple[frozenset[str], bool]:
+        """Foreign (non-scanned) base qualified names inherited by `self.lineage`,
+        and whether any class in `self.lineage` has an unresolved foreign base."""
+
+        compact_classes = self.snapshot.compact_class_index.classes_by_symbol
+        scanned = self.snapshot.required_class_family_index.classes_by_symbol
+        foreign: set[str] = set()
+        opaque = False
+        for symbol in self.lineage:
+            decl = compact_classes.get(symbol)
+            if decl is None:
+                continue
+            if not decl.base_references_are_complete:
+                opaque = True
+            for reference in decl.base_references:
+                qualified = reference.qualified_name
+                if qualified is None:
+                    opaque = True
+                elif qualified not in scanned:
+                    foreign.add(qualified)
+        return frozenset(foreign), opaque
+
+    def _is_scanned_protocol(self, symbol: str) -> bool:
+        """Whether a scanned class or any of its scanned ancestors inherits `Protocol`."""
+
+        compact = self.snapshot.compact_class_index
+        classes = compact.classes_by_symbol
+        for candidate in (symbol, *compact.ancestor_symbols(symbol)):
+            decl = classes.get(candidate)
+            if decl is not None and any(
+                ref.qualified_name in _PROTOCOL_BASES for ref in decl.base_references
+            ):
+                return True
+        return False
+
+    def may_be_family(self, symbol: str) -> bool:
+        """Whether a runtime value of static type `symbol` can be an instance of a
+        class in `self.family` (through supertype substitution, multiple-inheritance
+        common subclasses, or structural protocols)."""
+
+        if symbol in self.family or symbol in _UNIVERSAL_SUPERTYPES:
+            return True
+        index = self.snapshot.required_class_family_index
+        if symbol in index.classes_by_symbol:
+            if not self.family.isdisjoint(index.descendant_symbols(symbol)):
+                return True
+            return self._is_scanned_protocol(symbol)
+        foreign, opaque = self._foreign_ancestors
+        if opaque or symbol in foreign:
+            return True
+        return symbol.startswith(_FOREIGN_STRUCTURAL_PREFIXES)
 
     @cached_property
     def family_declarations(self) -> dict[tuple[str, str], str]:
@@ -142,24 +225,33 @@ class AnsweredMethod:
         classes = self.snapshot.required_class_family_index.classes_by_symbol
         return {(declaration.file_path, declaration.qualname): symbol for symbol, declaration in classes.items()}
 
-    def answers(self, symbols: tuple[str, ...], where: str) -> bool:
-        """Whether a receiver of these classes calls the method: all of the family, or
-        none of it (another class's own method of that name)."""
+    def answers(
+        self,
+        symbols: tuple[str, ...],
+        where: str,
+        *,
+        non_nominal: bool = False,
+    ) -> bool:
+        """Whether a receiver of these classes calls the method: every branch is
+        in the family (`True`), no branch can hold a family instance (`False`),
+        or a branch may hold a family instance without guaranteeing it
+        (`NeedsInput`)."""
 
         inside = tuple(symbol for symbol in symbols if symbol in self.family)
         if symbols and len(inside) == len(symbols):
             return True
-        if symbols and not inside:
-            return False
         if not symbols:
             raise NeedsInput(
                 f"{where} reads {self.name!r} on a receiver typed by no declaration; "
                 "it needs an annotation that says which class answers",
                 NeededInput.SOURCE_CHANGE,
             )
+        if not non_nominal and not any(self.may_be_family(symbol) for symbol in symbols):
+            return False
         raise NeedsInput(
-            f"{where} reads {self.name!r} on a receiver that may be {symbols!r}, some of "
-            "them outside the family; it needs one type the family answers",
+            f"{where} reads {self.name!r} on a receiver that may be {symbols!r}, "
+            f"which can hold a `{self.symbol}` instance without guaranteeing it; "
+            "it needs a narrowed or family-typed receiver",
             NeededInput.SOURCE_CHANGE,
         )
 
@@ -285,11 +377,29 @@ class AnsweredMethod:
                     )
                 undeclared[spans[0]] = receiver
             else:
-                try:
-                    if self.answers(tuple(getattr(owner, "class_symbols", tuple)()), receiver.where):
-                        reached.append((receiver, ReceiverBinding(self.symbol)))
-                except NeedsInput as missing:
-                    blocking_needs.append(str(missing))
+                symbols = tuple(getattr(owner, "class_symbols", tuple)())
+                if symbols and all(symbol in self.family for symbol in symbols):
+                    reached.append((receiver, ReceiverBinding(self.symbol)))
+                elif symbols and not any(self.may_be_family(symbol) for symbol in symbols):
+                    continue
+                elif not symbols:
+                    try:
+                        self.answers(symbols, receiver.where)
+                    except NeedsInput as missing:
+                        blocking_needs.append(str(missing))
+                else:
+                    # The declared type overlaps `self.family` without being contained in
+                    # it (a superclass, MI sibling with a common subclass, Protocol, or
+                    # union). Ask the type checker in case flow-sensitive narrowing
+                    # (`isinstance(...)`) narrows this site into or out of `self.family`.
+                    if isinstance(receiver.expression, ast.Name) and not receiver.parsed.fact(
+                        ModuleNodeIndex
+                    ).bound_once(receiver.expression):
+                        raise ValueError(
+                            f"{receiver.where} reads `{receiver.expression.id}`, which its scope binds "
+                            "more than once, so no one type holds every value it has"
+                        )
+                    undeclared[ReceiverSpan.of(receiver.parsed.file_path, receiver.expression)] = receiver
         if undeclared:
             answers = snapshot.type_checker.receiver_types(undeclared)
             for span, receiver in undeclared.items():
@@ -297,7 +407,11 @@ class AnsweredMethod:
                 if not isinstance(answer, InferredReceiverType):
                     raise ValueError(f"{receiver.where}: the type checker gives no type for the receiver")
                 try:
-                    if self.answers(answer.classes, receiver.where):
+                    if self.answers(
+                        answer.classes,
+                        receiver.where,
+                        non_nominal=not answer.instances and not answer.families,
+                    ):
                         reached.append((receiver, ReceiverBinding(self.symbol)))
                 except NeedsInput as missing:
                     blocking_needs.append(str(missing))

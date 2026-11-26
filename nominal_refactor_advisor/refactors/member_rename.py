@@ -129,15 +129,6 @@ class RenamedMember(AnsweredMethod):
         return self.snapshot.required_class_family_index
 
     @cached_property
-    def lineage(self) -> frozenset[str]:
-        """Every family class and every ancestor of one: the classes whose bindings a
-        family receiver's lookup can reach."""
-
-        return self.family | frozenset(
-            ancestor for symbol in self.family for ancestor in self.index.ancestor_symbols(symbol)
-        )
-
-    @cached_property
     def foreign_bases(self) -> tuple[tuple[str, str], ...]:
         """Each (class, spelled base) in the lineage whose base the scan does not declare."""
 

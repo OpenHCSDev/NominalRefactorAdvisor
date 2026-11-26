@@ -354,3 +354,146 @@ def test_a_cooperative_mi_mixin_forwarder_overriding_a_sibling_base_is_refused(
         assert report.status is CodemodPreflightStatus.FAILED, report
         assert f"overrides ({overridden!r},)" in report.message
 
+
+@pytest.mark.parametrize(
+    ("extra_classes", "consumer_sig", "consumer_body", "expected_fragment"),
+    (
+        (
+            "class Model:\n    pass\n\n\n",
+            "model: Model",
+            "active = model\n    return active.running_router()\n",
+            "can hold a `pkg.models.DraftedModel` instance",
+        ),
+        (
+            "class Model:\n    pass\n\n\nclass Mixin:\n    pass\n\n\n"
+            "class Combined(Mixin, DraftedModel):\n    pass\n\n\n",
+            "mixin: Mixin",
+            "return mixin.running_router()\n",
+            "can hold a `pkg.models.DraftedModel` instance",
+        ),
+        (
+            "from typing import Protocol\n\n\nclass Model:\n    pass\n\n\n"
+            "class SupportsRouter(Protocol):\n    def running_router(self) -> int: ...\n\n\n",
+            "proto: SupportsRouter",
+            "return proto.running_router()\n",
+            "can hold a `pkg.models.DraftedModel` instance",
+        ),
+        (
+            "class Model:\n    pass\n\n\n",
+            "value: object",
+            "return value.running_router()\n",
+            "can hold a `pkg.models.DraftedModel` instance",
+        ),
+    ),
+)
+def test_supertype_mi_protocol_and_object_receivers_refuse_inlining(
+    tmp_path: Path,
+    extra_classes: str,
+    consumer_sig: str,
+    consumer_body: str,
+    expected_fragment: str,
+) -> None:
+    """personal-model `DraftedModel.running_router`: a receiver typed as an
+    un-narrowed ancestor (`Model`), an MI sibling with a common subclass, a
+    structural `Protocol`, or `object` can hold a `DraftedModel` at runtime
+    and must not be silently skipped."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/models.py",
+        "class Reader:\n    def running_router(self) -> int:\n        return 7\n\n\n"
+        + extra_classes
+        + "class DraftedModel(Model):\n"
+        "    def __init__(self, reader: Reader) -> None:\n        self.reader = reader\n\n"
+        "    def running_router(self) -> int:\n        return self.reader.running_router()\n",
+    )
+    # Place `Combined` after `DraftedModel` when the fixture declares it.
+    models_path = tmp_path / "pkg/models.py"
+    text = models_path.read_text()
+    if "class Combined(Mixin, DraftedModel):" in text:
+        text = text.replace(
+            "class Combined(Mixin, DraftedModel):\n    pass\n\n\n", ""
+        ) + "\n\nclass Combined(Mixin, DraftedModel):\n    pass\n"
+        models_path.write_text(text)
+    _write(
+        tmp_path,
+        "pkg/server.py",
+        "from pkg.models import *\n\n\n"
+        f"def serve({consumer_sig}) -> int:\n    {consumer_body}",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = InlineForwarderOperation(
+        target=SourceRewriteTarget(
+            file_path=models_path.as_posix(),
+            qualname="DraftedModel.running_router",
+        )
+    )
+    (report,) = operation.preflight_reports(snapshot)
+    assert report.status is CodemodPreflightStatus.FAILED, report
+    assert expected_fragment in report.message
+
+
+def test_isinstance_narrowed_supertype_receiver_inlines_and_disjoint_sibling_stays(
+    tmp_path: Path,
+) -> None:
+    """When flow-sensitive `isinstance` narrows a superclass-typed local alias
+    to `DraftedModel`, the call is rewritten cleanly; a branch narrowed to a
+    disjoint sibling subclass stays untouched."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/models.py",
+        "class Reader:\n    def running_router(self) -> int:\n        return 7\n\n\n"
+        "class Model:\n    pass\n\n\n"
+        "class DraftedModel(Model):\n"
+        "    def __init__(self, reader: Reader) -> None:\n        self.reader = reader\n\n"
+        "    def running_router(self) -> int:\n        return self.reader.running_router()\n\n\n"
+        "class OtherModel(Model):\n"
+        "    def running_router(self) -> int:\n        return 9\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/server.py",
+        "from pkg.models import DraftedModel, Model, OtherModel\n\n\n"
+        "class Server:\n"
+        "    def __init__(self, model: Model) -> None:\n        self.model = model\n\n"
+        "    def serve(self) -> int:\n"
+        "        active = self.model\n"
+        "        if isinstance(active, DraftedModel):\n"
+        "            return active.running_router()\n"
+        "        if isinstance(active, OtherModel):\n"
+        "            return active.running_router()\n"
+        "        return 0\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = InlineForwarderOperation(
+        target=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/models.py").as_posix(),
+            qualname="DraftedModel.running_router",
+        )
+    )
+    simulation = RefactorRecipe("inline").with_operation(operation).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    models_text = (tmp_path / "pkg/models.py").read_text()
+    server_text = (tmp_path / "pkg/server.py").read_text()
+    assert "class DraftedModel(Model):\n    def __init__" in models_text
+    assert "return active.reader.running_router()" in server_text
+    assert "if isinstance(active, OtherModel):\n            return active.running_router()" in server_text
+    ran = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.models import DraftedModel, OtherModel, Reader; "
+            "from pkg.server import Server; "
+            "assert Server(DraftedModel(Reader())).serve() == 7; "
+            "assert Server(OtherModel()).serve() == 9",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert ran.returncode == 0, ran.stderr
+
+
