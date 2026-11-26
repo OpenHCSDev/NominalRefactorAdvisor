@@ -15,7 +15,7 @@ import keyword as keyword_module
 import textwrap
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -38,6 +38,8 @@ from nominal_refactor_advisor.class_overlap import ClassOverlapVerdicts
 from nominal_refactor_advisor.class_references import ClassReferenceRole
 from nominal_refactor_advisor.class_syntax_facets import _trim_leading_docstring
 from nominal_refactor_advisor.codemod_declaration_source import ClassBodySourceAuthority
+from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -53,6 +55,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     Include,
     NominalSourceEdit,
     SourceNodeSpan,
+    SourceTextGeometry,
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
@@ -90,7 +93,7 @@ FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 _ALLOWED_SIBLING_DECORATORS = frozenset(("override",))
 _ABSTRACT_DECORATORS = frozenset(("abstractmethod",))
-_KIND_DECORATORS = frozenset(("classmethod", "property"))
+_KIND_DECORATORS = frozenset(("classmethod", "property", "cached_property"))
 
 
 @dataclass(frozen=True)
@@ -493,14 +496,87 @@ def _leading_docstring_stmt(method: FunctionNode) -> ast.Expr | None:
     return None
 
 
+@dataclass(frozen=True)
+class ExtraHookParams:
+    """Extra parameters forwarded from hoisted template setup into the subclass hook."""
+
+    names: tuple[str, ...] = ()
+    keyword_only: bool = False
+    annotations: tuple[tuple[str, ast.expr], ...] = ()
+
+    @classmethod
+    def for_method(
+        cls,
+        method: FunctionNode,
+        names: Sequence[str],
+        annotations: Mapping[str, ast.expr] = (),  # type: ignore[assignment]
+    ) -> ExtraHookParams | None:
+        ordered = tuple(dict.fromkeys(names))
+        if not ordered:
+            return cls()
+        existing = _all_parameter_names(method)
+        for name in ordered:
+            if (
+                not name.isidentifier()
+                or keyword_module.iskeyword(name)
+                or name in existing
+            ):
+                return None
+        args = method.args
+        keyword_only = bool(args.defaults or args.vararg or args.kwonlyargs)
+        if keyword_only and args.kwarg is not None:
+            return None
+        ann_map = dict(annotations) if annotations else {}
+        ann_pairs = tuple((n, ann_map[n]) for n in ordered if n in ann_map)
+        return cls(names=ordered, keyword_only=keyword_only, annotations=ann_pairs)
+
+    def with_arguments(self, args: ast.arguments) -> ast.arguments:
+        if not self.names:
+            return args
+        ann_by_name = dict(self.annotations)
+        added = [ast.arg(arg=name, annotation=ann_by_name.get(name)) for name in self.names]
+        if self.keyword_only:
+            return ast.arguments(
+                posonlyargs=list(args.posonlyargs),
+                args=list(args.args),
+                vararg=args.vararg,
+                kwonlyargs=[*args.kwonlyargs, *added],
+                kw_defaults=[*args.kw_defaults, *(None for _ in added)],
+                kwarg=args.kwarg,
+                defaults=list(args.defaults),
+            )
+        return ast.arguments(
+            posonlyargs=list(args.posonlyargs),
+            args=[*args.args, *added],
+            vararg=args.vararg,
+            kwonlyargs=list(args.kwonlyargs),
+            kw_defaults=list(args.kw_defaults),
+            kwarg=args.kwarg,
+            defaults=list(args.defaults),
+        )
+
+    def forwarded_call_args(self) -> tuple[str, ...]:
+        if self.keyword_only:
+            return tuple(f"{name}={name}" for name in self.names)
+        return self.names
+
+
 def _method_header_signature(
     method: FunctionNode,
     name: str,
     source_lines: Sequence[str] | None = None,
+    *,
+    extra_params: ExtraHookParams = ExtraHookParams(),
+    preserve_return_annotation: bool = True,
 ) -> str:
     """Render `def <name>(...) -> Ret:`, preserving original source spacing when available."""
 
-    if source_lines is not None and method.body:
+    if (
+        not extra_params.names
+        and preserve_return_annotation
+        and source_lines is not None
+        and method.body
+    ):
         first_body = method.body[0]
         body_start_line = first_body.lineno
         if (
@@ -520,8 +596,10 @@ def _method_header_signature(
                 if marker in header_stripped:
                     return header_stripped.replace(marker, f"def {name}", 1)
     prefix = "async def" if isinstance(method, ast.AsyncFunctionDef) else "def"
-    args_src = ast.unparse(method.args)
-    returns_annotations = tuple(declared_annotations(method))
+    args_src = ast.unparse(extra_params.with_arguments(method.args))
+    returns_annotations = (
+        tuple(declared_annotations(method)) if preserve_return_annotation else ()
+    )
     returns_src = (
         f" -> {ast.unparse(returns_annotations[0])}" if returns_annotations else ""
     )
@@ -529,7 +607,7 @@ def _method_header_signature(
 
 
 class MethodKind(ABC):
-    """How the hoisted method and its hook are decorated (plain, `@classmethod`, `@property`)."""
+    """How the hoisted method and its hook are decorated (plain, `@classmethod`, `@property`, `@cached_property`)."""
 
     def template_decorators(self, method: FunctionNode) -> tuple[str, ...]:
         return tuple(
@@ -576,6 +654,8 @@ class MethodKind(ABC):
             return ClassMethodKind()
         if found_kinds == ["property"]:
             return PropertyMethodKind()
+        if found_kinds == ["cached_property"]:
+            return CachedPropertyMethodKind()
         return PlainMethodKind()
 
 
@@ -604,18 +684,52 @@ class PropertyMethodKind(MethodKind):
         )
 
 
-def _forwarded_hook_call(method: FunctionNode, hook_name: str) -> str:
+@dataclass(frozen=True)
+class CachedPropertyMethodKind(MethodKind):
+    """`@cached_property` getter whose per-subclass hook is a plain helper method."""
+
+    def template_decorators(self, method: FunctionNode) -> tuple[str, ...]:
+        kept = tuple(
+            ast.unparse(dec)
+            for dec in method.decorator_list
+            if _decorator_terminal_name(dec) not in (_ABSTRACT_DECORATORS | {"property"})
+        )
+        if any(
+            _decorator_terminal_name(dec) == "cached_property"
+            for dec in method.decorator_list
+        ):
+            return kept
+        return ("cached_property", *kept)
+
+    def sibling_hook_decorators(self, method: FunctionNode) -> tuple[str, ...]:
+        return tuple(
+            ast.unparse(dec)
+            for dec in method.decorator_list
+            if _decorator_terminal_name(dec) != "cached_property"
+        )
+
+
+def _forwarded_hook_call(
+    method: FunctionNode,
+    hook_name: str,
+    *,
+    extra_params: ExtraHookParams = ExtraHookParams(),
+) -> str:
     """Render `[await ]<receiver>.<hook_name>(<forwarded arguments>)`."""
 
     args = method.args
     positional = (*args.posonlyargs, *args.args)
     receiver = positional[0].arg
     call_args: list[str] = [param.arg for param in positional[1:]]
+    if not extra_params.keyword_only:
+        call_args.extend(extra_params.forwarded_call_args())
     match args:
         case ast.arguments(vararg=ast.arg(arg=vararg_name)):
             call_args.append(f"*{vararg_name}")
     for kw_param in args.kwonlyargs:
         call_args.append(f"{kw_param.arg}={kw_param.arg}")
+    if extra_params.keyword_only:
+        call_args.extend(extra_params.forwarded_call_args())
     match args:
         case ast.arguments(kwarg=ast.arg(arg=kwarg_name)):
             call_args.append(f"**{kwarg_name}")
@@ -738,6 +852,206 @@ def _calls_super_member(node: ast.AST, member_name: str) -> bool:
     return False
 
 
+def _has_non_none_return(statements: Sequence[ast.stmt]) -> bool:
+    for statement in statements:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Return) and node.value is not None:
+                return True
+    return False
+
+
+def _ordered_definite_bindings(
+    statements: Sequence[ast.stmt],
+) -> tuple[tuple[str, ...], dict[str, ast.expr]]:
+    """Names definitely assigned at the top level of `statements`, in order, with
+    any explicit `AnnAssign` annotations."""
+
+    names: list[str] = []
+    annotations: dict[str, ast.expr] = {}
+
+    def record_target(target: ast.expr) -> None:
+        match target:
+            case ast.Name(id=bound):
+                if bound not in names:
+                    names.append(bound)
+            case ast.Tuple(elts=elts) | ast.List(elts=elts):
+                for elt in elts:
+                    record_target(elt)
+            case ast.Starred(value=inner):
+                record_target(inner)
+
+    for statement in statements:
+        match statement:
+            case ast.Assign(targets=targets):
+                for target in targets:
+                    record_target(target)
+            case ast.AnnAssign(target=ast.Name(id=bound), value=value, annotation=ann) if (
+                value is not None
+            ):
+                if bound not in names:
+                    names.append(bound)
+                annotations[bound] = ann
+            case ast.AugAssign(target=ast.Name(id=bound)):
+                if bound not in names:
+                    names.append(bound)
+    return tuple(names), annotations
+
+
+def _leading_unconditional_step_expr(
+    statement: ast.stmt,
+    receiver_name: str,
+    restated_calls: frozenset[str],
+) -> ast.expr | None:
+    """First `self.<step>(...)` (or `await self.<step>(...)`) evaluated unconditionally
+    at the start of `statement` before any impure call or short-circuit barrier."""
+
+    found: ast.expr | None = None
+    barrier_hit = False
+
+    def walk(node: ast.AST | None) -> None:
+        nonlocal found, barrier_hit
+        if barrier_hit or node is None:
+            return
+        call_node: ast.Call | None = None
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
+            call_node = node.value
+        elif isinstance(node, ast.Call):
+            call_node = node
+        if (
+            call_node is not None
+            and _receiver_call_path(call_node.func, receiver_name) in restated_calls
+        ):
+            found = node  # type: ignore[assignment]
+            barrier_hit = True
+            return
+        match node:
+            case ast.Constant() | ast.Name():
+                return
+            case ast.Attribute(value=inner):
+                walk(inner)
+            case ast.UnaryOp(operand=operand):
+                walk(operand)
+            case ast.BinOp(left=left, op=op, right=right):
+                walk(left)
+                if isinstance(op, (ast.Div, ast.FloorDiv, ast.Mod)):
+                    barrier_hit = True
+                    return
+                walk(right)
+            case ast.Tuple(elts=elts) | ast.List(elts=elts) | ast.Set(elts=elts):
+                for elt in elts:
+                    walk(elt)
+            case ast.Starred(value=inner):
+                walk(inner)
+            case ast.Dict(keys=keys, values=values):
+                for key, value in zip(keys, values, strict=True):
+                    if key is not None:
+                        walk(key)
+                    walk(value)
+            case ast.JoinedStr(values=values):
+                for part in values:
+                    walk(part)
+            case ast.FormattedValue(value=value, format_spec=spec):
+                walk(value)
+                if spec is not None:
+                    walk(spec)
+            case ast.Call(func=func, args=args, keywords=keywords):
+                walk(func)
+                for arg in args:
+                    walk(arg)
+                for kw in keywords:
+                    walk(kw.value)
+                barrier_hit = True
+            case ast.Return(value=value) | ast.Expr(value=value) | ast.Assign(value=value):
+                walk(value)
+            case ast.AnnAssign(value=value):
+                walk(value)
+            case ast.Yield(value=value) | ast.YieldFrom(value=value):
+                walk(value)
+                barrier_hit = True
+            case ast.If(test=test) | ast.IfExp(test=test):
+                walk(test)
+                barrier_hit = True
+            case ast.BoolOp(values=values) if values:
+                walk(values[0])
+                barrier_hit = True
+            case ast.Compare(left=left, comparators=comparators):
+                walk(left)
+                if comparators:
+                    walk(comparators[0])
+                barrier_hit = True
+            case (
+                ast.GeneratorExp(generators=generators)
+                | ast.ListComp(generators=generators)
+                | ast.SetComp(generators=generators)
+                | ast.DictComp(generators=generators)
+            ) if generators:
+                walk(generators[0].iter)
+                barrier_hit = True
+            case _:
+                barrier_hit = True
+
+    walk(statement)
+    if found is None:
+        return None
+    if _contains_node_type(
+        (ast.Expr(value=found),),
+        (
+            ast.Yield,
+            ast.YieldFrom,
+            ast.NamedExpr,
+            ast.Lambda,
+            ast.ListComp,
+            ast.SetComp,
+            ast.DictComp,
+            ast.GeneratorExp,
+        ),
+    ):
+        return None
+    target_dump = ast.dump(found, include_attributes=False)
+    occurrences = sum(
+        1
+        for subnode in ast.walk(statement)
+        if isinstance(subnode, type(found))
+        and ast.dump(subnode, include_attributes=False) == target_dump
+    )
+    if occurrences != 1:
+        return None
+    return found
+
+
+def _render_statement_with_expr_replaced(
+    source: str,
+    statement: ast.stmt,
+    target_expr: ast.expr,
+    replacement_text: str,
+    indent: str,
+) -> str:
+    """Render `statement` with `target_expr`'s exact source span replaced by `replacement_text`."""
+
+    geometry = SourceTextGeometry(source)
+    stmt_start, stmt_end = geometry.line_span_offsets(
+        statement.lineno, statement.end_lineno or statement.lineno
+    )
+    expr_start, expr_end = geometry.required_node_offsets(target_expr)
+    rel_start = expr_start - stmt_start
+    rel_end = expr_end - stmt_start
+    raw = source[stmt_start:stmt_end]
+    spliced = f"{raw[:rel_start]}{replacement_text}{raw[rel_end:]}"
+    dedented = textwrap.dedent(spliced)
+    rendered_lines = [
+        f"{indent}{line}" if line.strip() else line
+        for line in dedented.splitlines(keepends=True)
+    ]
+    text = "".join(rendered_lines)
+    return text if text.endswith("\n") else f"{text}\n"
+
+
+def _render_expr_source(source: str, expr: ast.expr) -> str:
+    geometry = SourceTextGeometry(source)
+    start, end = geometry.required_node_offsets(expr)
+    return source[start:end]
+
+
 class HookDeclaration(ABC):
     """How the ancestor declares the per-subclass hook method."""
 
@@ -762,8 +1076,17 @@ class HookDeclaration(ABC):
         indent: str,
         method_kind: MethodKind,
         source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams = ExtraHookParams(),
+        preserve_return_annotation: bool = True,
     ) -> str:
-        header = _method_header_signature(method, hook_name, source_lines)
+        header = _method_header_signature(
+            method,
+            hook_name,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=preserve_return_annotation,
+        )
         indented_header = "\n".join(
             f"{indent}{line}" if line.strip() else line
             for line in header.splitlines()
@@ -800,10 +1123,34 @@ class NoOpHookDeclaration(HookDeclaration):
 
 
 @dataclass(frozen=True)
+class EmptyGeneratorHookDeclaration(HookDeclaration):
+    """At least one generator sibling has an empty middle body after hoisting; default hook yields nothing."""
+
+    body_line: ClassVar[str] = "yield from ()"
+
+
+@dataclass(frozen=True)
 class NotImplementedHookDeclaration(HookDeclaration):
     """Every sibling has a non-empty middle body on an ancestor without `@abstractmethod`."""
 
     body_line: ClassVar[str] = "raise NotImplementedError"
+
+
+@dataclass(frozen=True)
+class HoistedStepExpression:
+    """An identical unconditional leading step call hoisted into a local variable on the template."""
+
+    var_name: str
+    expr: ast.expr
+
+
+@dataclass(frozen=True)
+class ReturnCallTemplate:
+    """Every sibling returns the same receiver call differing in a single argument slot."""
+
+    template_call: ast.Call
+    varying_slot_expr: ast.expr
+    import_checked_stmt: ast.stmt
 
 
 class SiblingRewrite(ABC):
@@ -866,6 +1213,9 @@ class RewriteSiblingToHook(SiblingRewrite):
     dropped: tuple[ast.stmt, ...]
     hook_name: str
     method_kind: MethodKind
+    extra_params: ExtraHookParams = ExtraHookParams()
+    leading_expr_replacement: tuple[ast.expr, str] | None = None
+    return_arg_expr: ast.expr | None = None
 
     def edits(
         self,
@@ -885,14 +1235,34 @@ class RewriteSiblingToHook(SiblingRewrite):
             f"{indent}@{dec}\n"
             for dec in self.method_kind.sibling_hook_decorators(self.method)
         ]
-        header = _method_header_signature(self.method, self.hook_name, source_lines)
+        header = _method_header_signature(
+            self.method,
+            self.hook_name,
+            source_lines,
+            extra_params=self.extra_params,
+            preserve_return_annotation=self.return_arg_expr is None,
+        )
         for line in header.splitlines():
             pieces.append(f"{indent}{line}\n" if line.strip() else "\n")
         docstring = _leading_docstring_stmt(self.method)
         if docstring is not None:
             pieces.append(_statement_source_block(source_lines, docstring, inner_indent))
-        for statement in self.middle:
-            pieces.append(_statement_source_block(source_lines, statement, inner_indent))
+        if self.return_arg_expr is not None:
+            arg_text = _render_expr_source(source, self.return_arg_expr)
+            pieces.append(f"{inner_indent}return {arg_text}\n")
+        else:
+            for index, statement in enumerate(self.middle):
+                if index == 0 and self.leading_expr_replacement is not None:
+                    target_expr, var_name = self.leading_expr_replacement
+                    pieces.append(
+                        _render_statement_with_expr_replaced(
+                            source, statement, target_expr, var_name, inner_indent
+                        )
+                    )
+                else:
+                    pieces.append(
+                        _statement_source_block(source_lines, statement, inner_indent)
+                    )
         replacement = SourceTextSpanReplacement.from_offsets(
             start_offset=start,
             end_offset=end,
@@ -967,6 +1337,11 @@ class SiblingOverrideStepHoist:
     hoist_source_owner: OverlapClass
     rewrites: tuple[SiblingRewrite, ...]
     forward_return: bool
+    extra_params: ExtraHookParams = ExtraHookParams()
+    is_generator: bool = False
+    hoisted_step_expr: HoistedStepExpression | None = None
+    return_call_template: ReturnCallTemplate | None = None
+    return_call_first_stmt: ast.stmt | None = None
 
     @classmethod
     def proved(
@@ -1005,10 +1380,9 @@ class SiblingOverrideStepHoist:
                 NeededInput.SOURCE_CHANGE,
             )
         declaring_ancestry = require_static_c3(snapshot, declaring.facts)
-        declaring_method, method_kind = cls._require_single_method(
+        declaring_method, declaring_kind = cls._require_single_method(
             declaring, member_name, allow_abstract=True
         )
-        cls._require_non_generator_method(declaring, declaring_method)
         declaring_sig = _parameter_signature_key(declaring_method)
         positional = (
             *declaring_method.args.posonlyargs,
@@ -1022,11 +1396,27 @@ class SiblingOverrideStepHoist:
         receiver_name = positional[0].arg
         param_names = _all_parameter_names(declaring_method)
 
-        siblings = cls._load_siblings(
-            snapshot, candidate, member_name, declaring_sig, method_kind
+        siblings, method_kind = cls._load_siblings(
+            snapshot, candidate, member_name, declaring_sig, declaring_kind
         )
-        prefix_len, suffix_len = cls._shared_prefix_and_suffix(
-            siblings, param_names, receiver_name, frozenset(candidate.restated)
+        is_generator = any(
+            _contains_node_type(sibling.statements, (ast.Yield, ast.YieldFrom))
+            for sibling in siblings
+        )
+        if is_generator and isinstance(declaring_method, ast.AsyncFunctionDef):
+            raise NeedsInput(
+                f"`{declaring.qualname}.{member_name}` is an async generator method; NRA needs "
+                "an async-generator delegation proof before splitting it",
+                NeededInput.PROOF,
+            )
+        restated_calls = frozenset(candidate.restated)
+        (
+            prefix_len,
+            suffix_len,
+            prefix_extra_names,
+            prefix_extra_annotations,
+        ) = cls._shared_prefix_and_suffix(
+            declaring_method, siblings, param_names
         )
         prefix = siblings[0].statements[:prefix_len]
         suffix = (
@@ -1034,18 +1424,112 @@ class SiblingOverrideStepHoist:
             if suffix_len
             else ()
         )
-        middles = tuple(
+        raw_middles = tuple(
             sibling.statements[
                 prefix_len : len(sibling.statements) - suffix_len
             ]
             for sibling in siblings
         )
+        if not any(raw_middles):
+            raise NeedsInput(
+                f"every override of `{declaring.qualname}.{member_name}` is identical; "
+                "lift the whole method instead",
+                NeededInput.SOURCE_CHANGE,
+            )
+
+        hoisted_edges = (*prefix, *suffix)
+        has_edge_step = bool(hoisted_edges) and _statement_calls_any_step(
+            hoisted_edges, receiver_name, restated_calls
+        )
+        hoisted_step_expr: HoistedStepExpression | None = None
+        sibling_step_exprs: tuple[ast.expr, ...] = ()
+        return_call_template: ReturnCallTemplate | None = None
+        sibling_return_args: tuple[ast.expr, ...] = ()
+        extra_names = list(prefix_extra_names)
+        extra_annotations = dict(prefix_extra_annotations)
+
+        if not has_edge_step:
+            prefix_locals = frozenset(
+                (*param_names, *LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(prefix))
+            )
+            step_match = cls._detect_hoisted_step_expr(
+                siblings,
+                raw_middles,
+                prefix_locals,
+                receiver_name,
+                restated_calls,
+            )
+            if step_match is not None:
+                hoisted_step_expr, sibling_step_exprs = step_match
+                extra_names.append(hoisted_step_expr.var_name)
+            elif not suffix and not is_generator:
+                rc_match = cls._detect_return_call_template(
+                    siblings,
+                    raw_middles,
+                    prefix_locals,
+                    receiver_name,
+                    restated_calls,
+                )
+                if rc_match is not None:
+                    return_call_template, sibling_return_args = rc_match
+
+        if (
+            not has_edge_step
+            and hoisted_step_expr is None
+            and return_call_template is None
+        ):
+            raise NeedsInput(
+                f"shared step(s) in `{siblings[0].owner.qualname}` and its siblings are not "
+                "independent leading or trailing statements safe to hoist into a template method",
+                NeededInput.SOURCE_CHANGE,
+            )
+
+        extra_params = ExtraHookParams.for_method(
+            declaring_method, extra_names, extra_annotations
+        )
+        if extra_params is None:
+            raise NeedsInput(
+                f"shared step(s) in `{siblings[0].owner.qualname}` and its siblings bind "
+                "locals that cannot be forwarded safely into the hook signature",
+                NeededInput.SOURCE_CHANGE,
+            )
+
+        effective_middles: list[tuple[ast.stmt, ...]] = []
+        leading_replacements: list[tuple[ast.expr, str] | None] = []
+        extra_dropped: list[tuple[ast.stmt, ...]] = []
+        if hoisted_step_expr is not None:
+            step_var = hoisted_step_expr.var_name
+            for middle, step_expr in zip(raw_middles, sibling_step_exprs, strict=True):
+                first_stmt = middle[0]
+                match first_stmt:
+                    case ast.Assign(targets=[ast.Name(id=bound)], value=val) if (
+                        bound == step_var and val is step_expr
+                    ):
+                        effective_middles.append(middle[1:])
+                        leading_replacements.append(None)
+                        extra_dropped.append((first_stmt,))
+                    case ast.Expr(value=val) if val is step_expr:
+                        effective_middles.append(middle[1:])
+                        leading_replacements.append(None)
+                        extra_dropped.append((first_stmt,))
+                    case _:
+                        effective_middles.append(middle)
+                        leading_replacements.append((step_expr, step_var))
+                        extra_dropped.append((ast.Expr(value=step_expr),))
+        else:
+            for middle in raw_middles:
+                effective_middles.append(middle)
+                leading_replacements.append(None)
+                extra_dropped.append(())
+
+        middles = tuple(effective_middles)
         if not any(middles):
             raise NeedsInput(
                 f"every override of `{declaring.qualname}.{member_name}` is identical; "
                 "lift the whole method instead",
                 NeededInput.SOURCE_CHANGE,
             )
+
         cls._require_dataflow_safe(declaring, member_name, prefix, middles, suffix)
         cls._require_mro_descendants_and_hook_safe(
             snapshot,
@@ -1094,32 +1578,53 @@ class SiblingOverrideStepHoist:
         NamespaceReaders(snapshot).require_unread(declaring.facts, declaring_names)
 
         hook_declaration = cls._select_hook_declaration(
-            declaring_method, has_empty_middle=any(not middle for middle in middles)
+            declaring_method,
+            has_empty_middle=any(not middle for middle in middles),
+            is_generator=is_generator,
         )
-        any_middle_returns = any(_has_return_statement(middle) for middle in middles)
-        forward_return = (not suffix) and (
-            any_middle_returns or not _returns_none_annotation(declaring_method)
-        )
-        rewrites = tuple(
-            DeleteEmptySiblingOverride(sibling.owner, sibling.method)
-            if not middle
-            else RewriteSiblingToHook(
-                sibling.owner,
-                sibling.method,
-                middle,
-                (
+        if is_generator:
+            forward_return = (not suffix) and any(
+                _has_non_none_return(middle) for middle in middles
+            )
+        else:
+            any_middle_returns = any(_has_return_statement(middle) for middle in middles)
+            forward_return = (not suffix) and (
+                any_middle_returns or not _returns_none_annotation(declaring_method)
+            )
+
+        rewrites_list: list[SiblingRewrite] = []
+        for idx, (sibling, middle) in enumerate(zip(siblings, middles, strict=True)):
+            if not middle:
+                rewrites_list.append(
+                    DeleteEmptySiblingOverride(sibling.owner, sibling.method)
+                )
+            else:
+                dropped_stmts = (
                     *sibling.statements[:prefix_len],
                     *(
                         sibling.statements[len(sibling.statements) - suffix_len :]
                         if suffix_len
                         else ()
                     ),
-                ),
-                hook_name,
-                method_kind,
-            )
-            for sibling, middle in zip(siblings, middles, strict=True)
-        )
+                    *extra_dropped[idx],
+                )
+                rewrites_list.append(
+                    RewriteSiblingToHook(
+                        sibling.owner,
+                        sibling.method,
+                        middle,
+                        dropped_stmts,
+                        hook_name,
+                        method_kind,
+                        extra_params=extra_params,
+                        leading_expr_replacement=leading_replacements[idx],
+                        return_arg_expr=(
+                            sibling_return_args[idx]
+                            if return_call_template is not None
+                            else None
+                        ),
+                    )
+                )
         return cls(
             candidate=candidate,
             declaring=declaring,
@@ -1130,8 +1635,15 @@ class SiblingOverrideStepHoist:
             prefix=prefix,
             suffix=suffix,
             hoist_source_owner=siblings[0].owner,
-            rewrites=rewrites,
+            rewrites=tuple(rewrites_list),
             forward_return=forward_return,
+            extra_params=extra_params,
+            is_generator=is_generator,
+            hoisted_step_expr=hoisted_step_expr,
+            return_call_template=return_call_template,
+            return_call_first_stmt=(
+                raw_middles[0][0] if return_call_template is not None else None
+            ),
         )
 
     @staticmethod
@@ -1153,17 +1665,6 @@ class SiblingOverrideStepHoist:
         method = statements[0]
         return method, MethodKind.of(owner, method, allow_abstract=allow_abstract)
 
-    @staticmethod
-    def _require_non_generator_method(
-        owner: OverlapClass, method: FunctionNode
-    ) -> None:
-        if _contains_node_type(method.body, (ast.Yield, ast.YieldFrom)):
-            raise NeedsInput(
-                f"`{owner.qualname}.{method.name}` is a generator method; NRA needs "
-                "a generator-delegation proof before splitting it",
-                NeededInput.PROOF,
-            )
-
     @classmethod
     def _load_siblings(
         cls,
@@ -1172,20 +1673,15 @@ class SiblingOverrideStepHoist:
         member_name: str,
         declaring_sig: tuple[object, ...],
         declaring_kind: MethodKind,
-    ) -> tuple[_SiblingMethod, ...]:
+    ) -> tuple[tuple[_SiblingMethod, ...], MethodKind]:
         siblings: list[_SiblingMethod] = []
+        sibling_kinds: list[MethodKind] = []
         for indexed, _line in candidate.overriding:
             child = OverlapClass.for_symbol(snapshot, indexed.symbol)
             method, child_kind = cls._require_single_method(
                 child, member_name, allow_abstract=False
             )
-            if child_kind != declaring_kind:
-                raise NeedsInput(
-                    f"`{child.qualname}.{member_name}` has a different descriptor kind "
-                    f"from `{candidate.declaring.qualname}.{member_name}`",
-                    NeededInput.PROOF,
-                )
-            cls._require_non_generator_method(child, method)
+            sibling_kinds.append(child_kind)
             if _parameter_signature_key(method) != declaring_sig:
                 raise NeedsInput(
                     f"`{child.qualname}.{member_name}` has a different parameter signature "
@@ -1201,7 +1697,22 @@ class SiblingOverrideStepHoist:
             siblings.append(
                 _SiblingMethod(child, method, trimmed, scope, class_bound)
             )
-        return tuple(siblings)
+        effective_kind = declaring_kind
+        if (
+            isinstance(declaring_kind, PropertyMethodKind)
+            and candidate.unanswered
+            and sibling_kinds
+            and all(isinstance(kind, CachedPropertyMethodKind) for kind in sibling_kinds)
+        ):
+            effective_kind = CachedPropertyMethodKind()
+        for sibling, child_kind in zip(siblings, sibling_kinds, strict=True):
+            if child_kind != effective_kind:
+                raise NeedsInput(
+                    f"`{sibling.owner.qualname}.{member_name}` has a different descriptor kind "
+                    f"from `{candidate.declaring.qualname}.{member_name}`",
+                    NeededInput.PROOF,
+                )
+        return tuple(siblings), effective_kind
 
     @classmethod
     def _statements_semantically_equal(
@@ -1251,11 +1762,10 @@ class SiblingOverrideStepHoist:
     @classmethod
     def _shared_prefix_and_suffix(
         cls,
+        declaring_method: FunctionNode,
         siblings: tuple[_SiblingMethod, ...],
         param_names: frozenset[str],
-        receiver_name: str,
-        restated_calls: frozenset[str],
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, tuple[str, ...], dict[str, ast.expr]]:
         first = siblings[0]
         min_len = min(len(sibling.statements) for sibling in siblings)
         prefix_len = 0
@@ -1318,34 +1828,257 @@ class SiblingOverrideStepHoist:
             ):
                 suffix_len = 0
 
-        # A prefix cannot be hoisted when it binds a local name read by any middle or suffix.
+        # When a shared prefix binds locals read by any middle body, forward
+        # definitely-assigned top-level bindings into the hook; drop prefix only
+        # when a conditionally-bound local leaks into a middle or cannot be forwarded.
+        forwarded_names: tuple[str, ...] = ()
+        forwarded_annotations: dict[str, ast.expr] = {}
         if prefix_len > 0:
             candidate_prefix = first.statements[:prefix_len]
             prefix_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(candidate_prefix)
             if prefix_bound:
-                remainders = tuple(
-                    sibling.statements[prefix_len:] for sibling in siblings
+                middles = tuple(
+                    sibling.statements[
+                        prefix_len : len(sibling.statements) - suffix_len
+                    ]
+                    for sibling in siblings
                 )
-                if any(prefix_bound & _read_names(rem) for rem in remainders):
-                    prefix_len = 0
+                middle_reads: set[str] = set()
+                for middle in middles:
+                    middle_reads.update(_read_names(middle))
+                needed_from_prefix = prefix_bound & middle_reads
+                if needed_from_prefix:
+                    definite_names, definite_annotations = _ordered_definite_bindings(
+                        candidate_prefix
+                    )
+                    if not (needed_from_prefix <= set(definite_names)):
+                        prefix_len = 0
+                    else:
+                        extra_names = tuple(
+                            name
+                            for name in definite_names
+                            if name in needed_from_prefix and name not in param_names
+                        )
+                        if (
+                            extra_names
+                            and ExtraHookParams.for_method(
+                                declaring_method, extra_names, definite_annotations
+                            )
+                            is None
+                        ):
+                            prefix_len = 0
+                        else:
+                            forwarded_names = extra_names
+                            forwarded_annotations = {
+                                name: definite_annotations[name]
+                                for name in extra_names
+                                if name in definite_annotations
+                            }
+        return prefix_len, suffix_len, forwarded_names, forwarded_annotations
 
-        hoisted = (
-            *first.statements[:prefix_len],
-            *(
-                first.statements[len(first.statements) - suffix_len :]
-                if suffix_len
-                else ()
-            ),
-        )
-        if not hoisted or not _statement_calls_any_step(
-            hoisted, receiver_name, restated_calls
-        ):
-            raise NeedsInput(
-                f"shared step(s) in `{first.owner.qualname}` and its siblings are not "
-                "independent leading or trailing statements safe to hoist into a template method",
-                NeededInput.SOURCE_CHANGE,
+    @classmethod
+    def _detect_hoisted_step_expr(
+        cls,
+        siblings: tuple[_SiblingMethod, ...],
+        raw_middles: tuple[tuple[ast.stmt, ...], ...],
+        prefix_locals: frozenset[str],
+        receiver_name: str,
+        restated_calls: frozenset[str],
+    ) -> tuple[HoistedStepExpression, tuple[ast.expr, ...]] | None:
+        if any(not middle for middle in raw_middles):
+            return None
+        exprs: list[ast.expr] = []
+        for middle in raw_middles:
+            found = _leading_unconditional_step_expr(
+                middle[0], receiver_name, restated_calls
             )
-        return prefix_len, suffix_len
+            if found is None:
+                return None
+            exprs.append(found)
+        first = siblings[0]
+        first_stmt = ast.Expr(value=exprs[0])
+        for sibling, expr in zip(siblings[1:], exprs[1:], strict=True):
+            if not cls._statements_semantically_equal(
+                first, sibling, first_stmt, ast.Expr(value=expr), prefix_locals
+            ):
+                return None
+        # Choose a clean, collision-free parameter name for the hoisted step value.
+        assigned_names: set[str] = set()
+        for middle, expr in zip(raw_middles, exprs, strict=True):
+            match middle[0]:
+                case ast.Assign(targets=[ast.Name(id=bound)], value=val) if (
+                    val is expr
+                ):
+                    assigned_names.add(bound)
+        forbidden: set[str] = set(prefix_locals)
+        for middle, expr in zip(raw_middles, exprs, strict=True):
+            match middle[0]:
+                case ast.Assign(targets=[ast.Name(id=bound)], value=val) if (
+                    val is expr and len(assigned_names) == 1
+                ):
+                    rest = middle[1:]
+                case _:
+                    rest = middle
+            forbidden.update(_read_names(rest))
+            forbidden.update(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(rest))
+        if len(assigned_names) == 1:
+            preferred = next(iter(assigned_names))
+            if (
+                preferred.isidentifier()
+                and not keyword_module.iskeyword(preferred)
+                and preferred not in prefix_locals
+            ):
+                # Ensure no non-assigning sibling reads or binds `preferred` as a different name.
+                conflict = False
+                for middle, expr in zip(raw_middles, exprs, strict=True):
+                    match middle[0]:
+                        case ast.Assign(targets=[ast.Name(id=bound)], value=val) if (
+                            bound == preferred and val is expr
+                        ):
+                            continue
+                    if preferred in _read_names(middle) or preferred in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(middle):
+                        conflict = True
+                        break
+                if not conflict:
+                    return (
+                        HoistedStepExpression(var_name=preferred, expr=exprs[0]),
+                        tuple(exprs),
+                    )
+        call_node = (
+            exprs[0].value
+            if isinstance(exprs[0], ast.Await) and isinstance(exprs[0].value, ast.Call)
+            else exprs[0]
+        )
+        call_path = (
+            _receiver_call_path(call_node.func, receiver_name)
+            if isinstance(call_node, ast.Call)
+            else None
+        )
+        raw_base = (call_path or "step").rsplit(".", maxsplit=1)[-1].lstrip("_") or "step"
+        candidates = (
+            raw_base,
+            f"{raw_base}_value",
+            f"_{raw_base}",
+            f"_{raw_base}_value",
+        )
+        var_name = next(
+            (
+                cand
+                for cand in candidates
+                if cand.isidentifier()
+                and not keyword_module.iskeyword(cand)
+                and cand not in forbidden
+            ),
+            None,
+        )
+        if var_name is None:
+            return None
+        return HoistedStepExpression(var_name=var_name, expr=exprs[0]), tuple(exprs)
+
+    @classmethod
+    def _detect_return_call_template(
+        cls,
+        siblings: tuple[_SiblingMethod, ...],
+        raw_middles: tuple[tuple[ast.stmt, ...], ...],
+        prefix_locals: frozenset[str],
+        receiver_name: str,
+        restated_calls: frozenset[str],
+    ) -> tuple[ReturnCallTemplate, tuple[ast.expr, ...]] | None:
+        calls: list[ast.Call] = []
+        for middle in raw_middles:
+            if len(middle) != 1:
+                return None
+            match middle[0]:
+                case ast.Return(value=ast.Call() as call):
+                    calls.append(call)
+                case _:
+                    return None
+        first_call = calls[0]
+        if _receiver_call_path(first_call.func, receiver_name) not in restated_calls:
+            return None
+        if any(isinstance(arg, ast.Starred) for arg in first_call.args) or any(
+            kw.arg is None for kw in first_call.keywords
+        ):
+            return None
+        kw_names = tuple(kw.arg for kw in first_call.keywords)
+        first = siblings[0]
+        for sibling, call in zip(siblings[1:], calls[1:], strict=True):
+            if len(call.args) != len(first_call.args):
+                return None
+            if tuple(kw.arg for kw in call.keywords) != kw_names:
+                return None
+            if any(isinstance(arg, ast.Starred) for arg in call.args):
+                return None
+            if not cls._statements_semantically_equal(
+                first,
+                sibling,
+                ast.Expr(value=first_call.func),
+                ast.Expr(value=call.func),
+                prefix_locals,
+            ):
+                return None
+        diff_pos: list[int] = []
+        for i in range(len(first_call.args)):
+            if not all(
+                cls._statements_semantically_equal(
+                    first,
+                    sibling,
+                    ast.Expr(value=first_call.args[i]),
+                    ast.Expr(value=call.args[i]),
+                    prefix_locals,
+                )
+                for sibling, call in zip(siblings[1:], calls[1:], strict=True)
+            ):
+                diff_pos.append(i)
+        diff_kw: list[int] = []
+        for j in range(len(first_call.keywords)):
+            if not all(
+                cls._statements_semantically_equal(
+                    first,
+                    sibling,
+                    ast.Expr(value=first_call.keywords[j].value),
+                    ast.Expr(value=call.keywords[j].value),
+                    prefix_locals,
+                )
+                for sibling, call in zip(siblings[1:], calls[1:], strict=True)
+            ):
+                diff_kw.append(j)
+        if len(diff_pos) + len(diff_kw) != 1:
+            return None
+        if diff_pos:
+            slot_index = diff_pos[0]
+            slot_exprs = tuple(call.args[slot_index] for call in calls)
+            sanitized_args = [
+                ast.Constant(value=None) if idx == slot_index else arg
+                for idx, arg in enumerate(first_call.args)
+            ]
+            sanitized_call = ast.Call(
+                func=first_call.func,
+                args=sanitized_args,
+                keywords=list(first_call.keywords),
+            )
+        else:
+            kw_index = diff_kw[0]
+            slot_exprs = tuple(call.keywords[kw_index].value for call in calls)
+            sanitized_keywords = [
+                ast.keyword(arg=kw.arg, value=ast.Constant(value=None))
+                if idx == kw_index
+                else kw
+                for idx, kw in enumerate(first_call.keywords)
+            ]
+            sanitized_call = ast.Call(
+                func=first_call.func,
+                args=list(first_call.args),
+                keywords=sanitized_keywords,
+            )
+        return (
+            ReturnCallTemplate(
+                template_call=first_call,
+                varying_slot_expr=slot_exprs[0],
+                import_checked_stmt=ast.Expr(value=sanitized_call),
+            ),
+            slot_exprs,
+        )
 
     @staticmethod
     def _require_dataflow_safe(
@@ -1498,10 +2231,17 @@ class SiblingOverrideStepHoist:
 
     @staticmethod
     def _select_hook_declaration(
-        declaring_method: FunctionNode, *, has_empty_middle: bool
+        declaring_method: FunctionNode,
+        *,
+        has_empty_middle: bool,
+        is_generator: bool = False,
     ) -> HookDeclaration:
         if has_empty_middle:
-            return NoOpHookDeclaration()
+            return (
+                EmptyGeneratorHookDeclaration()
+                if is_generator
+                else NoOpHookDeclaration()
+            )
         for decorator in declaring_method.decorator_list:
             if _decorator_terminal_name(decorator) in _ABSTRACT_DECORATORS:
                 return AbstractHookDeclaration(ast.unparse(decorator))
@@ -1513,9 +2253,10 @@ class SiblingOverrideStepHoist:
         declaring = self.declaring
         declaring_source = snapshot.sources_by_file_path[declaring.file_path]
         declaring_lines = declaring_source.splitlines(keepends=True)
-        hoist_source_lines = snapshot.sources_by_file_path[
+        hoist_source = snapshot.sources_by_file_path[
             self.hoist_source_owner.file_path
-        ].splitlines(keepends=True)
+        ]
+        hoist_source_lines = hoist_source.splitlines(keepends=True)
         body = ClassBodySourceAuthority(declaring.node, declaring_source)
         indent = body.indentation
         inner_indent = f"{indent}    "
@@ -1541,12 +2282,37 @@ class SiblingOverrideStepHoist:
             template_pieces.append(
                 _statement_source_block(hoist_source_lines, statement, inner_indent)
             )
-        hook_call = _forwarded_hook_call(self.declaring_method, self.hook_name)
-        call_line = (
-            f"{inner_indent}return {hook_call}\n"
-            if self.forward_return
-            else f"{inner_indent}{hook_call}\n"
+        if self.hoisted_step_expr is not None:
+            expr_src = _render_expr_source(hoist_source, self.hoisted_step_expr.expr)
+            template_pieces.append(
+                f"{inner_indent}{self.hoisted_step_expr.var_name} = {expr_src}\n"
+            )
+        hook_call = _forwarded_hook_call(
+            self.declaring_method, self.hook_name, extra_params=self.extra_params
         )
+        if (
+            self.return_call_template is not None
+            and self.return_call_first_stmt is not None
+        ):
+            call_line = _render_statement_with_expr_replaced(
+                hoist_source,
+                self.return_call_first_stmt,
+                self.return_call_template.varying_slot_expr,
+                hook_call,
+                inner_indent,
+            )
+        elif self.is_generator:
+            call_line = (
+                f"{inner_indent}return (yield from {hook_call})\n"
+                if self.forward_return
+                else f"{inner_indent}yield from {hook_call}\n"
+            )
+        else:
+            call_line = (
+                f"{inner_indent}return {hook_call}\n"
+                if self.forward_return
+                else f"{inner_indent}{hook_call}\n"
+            )
         template_pieces.append(call_line)
         for statement in self.suffix:
             template_pieces.append(
@@ -1560,6 +2326,8 @@ class SiblingOverrideStepHoist:
                 indent,
                 self.method_kind,
                 declaring_lines,
+                extra_params=self.extra_params,
+                preserve_return_annotation=self.return_call_template is None,
             )
         )
 
@@ -1568,7 +2336,11 @@ class SiblingOverrideStepHoist:
             end_offset=end,
             replacement_source="".join(template_pieces),
         )
-        hoisted_statements = (*self.prefix, *self.suffix)
+        hoisted_statements: list[ast.stmt] = [*self.prefix, *self.suffix]
+        if self.hoisted_step_expr is not None:
+            hoisted_statements.append(ast.Expr(value=self.hoisted_step_expr.expr))
+        if self.return_call_template is not None:
+            hoisted_statements.append(self.return_call_template.import_checked_stmt)
         all_edits: list[NominalSourceEdit] = [
             *body.geometry.physical_edits(
                 file_path=declaring.file_path,
@@ -1577,12 +2349,31 @@ class SiblingOverrideStepHoist:
             ),
             *required_name_imports(
                 snapshot,
-                hoisted_statements,
+                tuple(hoisted_statements),
                 self.hoist_source_owner,
                 declaring,
                 rationale,
             ),
         ]
+        if isinstance(self.method_kind, CachedPropertyMethodKind) and not any(
+            _decorator_terminal_name(dec) == "cached_property"
+            for dec in self.declaring_method.decorator_list
+        ):
+            declaring_parsed = snapshot.parsed_module_for_source_path(
+                declaring.file_path
+            )
+            declaring_scope = ClassBodyModuleScope.for_lines(
+                declaring_parsed, (declaring.node.lineno,)
+            )[declaring.node.lineno]
+            if declaring_scope.witness_for("cached_property") is None:
+                all_edits.append(
+                    ModuleImportMutation.from_source(
+                        file_path=declaring.file_path,
+                        import_source="from functools import cached_property\n",
+                        scope=ModuleImportScope.RUNTIME,
+                        rationale=rationale,
+                    )
+                )
         dropped_abstract = self.hook_declaration.obsolete_declaring_decorators(
             self.declaring_method
         )
@@ -1679,9 +2470,13 @@ class SiblingOverrideStepFindingRecipeSynthesizer(
 
 __all__ = (
     "AbstractHookDeclaration",
+    "CachedPropertyMethodKind",
     "ClassMethodKind",
     "DeleteEmptySiblingOverride",
+    "EmptyGeneratorHookDeclaration",
+    "ExtraHookParams",
     "HoistSiblingOverrideStepOperation",
+    "HoistedStepExpression",
     "HookDeclaration",
     "MethodKind",
     "NoOpHookDeclaration",
@@ -1689,6 +2484,7 @@ __all__ = (
     "OmittedStep",
     "PlainMethodKind",
     "PropertyMethodKind",
+    "ReturnCallTemplate",
     "RewriteSiblingToHook",
     "SiblingOverrideStepCandidate",
     "SiblingOverrideStepFindingRecipeSynthesizer",
