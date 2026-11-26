@@ -432,10 +432,12 @@ def test_generated_owners_register_nothing_by_hand(tmp_path: Path) -> None:
     sources = {
         str(package / "__init__.py"): "",
         str(package / "mod.py"): (
-            "def f(k, h, a, p, fn, al, ret, imp):\n"
+            "def f(k, h, a, p, fn, al, ret, imp, mc, ma, st):\n"
             "    return (k.arg is None, h.name is None, h.type is None, a.vararg is None,"
             " a.kwarg is None, p.annotation is None, fn.returns is None,"
-            " al.asname is None, ret.value is None, imp.module is None)\n"
+            " al.asname is None, ret.value is None, imp.module is None,"
+            " mc.guard is None, ma.pattern is None,"
+            " st.end_lineno is None, st.end_col_offset is None)\n"
         ),
     }
     for path, source in sources.items():
@@ -1036,5 +1038,90 @@ def test_proves_ast_types_through_assert_type_alias_match_subpattern_comprehensi
     finally:
         sys.path.remove(str(tmp_path))
         for mod_name in [m for m in sys.modules if m == "pkg_proofs" or m.startswith("pkg_proofs.")]:
+            sys.modules.pop(mod_name, None)
+
+
+def test_routes_match_guard_match_pattern_end_lineno_and_end_col_offset_decoders(
+    tmp_path: Path,
+) -> None:
+    """Exercise MatchGuardDecoder, MatchPatternDecoder, EndLineDecoder, and EndColumnDecoder
+    end-to-end with AST subclass expansion, Match.cases subscript proofs, and runtime parity."""
+
+    package = tmp_path / "pkg_match_loc"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    mod_path = package / "mod.py"
+    mod_path.write_text(
+        "from __future__ import annotations\n"
+        "import ast\n\n\n"
+        "def collect_guards(node: ast.Match) -> list[ast.expr]:\n"
+        "    guards: list[ast.expr] = []\n"
+        "    for case in node.cases:\n"
+        "        if case.guard is not None:\n"
+        "            guards.append(case.guard)\n"
+        "    return guards\n\n\n"
+        "def has_unguarded_wildcard(node: ast.Match) -> bool:\n"
+        "    match node:\n"
+        "        case ast.Match(cases=cases) if (\n"
+        "            cases\n"
+        "            and cases[-1].guard is None\n"
+        "            and isinstance(cases[-1].pattern, ast.MatchAs)\n"
+        "            and cases[-1].pattern.pattern is None\n"
+        "        ):\n"
+        "            return True\n"
+        "    return False\n\n\n"
+        "def class_line_count(node: ast.ClassDef, enabled: bool) -> int:\n"
+        "    if enabled and node.end_lineno is not None:\n"
+        "        return node.end_lineno - node.lineno + 1\n"
+        "    return 0\n\n\n"
+        "def single_line_end_col(statement: ast.stmt) -> int | None:\n"
+        "    if statement.lineno != statement.end_lineno or statement.end_col_offset is None:\n"
+        "        return None\n"
+        "    return statement.end_col_offset\n"
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+        if finding.detector_id == "foreign_absence_probe"
+        and Path(finding.primary_evidence.file_path) == mod_path
+    ]
+    assert len(findings) >= 4
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert len(plan.document.recipes) == 1, [
+        (r.finding.primary_evidence.line, r.status, r.reason) for r in plan.records
+    ]
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = mod_path.read_text()
+    assert "is None" not in after
+    assert "is not None" not in after
+    assert "match_guards(" in after
+    assert "match_patterns(" in after
+    assert "end_line_numbers(" in after
+    assert "end_column_offsets(" in after
+
+    ns: dict[str, object] = {}
+    sys.path.insert(0, str(tmp_path))
+    try:
+        exec(compile(after, str(mod_path), "exec"), ns)
+        m_wild = ast.parse("match x:\n    case 1 if ok:\n        pass\n    case _:\n        pass").body[0]
+        m_no_wild = ast.parse("match x:\n    case 1:\n        pass").body[0]
+        cls_node = ast.parse("class C:\n    x = 1\n").body[0]
+        stmt_one = ast.parse("x = 1\n").body[0]
+        assert len(ns["collect_guards"](m_wild)) == 1  # type: ignore[operator,arg-type]
+        assert ns["has_unguarded_wildcard"](m_wild) is True  # type: ignore[operator]
+        assert ns["has_unguarded_wildcard"](m_no_wild) is False  # type: ignore[operator]
+        assert ns["class_line_count"](cls_node, True) == 2  # type: ignore[operator]
+        assert ns["class_line_count"](cls_node, False) == 0  # type: ignore[operator]
+        assert ns["single_line_end_col"](stmt_one) == 5  # type: ignore[operator]
+        assert ns["single_line_end_col"](cls_node) is None  # type: ignore[operator]
+    finally:
+        sys.path.remove(str(tmp_path))
+        for mod_name in [
+            m for m in sys.modules if m == "pkg_match_loc" or m.startswith("pkg_match_loc.")
+        ]:
             sys.modules.pop(mod_name, None)
 
