@@ -22,7 +22,7 @@ import re
 import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, cast
 
 from nominal_refactor_advisor.ast_field_decoders import (
@@ -30,6 +30,11 @@ from nominal_refactor_advisor.ast_field_decoders import (
     optional_values,
 )
 from nominal_refactor_advisor.ast_tools import AstParentIndex, ParsedModule
+from nominal_refactor_advisor.class_index import CompactIndexedClass
+from nominal_refactor_advisor.class_mro import ClassMroAuthority, DeclarationMroType
+from nominal_refactor_advisor.codemod_declaration_source import (
+    ClassHeaderSpanSourceAuthority,
+)
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_payload import (
     OptionalStringPayloadValueCodec,
@@ -3327,6 +3332,113 @@ class SharedAncestorBaseSelection(TargetBaseSelection):
 
 
 @dataclass(frozen=True)
+class BaseReorderPlan:
+    """One minimal conflicting class whose direct base list reorders cleanly with zero lookup change."""
+
+    target: ResolvedClassTarget
+    symbol: str
+    new_base_order: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class PrecedenceOverridePlan:
+    """One minimal conflicting class resolving MI lookup precedence via `super(<winner>, self/cls)`."""
+
+    target: ResolvedClassTarget
+    symbol: str
+    winner_target: ResolvedClassTarget
+    winner_symbol: str
+    expected_arm: int
+    import_source: str | None = None
+
+
+@dataclass(frozen=True)
+class _MroDispatchPlan:
+    super_safe_arms: frozenset[int]
+    base_reorders: tuple[BaseReorderPlan, ...] = ()
+    precedence_overrides: tuple[PrecedenceOverridePlan, ...] = ()
+
+
+def _has_nonempty_slots(
+    snapshot: CodemodSourceSnapshot, decl: CompactIndexedClass
+) -> bool:
+    if "__slots__" not in decl.member_binding_names:
+        return False
+    if decl.file_path not in snapshot.sources_by_file_path:
+        return True
+    target = ResolvedClassTarget.from_rewrite_target(
+        snapshot, SourceRewriteTarget(file_path=decl.file_path, qualname=decl.qualname)
+    )
+    for stmt in target.node.body:
+        value: ast.expr | None = None
+        match stmt:
+            case ast.Assign(targets=targets, value=rhs) if any(
+                isinstance(t, ast.Name) and t.id == "__slots__" for t in targets
+            ):
+                value = rhs
+            case ast.AnnAssign(target=ast.Name(id="__slots__"), value=rhs):
+                value = rhs
+        if value is None:
+            continue
+        if isinstance(value, (ast.Tuple, ast.List)) and not value.elts:
+            continue
+        return True
+    return False
+
+
+def _has_annotated_instance_fields(
+    snapshot: CodemodSourceSnapshot, decl: CompactIndexedClass
+) -> bool:
+    if decl.file_path not in snapshot.sources_by_file_path:
+        return True
+    target = ResolvedClassTarget.from_rewrite_target(
+        snapshot, SourceRewriteTarget(file_path=decl.file_path, qualname=decl.qualname)
+    )
+    for stmt in target.node.body:
+        match stmt:
+            case ast.AnnAssign(target=ast.Name(), annotation=ann):
+                match ann:
+                    case ast.Subscript(
+                        value=ast.Name(id="ClassVar") | ast.Attribute(attr="ClassVar")
+                    ):
+                        continue
+                    case ast.Name(id="ClassVar") | ast.Attribute(attr="ClassVar"):
+                        continue
+                return True
+    return False
+
+
+def _super_precedence_statement(
+    winner_name: str,
+    receiver: str,
+    method_name: str,
+    param_names: Sequence[str],
+    *,
+    is_async: bool,
+    is_void: bool,
+) -> ast.stmt:
+    call: ast.expr = ast.Call(
+        func=ast.Attribute(
+            value=ast.Call(
+                func=ast.Name(id="super", ctx=ast.Load()),
+                args=[
+                    ast.Name(id=winner_name, ctx=ast.Load()),
+                    ast.Name(id=receiver, ctx=ast.Load()),
+                ],
+                keywords=[],
+            ),
+            attr=method_name,
+            ctx=ast.Load(),
+        ),
+        args=[ast.Name(id=name, ctx=ast.Load()) for name in param_names],
+        keywords=[],
+    )
+    if is_async:
+        call = ast.Await(value=call)
+    return ast.Expr(value=call) if is_void else ast.Return(value=call)
+
+
+@dataclass(frozen=True)
 class TypeTestDispatchProof:
     """A type test proved safe to push onto a closed scanned class family."""
 
@@ -3344,6 +3456,8 @@ class TypeTestDispatchProof:
     docstring: str | None
     enclosure: FunctionEnclosure = ModuleEnclosure()
     outer_receiver_param: str | None = None
+    base_reorders: tuple[BaseReorderPlan, ...] = ()
+    precedence_overrides: tuple[PrecedenceOverridePlan, ...] = ()
 
     @classmethod
     def locate_function(
@@ -3521,7 +3635,7 @@ class TypeTestDispatchProof:
             [] if folds_onto_base else resolved_arm_symbols
         )
 
-        super_safe_arms = cls._require_dispatch_mro_safe(
+        mro_plan = cls._require_dispatch_mro_safe(
             snapshot,
             subject_family,
             base,
@@ -3530,6 +3644,7 @@ class TypeTestDispatchProof:
             checked_arm_symbols,
             method_name,
         )
+        super_safe_arms = mro_plan.super_safe_arms
 
         receiver = site.kind.receiver
         enclosing_locals = enclosure.enclosing_local_names()
@@ -3659,10 +3774,140 @@ class TypeTestDispatchProof:
             docstring=docstring.strip() if docstring else None,
             enclosure=enclosure,
             outer_receiver_param=outer_receiver_param,
+            base_reorders=mro_plan.base_reorders,
+            precedence_overrides=mro_plan.precedence_overrides,
         )
 
     @staticmethod
+    def _reordered_base_permutation(
+        snapshot: CodemodSourceSnapshot,
+        authority: ClassMroAuthority,
+        compact_classes: Mapping[str, CompactIndexedClass],
+        decl: CompactIndexedClass,
+        winner_symbol: str,
+        arm_symbols: tuple[str, ...],
+    ) -> tuple[ResolvedClassTarget, tuple[int, ...]] | None:
+        if (
+            not decl.base_references_are_complete
+            or not decl.class_header_is_reconstructible
+            or not authority.bases.creation_is_static(decl)
+            or decl.file_path not in snapshot.sources_by_file_path
+        ):
+            return None
+        target_cls = ResolvedClassTarget.from_rewrite_target(
+            snapshot,
+            SourceRewriteTarget(file_path=decl.file_path, qualname=decl.qualname),
+        )
+        if len(target_cls.node.bases) != len(decl.base_references):
+            return None
+        header = ClassHeaderSpanSourceAuthority(
+            node=target_cls.node,
+            source=snapshot.sources_by_file_path[target_cls.file_path],
+        )
+        if not header.can_rewrite:
+            return None
+        win_idx: int | None = None
+        arm_idx: int | None = None
+        for idx, ref in enumerate(decl.base_references):
+            b_sym = ref.qualified_name
+            if b_sym not in compact_classes:
+                continue
+            b_mro = authority.resolve(b_sym).mro_type
+            if b_mro is None:
+                return None
+            b_order = frozenset(d.symbol for d in b_mro.declarations)
+            if win_idx is None and winner_symbol in b_order:
+                win_idx = idx
+            if arm_idx is None and any(sym in b_order for sym in arm_symbols):
+                arm_idx = idx
+        if win_idx is None or arm_idx is None or arm_idx <= win_idx:
+            return None
+        perm = (
+            *range(0, win_idx),
+            arm_idx,
+            *range(win_idx, arm_idx),
+            *range(arm_idx + 1, len(decl.base_references)),
+        )
+        return target_cls, perm
+
+    @staticmethod
+    def _verify_reorder_lookup_neutral(
+        snapshot: CodemodSourceSnapshot,
+        old_authority: ClassMroAuthority,
+        new_authority: ClassMroAuthority,
+        compact_classes: Mapping[str, CompactIndexedClass],
+        affected_symbols: Sequence[str],
+    ) -> bool:
+        nonempty_slots_cache: dict[str, bool] = {}
+        annotated_fields_cache: dict[str, bool] = {}
+
+        def nonempty_slots(decl: CompactIndexedClass) -> bool:
+            cached = nonempty_slots_cache.get(decl.symbol)
+            if cached is None:
+                cached = _has_nonempty_slots(snapshot, decl)
+                nonempty_slots_cache[decl.symbol] = cached
+            return cached
+
+        def annotated_fields(decl: CompactIndexedClass) -> bool:
+            cached = annotated_fields_cache.get(decl.symbol)
+            if cached is None:
+                cached = _has_annotated_instance_fields(snapshot, decl)
+                annotated_fields_cache[decl.symbol] = cached
+            return cached
+
+        for sym in affected_symbols:
+            old_mro = old_authority.resolve(sym).mro_type
+            new_mro = new_authority.resolve(sym).mro_type
+            if old_mro is None or new_mro is None:
+                return False
+            old_native = tuple(
+                entry
+                for entry in old_mro.__mro__
+                if not isinstance(entry, DeclarationMroType)
+            )
+            new_native = tuple(
+                entry
+                for entry in new_mro.__mro__
+                if not isinstance(entry, DeclarationMroType)
+            )
+            if old_native != new_native:
+                return False
+            old_decls = old_mro.declarations
+            new_decls = new_mro.declarations
+            all_names: set[str] = set()
+            for decl in old_decls:
+                all_names.update(decl.member_binding_names)
+            for name in all_names:
+                if name == "__slots__":
+                    old_seq = tuple(
+                        d.symbol for d in old_decls if nonempty_slots(d)
+                    )
+                    new_seq = tuple(
+                        d.symbol for d in new_decls if nonempty_slots(d)
+                    )
+                else:
+                    old_seq = tuple(
+                        d.symbol for d in old_decls if name in d.member_binding_names
+                    )
+                    new_seq = tuple(
+                        d.symbol for d in new_decls if name in d.member_binding_names
+                    )
+                if old_seq != new_seq:
+                    return False
+            decl_obj = compact_classes.get(sym)
+            if (
+                decl_obj is not None
+                and decl_obj.dataclass_declaration.generates_construction
+            ):
+                old_dc = tuple(d.symbol for d in old_decls if annotated_fields(d))
+                new_dc = tuple(d.symbol for d in new_decls if annotated_fields(d))
+                if old_dc != new_dc:
+                    return False
+        return True
+
+    @classmethod
     def _require_dispatch_mro_safe(
+        cls,
         snapshot: CodemodSourceSnapshot,
         subject_family: frozenset[str],
         base: ResolvedClassTarget,
@@ -3670,7 +3915,7 @@ class TypeTestDispatchProof:
         arms: tuple[TypeTestArm, ...],
         resolved_arm_symbols: list[tuple[str, ...]],
         method_name: str,
-    ) -> frozenset[int]:
+    ) -> _MroDispatchPlan:
         classes_by_symbol = snapshot.required_class_family_index.classes_by_symbol
         owner_arm: dict[str, int | None] = {base_symbol: None}
         arm_targets: list[tuple[str, ResolvedClassTarget]] = []
@@ -3691,21 +3936,11 @@ class TypeTestDispatchProof:
                 arm_targets.append((sym, target_cls))
                 owner_arm[sym] = arm_idx
 
-        # Check name-independent MRO dispatch soundness (PROOF) before name-dependent
-        # binding collisions (OWNER_PICK), so unfixable MRO/order mismatches never ask
-        # the owner to pick a method name that still fails dispatch proof.
-        authority = snapshot.compact_class_index.declared_mro_authority
-        resolved_mros: list[tuple[str, tuple[object, ...], str]] = []
-        for symbol in sorted(subject_family):
-            mro = authority.resolve(symbol).mro_type
-            if mro is None:
-                raise NeedsInput(
-                    f"`{symbol}` has an open MRO, so dispatch of `{method_name}` cannot be proved",
-                    NeededInput.PROOF,
-                )
-            order = tuple(decl.symbol for decl in mro.declarations)
-            # Determine which arm `symbol` matched in original code.
-            expected_arm: int | None = None
+        compact_index = snapshot.compact_class_index
+        compact_classes = compact_index.classes_by_symbol
+        authority = compact_index.declared_mro_authority
+
+        def expected_arm_for(symbol: str, order: tuple[str, ...]) -> int | None:
             for arm_idx, (arm, arm_syms) in enumerate(zip(arms, resolved_arm_symbols)):
                 matched = (
                     symbol in arm_syms
@@ -3713,34 +3948,286 @@ class TypeTestDispatchProof:
                     else any(tested in order for tested in arm_syms)
                 )
                 if matched:
-                    expected_arm = arm_idx
-                    break
-            # Determine which owner answers `method_name` along `order`.
-            winner_symbol: str | None = None
-            for decl in mro.declarations:
-                if decl.symbol in owner_arm:
-                    winner_symbol = decl.symbol
-                    break
-            if winner_symbol is None:
-                raise NeedsInput(
-                    f"`{symbol}` reaches neither `{base.qualname}` nor any tested class",
-                    NeededInput.PROOF,
+                    return arm_idx
+            return None
+
+        def evaluate_family(
+            active_authority: ClassMroAuthority,
+        ) -> tuple[
+            list[tuple[str, tuple[CompactIndexedClass, ...], str, int | None]],
+            dict[str, tuple[str, int | None, tuple[CompactIndexedClass, ...]]],
+        ]:
+            evaluated: list[
+                tuple[str, tuple[CompactIndexedClass, ...], str, int | None]
+            ] = []
+            mismatches: dict[
+                str, tuple[str, int | None, tuple[CompactIndexedClass, ...]]
+            ] = {}
+            for symbol in sorted(subject_family):
+                mro = active_authority.resolve(symbol).mro_type
+                if mro is None:
+                    raise NeedsInput(
+                        f"`{symbol}` has an open MRO, so dispatch of `{method_name}` cannot be proved",
+                        NeededInput.PROOF,
+                    )
+                order = tuple(decl.symbol for decl in mro.declarations)
+                expected_arm = expected_arm_for(symbol, order)
+                winner_symbol: str | None = None
+                for decl in mro.declarations:
+                    if decl.symbol in owner_arm:
+                        winner_symbol = decl.symbol
+                        break
+                if winner_symbol is None:
+                    raise NeedsInput(
+                        f"`{symbol}` reaches neither `{base.qualname}` nor any tested class",
+                        NeededInput.PROOF,
+                    )
+                if owner_arm[winner_symbol] != expected_arm:
+                    mismatches[symbol] = (winner_symbol, expected_arm, mro.declarations)
+                evaluated.append((symbol, mro.declarations, winner_symbol, expected_arm))
+            return evaluated, mismatches
+
+        def raise_branch_order_mismatch(symbol: str, winner_symbol: str) -> None:
+            raise NeedsInput(
+                f"`{symbol}` would dispatch `{method_name}` via `{winner_symbol}`, "
+                "which disagrees with the original type-test branch order",
+                NeededInput.PROOF,
+            )
+
+        # Check name-independent MRO dispatch soundness (PROOF) before name-dependent
+        # binding collisions (OWNER_PICK), so unfixable MRO/order mismatches never ask
+        # the owner to pick a method name that still fails dispatch proof.
+        evaluated, conflicts = evaluate_family(authority)
+        base_reorders: list[BaseReorderPlan] = []
+        precedence_overrides: list[PrecedenceOverridePlan] = []
+        active_authority = authority
+
+        if conflicts:
+            # Only resolve genuine MI branch-order conflicts where a non-exact arm class
+            # sits behind an incomparable winning class in C3 MRO.
+            for sym, (winner_symbol, expected_arm, _decls) in conflicts.items():
+                if (
+                    expected_arm is None
+                    or arms[expected_arm].exact
+                    or winner_symbol == sym
+                ):
+                    raise_branch_order_mismatch(sym, winner_symbol)
+                arm_syms = resolved_arm_symbols[expected_arm]
+                winner_ancestors = compact_index.ancestor_symbols(winner_symbol)
+                if any(t in winner_ancestors for t in arm_syms):
+                    raise_branch_order_mismatch(sym, winner_symbol)
+
+            conflict_expected = {
+                sym: exp for sym, (_win, exp, _decls) in conflicts.items()
+            }
+            minimal_conflicts = [
+                sym
+                for sym in sorted(conflicts)
+                if not any(
+                    conflict_expected.get(d.symbol) == conflict_expected[sym]
+                    for d in conflicts[sym][2][1:]
                 )
-            if owner_arm[winner_symbol] != expected_arm:
-                raise NeedsInput(
-                    f"`{symbol}` would dispatch `{method_name}` via `{winner_symbol}`, "
-                    "which disagrees with the original type-test branch order",
-                    NeededInput.PROOF,
+            ]
+
+            # Tier 1: lookup-neutral direct base reordering on minimal conflicting classes.
+            accepted_patches: dict[str, tuple[BaseReorderPlan, CompactIndexedClass]] = {}
+            for sym in minimal_conflicts:
+                winner_symbol, expected_arm, _decls = conflicts[sym]
+                assert expected_arm is not None
+                decl = compact_classes.get(sym)
+                if decl is None:
+                    continue
+                candidate = cls._reordered_base_permutation(
+                    snapshot,
+                    authority,
+                    compact_classes,
+                    decl,
+                    winner_symbol,
+                    resolved_arm_symbols[expected_arm],
                 )
-            resolved_mros.append((symbol, mro.declarations, winner_symbol))
+                if candidate is None:
+                    continue
+                target_cls, perm = candidate
+                new_refs = tuple(decl.base_references[i] for i in perm)
+                new_resolved_syms = tuple(
+                    ref.qualified_name
+                    for ref in new_refs
+                    if ref.qualified_name in compact_classes
+                )
+                patched_decl = replace(
+                    decl,
+                    base_references=new_refs,
+                    resolved_base_symbols=new_resolved_syms,
+                )
+                trial_authority = ClassMroAuthority(
+                    {**compact_classes, sym: patched_decl},
+                    bases=authority.bases,
+                )
+                affected = (sym, *compact_index.descendant_symbols(sym))
+                if cls._verify_reorder_lookup_neutral(
+                    snapshot, authority, trial_authority, compact_classes, affected
+                ):
+                    accepted_patches[sym] = (
+                        BaseReorderPlan(
+                            target=target_cls, symbol=sym, new_base_order=perm
+                        ),
+                        patched_decl,
+                    )
+
+            if accepted_patches:
+                joint_classes = {
+                    **compact_classes,
+                    **{sym: pdecl for sym, (_plan, pdecl) in accepted_patches.items()},
+                }
+                joint_authority = ClassMroAuthority(joint_classes, bases=authority.bases)
+                all_affected = sorted(
+                    frozenset().union(
+                        *(
+                            (sym, *compact_index.descendant_symbols(sym))
+                            for sym in accepted_patches
+                        )
+                    )
+                )
+                if cls._verify_reorder_lookup_neutral(
+                    snapshot, authority, joint_authority, compact_classes, all_affected
+                ):
+                    base_reorders = [
+                        plan for _sym, (plan, _pdecl) in sorted(accepted_patches.items())
+                    ]
+                    active_authority = joint_authority
+                    evaluated, conflicts = evaluate_family(active_authority)
+
+            # Tier 2: C3-proved `super(<winner>, self/cls)` precedence binding on remaining
+            # minimal conflicting classes where existing member overlaps prevent reordering.
+            if conflicts:
+                rem_expected = {
+                    sym: exp for sym, (_win, exp, _decls) in conflicts.items()
+                }
+                tier2_minimal = [
+                    sym
+                    for sym in sorted(conflicts)
+                    if not any(
+                        rem_expected.get(d.symbol) == rem_expected[sym]
+                        for d in conflicts[sym][2][1:]
+                    )
+                ]
+                tier2_set = frozenset(tier2_minimal)
+                bindings = snapshot.module_binding_proof
+                import_graph = snapshot.module_import_graph
+                tier2_plans: dict[str, PrecedenceOverridePlan] = {}
+
+                for sym in tier2_minimal:
+                    winner_symbol, expected_arm, decls = conflicts[sym]
+                    if expected_arm is None or arms[expected_arm].exact:
+                        raise_branch_order_mismatch(sym, winner_symbol)
+                    decl = compact_classes.get(sym)
+                    winner_decl = compact_classes.get(winner_symbol)
+                    if (
+                        decl is None
+                        or winner_decl is None
+                        or "." in winner_decl.qualname
+                        or decl.file_path not in snapshot.sources_by_file_path
+                        or winner_decl.file_path not in snapshot.sources_by_file_path
+                    ):
+                        raise_branch_order_mismatch(sym, winner_symbol)
+                    target_cls = ResolvedClassTarget.from_rewrite_target(
+                        snapshot,
+                        SourceRewriteTarget(
+                            file_path=decl.file_path, qualname=decl.qualname
+                        ),
+                    )
+                    winner_target = ResolvedClassTarget.from_rewrite_target(
+                        snapshot,
+                        SourceRewriteTarget(
+                            file_path=winner_decl.file_path,
+                            qualname=winner_decl.qualname,
+                        ),
+                    )
+                    dest_module = snapshot.parsed_module_for_source_path(
+                        target_cls.file_path
+                    )
+                    actual = bindings.reference_or_builtin_witness_at(
+                        dest_module,
+                        ast.Name(id=winner_decl.qualname, ctx=ast.Load()),
+                        line=target_cls.node.lineno,
+                    )
+                    import_source: str | None = None
+                    if actual is not None:
+                        if actual.qualified_name != winner_symbol:
+                            raise_branch_order_mismatch(sym, winner_symbol)
+                    elif winner_target.file_path == target_cls.file_path:
+                        raise_branch_order_mismatch(sym, winner_symbol)
+                    else:
+                        try:
+                            import_source = import_graph.required_import_source(
+                                importing_file_path=target_cls.file_path,
+                                imported_file_path=winner_target.file_path,
+                                imported_name=winner_decl.qualname,
+                            )
+                        except ValueError:
+                            raise_branch_order_mismatch(sym, winner_symbol)
+
+                    tier2_plans[sym] = PrecedenceOverridePlan(
+                        target=target_cls,
+                        symbol=sym,
+                        winner_target=winner_target,
+                        winner_symbol=winner_symbol,
+                        expected_arm=expected_arm,
+                        import_source=import_source,
+                    )
+
+                # Prove every member of `subject_family` dispatches to its exact expected arm
+                # once `tier2_plans` are installed, and record effective executing owners.
+                updated_evaluated: list[
+                    tuple[str, tuple[CompactIndexedClass, ...], str, int | None]
+                ] = []
+                for symbol, decls, winner_symbol, expected_arm in evaluated:
+                    first_hook: str | None = None
+                    for decl in decls:
+                        if decl.symbol in tier2_set or decl.symbol in owner_arm:
+                            first_hook = decl.symbol
+                            break
+                    if first_hook in tier2_plans:
+                        plan = tier2_plans[first_hook]
+                        seen_winner = False
+                        delegated_owner: str | None = None
+                        for decl in decls:
+                            if not seen_winner:
+                                if decl.symbol == plan.winner_symbol:
+                                    seen_winner = True
+                                continue
+                            if decl.symbol in owner_arm:
+                                delegated_owner = decl.symbol
+                                break
+                        if (
+                            delegated_owner is None
+                            or owner_arm[delegated_owner] != expected_arm
+                        ):
+                            raise_branch_order_mismatch(symbol, winner_symbol)
+                        updated_evaluated.append(
+                            (symbol, decls, delegated_owner, expected_arm)
+                        )
+                    else:
+                        if owner_arm[winner_symbol] != expected_arm:
+                            raise_branch_order_mismatch(symbol, winner_symbol)
+                        updated_evaluated.append(
+                            (symbol, decls, winner_symbol, expected_arm)
+                        )
+                evaluated = updated_evaluated
+                precedence_overrides = [
+                    tier2_plans[sym] for sym in sorted(tier2_plans)
+                ]
+
+        resolved_mros: list[tuple[str, tuple[CompactIndexedClass, ...], str]] = [
+            (symbol, decls, winner_symbol)
+            for symbol, decls, winner_symbol, _expected_arm in evaluated
+        ]
 
         if method_name in base.bound_names:
             raise NeedsInput(
                 f"`{base.qualname}` already binds `{method_name}`",
                 NeededInput.OWNER_PICK,
             )
-        compact_index = snapshot.compact_class_index
-        compact_classes = compact_index.classes_by_symbol
         for sym, target_cls in arm_targets:
             if method_name in target_cls.bound_names:
                 raise NeedsInput(
@@ -3764,6 +4251,12 @@ class TypeTestDispatchProof:
                             f"along mixin `{target_cls.qualname}`'s hierarchy",
                             NeededInput.OWNER_PICK,
                         )
+        for po in precedence_overrides:
+            if method_name in po.target.bound_names:
+                raise NeedsInput(
+                    f"`{po.target.qualname}` already binds `{method_name}`",
+                    NeededInput.OWNER_PICK,
+                )
 
         for symbol, declarations, winner_symbol in resolved_mros:
             for decl in declarations:
@@ -3803,7 +4296,11 @@ class TypeTestDispatchProof:
                     break
             if next_owner != base_symbol or intervening_conflict:
                 super_unsafe_arms.add(winning_arm)
-        return frozenset(arm_has_member - super_unsafe_arms)
+        return _MroDispatchPlan(
+            super_safe_arms=frozenset(arm_has_member - super_unsafe_arms),
+            base_reorders=tuple(base_reorders),
+            precedence_overrides=tuple(precedence_overrides),
+        )
 
     def edits(
         self, snapshot: CodemodSourceSnapshot, rationale: str
@@ -3844,6 +4341,7 @@ class TypeTestDispatchProof:
         all_destinations = (
             self.base,
             *(target_cls for arm in self.arms for target_cls in arm.targets),
+            *(po.target for po in self.precedence_overrides),
         )
         method_annotations = ResolvedMethodAnnotations.for_push(
             snapshot,
@@ -3902,11 +4400,64 @@ class TypeTestDispatchProof:
                         rationale=rationale,
                     )
                 )
+        for reorder in self.base_reorders:
+            header = ClassHeaderSpanSourceAuthority(
+                node=reorder.target.node,
+                source=snapshot.sources_by_file_path[reorder.target.file_path],
+            )
+            reordered_items = tuple(
+                header.base_items[i] for i in reorder.new_base_order
+            )
+            member_edits.extend(
+                header.source_edits(
+                    header.with_base_items(reordered_items),
+                    file_path=reorder.target.file_path,
+                    rationale=rationale,
+                )
+            )
+        precedence_imports: list[NominalSourceEdit] = []
+        for po in self.precedence_overrides:
+            po_stmt = _super_precedence_statement(
+                po.winner_target.qualname,
+                self.site.kind.receiver,
+                self.method_name,
+                param_names,
+                is_async=self.is_async,
+                is_void=self.site.is_void_method,
+            )
+            po_method = _render_method(
+                self.site.kind,
+                self.method_name,
+                param_names,
+                (po_stmt,),
+                is_async=self.is_async,
+                param_annotations=param_annotations,
+                return_annotation=method_annotations.return_annotation,
+            )
+            member_edits.extend(
+                _class_append_edits(
+                    po.target.file_path,
+                    geometry(po.target.file_path),
+                    po.target.node,
+                    po_method,
+                    member_names=(self.method_name,),
+                    rationale=rationale,
+                )
+            )
+            if po.import_source is not None:
+                precedence_imports.append(
+                    ModuleImportMutation.from_source(
+                        file_path=po.target.file_path,
+                        import_source=po.import_source,
+                        rationale=rationale,
+                    )
+                )
 
         # 3. Cross-module imports for moved bodies and obsolete-import cleanup at consumer.
         local_exclusions = frozenset((self.site.kind.receiver, *param_names))
         extra_edits: list[NominalSourceEdit] = [
             *member_edits,
+            *precedence_imports,
             *method_annotations.import_edits,
             *_cross_module_imports_for_body(
                 snapshot,
@@ -3936,6 +4487,9 @@ class TypeTestDispatchProof:
             retained_in_source.update(
                 _names_loaded_in(method_annotations.annotation_nodes())
             )
+        for po in self.precedence_overrides:
+            if po.target.file_path == self.source_path:
+                retained_in_source.add(po.winner_target.qualname)
         if self.base.file_path == self.source_path:
             retained_in_source.update(_names_loaded_in(self.default_body))
         for resolved_arm in self.arms:
