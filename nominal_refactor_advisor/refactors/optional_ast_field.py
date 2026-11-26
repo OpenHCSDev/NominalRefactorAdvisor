@@ -63,6 +63,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceFileCreation,
     SourceLineSpan,
     SourceTextGeometry,
+    SourceTextMutation,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
@@ -872,7 +873,12 @@ class IfPresentProbeSite(SingleNodeProbeSite):
         rewritten = (
             f"else:\n{inner}" if is_elif else inner[len(indentation) :]
         )
-        if not authority.fit.fits(indentation, rewritten, ""):
+        header_lines = "\n".join(
+            line
+            for line in rewritten.splitlines()
+            if line.lstrip().startswith(("if ", "else:", "for "))
+        )
+        if header_lines and not authority.fit.fits(indentation, header_lines, ""):
             raise authority.refusal(statement, "the nested loop overflows the line")
         return SourceTextSpanReplacement.from_offsets(
             start_offset=start, end_offset=end, replacement_source=rewritten
@@ -1064,12 +1070,13 @@ def _replace_attribute_in_ast(
 
 @dataclass(frozen=True)
 class EarlyExitAbsentProbeSite(SingleNodeProbeSite):
-    """``if [PRE or] V.f is None: continue|return|raise`` + guarded tail."""
+    """``if [PRE or] V.f is None [or SUF]: continue|return|raise`` + guarded tail."""
 
     statement: ast.If
     tail: tuple[ast.stmt, ...]
     is_loop_continue: bool
     prefix_guards: tuple[ast.expr, ...] = ()
+    suffix_guards: tuple[ast.expr, ...] = ()
 
     @property
     def anchor(self) -> ast.AST:
@@ -1079,15 +1086,15 @@ class EarlyExitAbsentProbeSite(SingleNodeProbeSite):
     def at(cls, probe, authority):
         parent = authority.parents.get(probe)
         prefix_guards: tuple[ast.expr, ...] = ()
+        suffix_guards: tuple[ast.expr, ...] = ()
         test: ast.expr = probe
-        if (
-            isinstance(parent, ast.BoolOp)
-            and isinstance(parent.op, ast.Or)
-            and parent.values[-1] is probe
-        ):
-            prefix_guards = tuple(parent.values[:-1])
-            test = parent
-            parent = authority.parents.get(parent)
+        if isinstance(parent, ast.BoolOp) and isinstance(parent.op, ast.Or):
+            idx = next((i for i, v in enumerate(parent.values) if v is probe), None)
+            if idx is not None:
+                prefix_guards = tuple(parent.values[:idx])
+                suffix_guards = tuple(parent.values[idx + 1 :])
+                test = parent
+                parent = authority.parents.get(parent)
         match parent:
             case ast.If(test=found, body=body, orelse=[]) if found is test and body:
                 pass
@@ -1097,8 +1104,10 @@ class EarlyExitAbsentProbeSite(SingleNodeProbeSite):
         if proved is None:
             return None
         subject, field = proved
-        if _reads_same_attribute(body, subject, field) or _reads_same_attribute(
-            prefix_guards, subject, field
+        if (
+            _reads_same_attribute(body, subject, field)
+            or _reads_same_attribute(prefix_guards, subject, field)
+            or _reads_same_attribute(suffix_guards, subject, field)
         ):
             return None
         enclosing = authority.parents.get(parent)
@@ -1126,6 +1135,7 @@ class EarlyExitAbsentProbeSite(SingleNodeProbeSite):
             tail,
             is_loop_continue,
             prefix_guards,
+            suffix_guards,
         )
 
     def replacements(self, authority):
@@ -1189,24 +1199,36 @@ class EarlyExitAbsentProbeSite(SingleNodeProbeSite):
                 + name
                 + tail_source[re_ - tail_line_start :]
             )
-        extra_indent = "        " if self.prefix_guards else "    "
+        extra_levels = 1 + bool(self.prefix_guards) + bool(self.suffix_guards)
+        extra_indent = "    " * extra_levels
         indented_tail = "".join(
             f"{extra_indent}{line}" if line.strip() else line
             for line in tail_source.splitlines(keepends=True)
         )
         decoded = self.decoder.single(authority.source_of(self.subject))
+        loop_indent = f"{indentation}    " if self.prefix_guards else indentation
+        if self.suffix_guards:
+            suffix_negated = " and ".join(
+                _negated_guard_source(guard, authority) for guard in self.suffix_guards
+            )
+            suffix_hdr = _format_if_header(
+                f"{loop_indent}    ", suffix_negated, authority.line_length
+            )
+            inner_loop = (
+                f"{loop_indent}for {name} in {decoded}:\n"
+                f"{suffix_hdr}\n"
+                f"{indented_tail}"
+            )
+        else:
+            inner_loop = f"{loop_indent}for {name} in {decoded}:\n{indented_tail}"
         if self.prefix_guards:
             negated = " and ".join(
                 _negated_guard_source(guard, authority) for guard in self.prefix_guards
             )
             guard_hdr = _format_if_header(indentation, negated, authority.line_length)
-            loop_block = (
-                f"{guard_hdr[len(indentation) :]}\n"
-                f"{indentation}    for {name} in {decoded}:\n"
-                f"{indented_tail}"
-            )
+            loop_block = f"{guard_hdr[len(indentation) :]}\n{inner_loop}"
         else:
-            loop_block = f"for {name} in {decoded}:\n{indented_tail}"
+            loop_block = inner_loop[len(indentation) :]
         if self.is_loop_continue:
             rewritten = loop_block
         else:
@@ -1218,7 +1240,12 @@ class EarlyExitAbsentProbeSite(SingleNodeProbeSite):
                 for line in absent_raw.splitlines(keepends=True)
             )
             rewritten = f"{loop_block}\n{dedented_absent}"
-        if not authority.fit.fits(indentation, rewritten, ""):
+        header_lines = "\n".join(
+            line
+            for line in loop_block.splitlines()
+            if line.lstrip().startswith(("if ", "for "))
+        )
+        if header_lines and not authority.fit.fits(indentation, header_lines, ""):
             raise authority.refusal(statement, "the rewritten early-exit loop overflows the line")
         return (
             SourceTextSpanReplacement.from_offsets(
@@ -2286,11 +2313,12 @@ class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def for_field(cls, field: str) -> tuple[type[OptionalAstFieldDecoder], ...]:
-        return tuple(
+        matching = (
             decoder
             for decoder in cls.__registry__.values()
             if field in decoder.field_names()
         )
+        return tuple(sorted(matching, key=lambda d: 0 if len(d.field_names()) > 1 else 1))
 
     @classmethod
     def field_names(cls) -> frozenset[str]:
@@ -2498,6 +2526,28 @@ class VariadicParameterDecoder(OptionalAstFieldDecoder):
     @classmethod
     def single(cls, subject_source: str) -> str:
         return f"variadic_parameters({subject_source})"
+
+
+class VarargParameterDecoder(OptionalAstFieldDecoder):
+    """A signature's ``*args`` parameter asked on its own."""
+
+    fields = {ast.arguments: "vararg"}
+    owners = (ast_field_decoders.vararg_parameters,)
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"vararg_parameters({subject_source})"
+
+
+class KwargParameterDecoder(OptionalAstFieldDecoder):
+    """A signature's ``**kwargs`` parameter asked on its own."""
+
+    fields = {ast.arguments: "kwarg"}
+    owners = (ast_field_decoders.kwarg_parameters,)
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"kwarg_parameters({subject_source})"
 
 
 class ImportAliasDecoder(OptionalAstFieldDecoder):
@@ -3250,6 +3300,21 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                 return frozenset(combined)
         return frozenset()
 
+    def _indexed_iterated_classes(
+        self, target: ast.expr, iterable: ast.expr, name: str
+    ) -> frozenset[str]:
+        match target, iterable:
+            case (
+                ast.Tuple(elts=[_, ast.Name(id=bound)]),
+                ast.Call(
+                    func=ast.Attribute(attr="indexed_nodes_of_type"),
+                    args=[cls_expr],
+                    keywords=[],
+                ),
+            ) if bound == name:
+                return self.ast_classes(cls_expr)
+        return frozenset()
+
     def iterated(
         self, name: str, at: ast.AST, seen: frozenset[str] = frozenset()
     ) -> frozenset[str]:
@@ -3258,6 +3323,8 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
         for child, parent in self.ancestors(at):
             match parent:
                 case ast.For(target=target, iter=iterable) if child is not iterable:
+                    if indexed := self._indexed_iterated_classes(target, iterable, name):
+                        return indexed
                     source = self._iterated_source(target, iterable, name)
                     if source is not None:
                         if found := self._iterable_ast_classes(source, parent, seen):
@@ -3266,6 +3333,10 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                     ast.ListComp() | ast.SetComp() | ast.GeneratorExp() | ast.DictComp()
                 ):
                     for generator in parent.generators:
+                        if indexed := self._indexed_iterated_classes(
+                            generator.target, generator.iter, name
+                        ):
+                            return indexed
                         source = self._iterated_source(
                             generator.target, generator.iter, name
                         )
@@ -3362,19 +3433,18 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
     def classes_of(
         self, subject: ast.expr, at: ast.AST, _seen: frozenset[str] = frozenset()
     ) -> frozenset[str]:
+        if guarded := self.guarded(subject, at):
+            return guarded
         match subject:
             case ast.Name(id=name):
                 return (
-                    self.guarded(subject, at)
-                    or self.annotated(name)
+                    self.annotated(name)
                     or self.iterated(name, at, _seen)
                     or self._bound_ast_classes(name, _seen)
                     or self._declared_ast_classes(subject)
                 )
             case ast.Attribute(value=owner, attr="args"):
-                owner_classes = self.guarded(subject, at) or self.classes_of(
-                    owner, at, _seen
-                )
+                owner_classes = self.classes_of(owner, at, _seen)
                 if owner_classes == frozenset(("arguments",)):
                     return owner_classes
                 if owner_classes and owner_classes <= FUNCTION_CLASSES:
@@ -3386,10 +3456,17 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
             ):
                 if found := self.classes_of(elt, gen, _seen):
                     return found
+            case ast.Call(
+                func=ast.Name(id="as_ast") | ast.Attribute(attr="as_ast"),
+                args=[_, cls_expr],
+                keywords=[],
+            ):
+                if found := self.ast_classes(cls_expr):
+                    return found
             case ast.Subscript(value=seq):
                 if found := self._iterable_ast_classes(seq, at, _seen):
                     return found
-        return self.guarded(subject, at) or self._declared_ast_classes(subject)
+        return self._declared_ast_classes(subject)
 
     def proves(self, subject: ast.expr, field: str, at: ast.AST) -> bool:
         """Whether ``subject`` is proved to be an ast class owning ``field``."""
@@ -4050,13 +4127,25 @@ class PendingDecoderMigration:
                 }
                 if not fn_attrs:
                     continue
-                for decoder, fields in pending_with_fields:
+                paired_first = sorted(
+                    pending_with_fields,
+                    key=lambda item: 0 if len(item[1]) > 1 else 1,
+                )
+                claimed_offsets: list[tuple[int, int]] = []
+                for decoder, fields in paired_first:
                     if fn_attrs & fields:
-                        found.append(
-                            RoutedConsumer.attempt(
-                                snapshot, str(parsed.path), qualname, decoder
-                            )
+                        attempt = RoutedConsumer.attempt(
+                            snapshot, str(parsed.path), qualname, decoder
                         )
+                        if isinstance(attempt, RoutedConsumer):
+                            if any(
+                                start < o_end and o_start < end
+                                for start, end in attempt.routed_offset_spans
+                                for o_start, o_end in claimed_offsets
+                            ):
+                                continue
+                            claimed_offsets.extend(attempt.routed_offset_spans)
+                        found.append(attempt)
         return tuple(found)
 
     @cached_property
@@ -4151,6 +4240,7 @@ class RoutedConsumer(MigrationConsumer):
     """A consumer whose routing is proved once the decoders are declared."""
 
     routed_line_spans: tuple[tuple[int, int], ...] = ()
+    routed_offset_spans: tuple[tuple[int, int], ...] = ()
     unrouted_refusals: tuple[tuple[int, ValueError], ...] = ()
 
     def covers_line(self, line: int) -> bool:
@@ -4194,6 +4284,9 @@ class RoutedConsumer(MigrationConsumer):
             decoder,
             routed_line_spans=tuple(
                 authority.line_span_of(item) for item in replacements
+            ),
+            routed_offset_spans=tuple(
+                (item.start_offset, item.end_offset) for item in replacements
             ),
             unrouted_refusals=tuple(sorted(refusals_by_line.items())),
         )
@@ -4265,6 +4358,7 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
         operations: dict[tuple[str, str, str], RouteOptionalAstFieldProbesOperation] = (
             {}
         )
+        claimed_spans: dict[str, list[tuple[int, int]]] = {}
         refusals: list[str] = []
         needs: list[NeededInput] = []
         probed_fields: set[str] = set()
@@ -4320,19 +4414,35 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
                                         type(operation).__name__,
                                     )
                                 ] = operation
+                            if evidence_covered:
+                                break
                             continue
                         operation = _routing(
                             snapshot, evidence.file_path, evidence.symbol, decoder
                         )
-                        operation.verify_probe_lines(snapshot, (evidence.line,))
+                        edits = operation.verify_probe_lines(snapshot, (evidence.line,))
                     except ValueError as error:
                         refusals.append(str(error))
                         needs.extend(NeedsInput.needs_of(error))
                         continue
+                    op_spans = tuple(
+                        (replacement.start_offset, replacement.end_offset)
+                        for edit in edits
+                        if isinstance(edit, SourceTextMutation)
+                        for replacement in edit.replacements
+                    )
+                    file_spans = claimed_spans.setdefault(evidence.file_path, [])
                     evidence_covered = True
-                    operations[
-                        (evidence.file_path, evidence.symbol, decoder.__name__)
-                    ] = operation
+                    if not any(
+                        start < o_end and o_start < end
+                        for start, end in op_spans
+                        for o_start, o_end in file_spans
+                    ):
+                        file_spans.extend(op_spans)
+                        operations[
+                            (evidence.file_path, evidence.symbol, decoder.__name__)
+                        ] = operation
+                    break
             if not evidence_covered:
                 all_evidence_covered = False
         if not operations or not all_evidence_covered:
@@ -4374,6 +4484,7 @@ __all__ = (
     "FallbackTernaryProbeSite",
     "ImportAliasDecoder",
     "ImportModuleDecoder",
+    "KwargParameterDecoder",
     "MatchGuardDecoder",
     "MatchPatternDecoder",
     "OptionalAstFieldAuthority",
@@ -4388,5 +4499,6 @@ __all__ = (
     "ProjectDecoderOwners",
     "RouteOptionalAstFieldProbesOperation",
     "SingleNodeComprehensionFilterProbeSite",
+    "VarargParameterDecoder",
     "VariadicParameterDecoder",
 )
