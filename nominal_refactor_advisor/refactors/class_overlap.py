@@ -1294,11 +1294,14 @@ def obsolete_import_edits(
     file_path: str,
     deleted: tuple[ast.AST, ...],
     rationale: str,
+    *,
+    retained_names: frozenset[str] = frozenset(),
 ) -> tuple[ModuleImportMutation, ...]:
     """Drop `from` imports that only the deleted statements and bases read.
 
     A name stays when anything else in the module reads it, when `__all__`
-    names it, or when another module imports it from this one.
+    names it, when another module imports it from this one, or when the
+    replacement source still reads it (`retained_names`).
     """
 
     parsed_module = snapshot.parsed_module_for_source_path(file_path)
@@ -1331,7 +1334,7 @@ def obsolete_import_edits(
         for alias in statement.names
         if ImportBoundNameProjection(statement).alias_bound_name(alias) == alias.name
     )
-    candidates = (read_by_deleted & imported) - still_read - exported
+    candidates = (read_by_deleted & imported) - still_read - exported - retained_names
     if not candidates:
         return ()
     reexported = snapshot.names_imported_from_module(

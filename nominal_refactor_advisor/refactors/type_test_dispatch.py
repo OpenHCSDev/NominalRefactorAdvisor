@@ -232,6 +232,8 @@ class TypeTestArm:
     body: tuple[ast.stmt, ...]
     exact: bool
     alias: str | None = None
+    embeds_default: bool = False
+    falls_through_to_default: bool = False
 
 
 @dataclass(frozen=True)
@@ -592,6 +594,43 @@ def _rewrite_loop_continues_to_returns(
         cast(ast.stmt, rewriter.visit(copy.deepcopy(stmt)))
         for stmt in statements
     )
+
+
+def _names_loaded_in(nodes: Sequence[ast.AST]) -> frozenset[str]:
+    loaded: set[str] = set()
+    for root in nodes:
+        for node in ast.walk(root):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                loaded.add(node.id)
+    return frozenset(loaded)
+
+
+def _names_loaded_in_source(source: str) -> frozenset[str]:
+    try:
+        parsed = ast.parse(source)
+    except SyntaxError:
+        try:
+            parsed = ast.parse(source, mode="eval")
+        except SyntaxError:
+            return frozenset()
+    return _names_loaded_in((parsed,))
+
+
+def _super_fallback_return(
+    method_name: str, param_names: Sequence[str], *, is_async: bool
+) -> ast.Return:
+    call: ast.expr = ast.Call(
+        func=ast.Attribute(
+            value=ast.Call(func=ast.Name(id="super", ctx=ast.Load()), args=[], keywords=[]),
+            attr=method_name,
+            ctx=ast.Load(),
+        ),
+        args=[ast.Name(id=name, ctx=ast.Load()) for name in param_names],
+        keywords=[],
+    )
+    if is_async:
+        call = ast.Await(value=call)
+    return ast.Return(value=call)
 
 
 def _names_stored_in(nodes: Sequence[ast.AST]) -> frozenset[str]:
@@ -979,12 +1018,35 @@ def _extract_compound_if_site(
             and not _has_break_or_continue(stmt.body)
             and not _has_break_or_continue(tail)
         ):
+            tail_tuple = tuple(tail)
+            if not first_test.negated and _names_stored_in(stmt.body).isdisjoint(
+                _names_loaded_in(tail_tuple)
+            ):
+                arm_only: tuple[ast.stmt, ...] = (
+                    ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
+                )
+                return ReturningStatementDispatchSite(
+                    subject=first_test.subject,
+                    kind=first_test.kind,
+                    arms=(
+                        TypeTestArm(
+                            first_test.tested_exprs,
+                            arm_only,
+                            first_test.exact,
+                            falls_through_to_default=True,
+                        ),
+                    ),
+                    default_body=tail_tuple,
+                    is_whole_function=container is whole_fn_body and index == 0,
+                    test_nodes=(first_test.test_node,),
+                    replaced_nodes=tuple(container[index:]),
+                )
             hit_body = (
                 ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
                 *tail,
             )
             arm_body, default_body = _polarity_bodies(
-                first_test.negated, hit_body, tuple(tail)
+                first_test.negated, hit_body, tail_tuple
             )
             is_whole = container is whole_fn_body and index == 0
             return _build_statement_site(
@@ -1434,21 +1496,36 @@ def _build_statement_site(
             for body in all_bodies
         ):
             return None
-        extended_arms = tuple(
-            arm
-            if _always_terminates(arm.body)
-            else TypeTestArm(
-                arm.tested_exprs,
-                (*arm.body, *tail),
-                arm.exact,
-                alias=arm.alias,
-            )
-            for arm in arms
-        )
         extended_default = (
             default_body
             if _always_terminates(default_body)
             else (*default_body, *tail)
+        )
+        default_is_tail = extended_default == tail
+        tail_loads = _names_loaded_in(tail) if default_is_tail else frozenset()
+        extended_arms = tuple(
+            arm
+            if _always_terminates(arm.body)
+            else (
+                TypeTestArm(
+                    arm.tested_exprs,
+                    arm.body,
+                    arm.exact,
+                    alias=arm.alias,
+                    embeds_default=arm.embeds_default,
+                    falls_through_to_default=True,
+                )
+                if default_is_tail
+                and _names_stored_in(arm.body).isdisjoint(tail_loads)
+                else TypeTestArm(
+                    arm.tested_exprs,
+                    (*arm.body, *tail),
+                    arm.exact,
+                    alias=arm.alias,
+                    embeds_default=arm.embeds_default,
+                )
+            )
+            for arm in arms
         )
         return ReturningStatementDispatchSite(
             subject=first_test.subject,
@@ -1683,7 +1760,11 @@ def _extract_match_site(
             )
             arms.append(
                 TypeTestArm(
-                    extracted.tested_exprs, built_body, False, alias=extracted.alias
+                    extracted.tested_exprs,
+                    built_body,
+                    False,
+                    alias=extracted.alias,
+                    embeds_default=is_conditional,
                 )
             )
         test_nodes = tuple(expr for arm in arms for expr in arm.tested_exprs)
@@ -2905,19 +2986,21 @@ class TypeTestDispatchProof:
             snapshot, subject_roots, all_tested_symbols, ast.unparse(site.subject)
         )
 
-        # When the sole non-exact arm tests `base_symbol` itself, every member of
-        # `subject_family` enters that arm; push its body directly onto `base` with no overrides.
+        # When the sole non-exact arm tests `base_symbol` itself AND already embeds
+        # `default_body` (e.g. a conditional `match` arm with `case _: <default>`),
+        # every member of `subject_family` enters that arm; push it directly onto `base`.
         folds_onto_base = (
             len(site.arms) == 1
             and resolved_arm_symbols == [(base_symbol,)]
             and not site.arms[0].exact
+            and site.arms[0].embeds_default
         )
         checked_arms = () if folds_onto_base else site.arms
         checked_arm_symbols: list[tuple[str, ...]] = (
             [] if folds_onto_base else resolved_arm_symbols
         )
 
-        cls._require_dispatch_mro_safe(
+        super_safe_arms = cls._require_dispatch_mro_safe(
             snapshot,
             subject_family,
             base,
@@ -2987,6 +3070,33 @@ class TypeTestDispatchProof:
             enclosing_locals=enclosing_locals,
         )
 
+        if not folds_onto_base:
+            param_names = tuple(arg.param_name for arg in captured_args)
+            finalized_arms: list[ResolvedTargetArm] = []
+            for arm_idx, (arm, resolved_arm) in enumerate(
+                zip(site.arms, rewritten_arms, strict=True)
+            ):
+                if not arm.falls_through_to_default:
+                    finalized_arms.append(resolved_arm)
+                    continue
+                if arm_idx in super_safe_arms:
+                    fallback_stmts: tuple[ast.stmt, ...] = (
+                        _super_fallback_return(
+                            method_name, param_names, is_async=is_async
+                        ),
+                    )
+                else:
+                    fallback_stmts = rewritten_default
+                finalized_arms.append(
+                    ResolvedTargetArm(
+                        targets=resolved_arm.targets,
+                        symbols=resolved_arm.symbols,
+                        body=(*resolved_arm.body, *fallback_stmts),
+                        exact=resolved_arm.exact,
+                    )
+                )
+            rewritten_arms = finalized_arms
+
         # Verify cross-module imports are cycle-free and unambiguous during proof.
         local_exclusions = frozenset(
             (receiver, *(arg.param_name for arg in captured_args))
@@ -3037,7 +3147,7 @@ class TypeTestDispatchProof:
         arms: tuple[TypeTestArm, ...],
         resolved_arm_symbols: list[tuple[str, ...]],
         method_name: str,
-    ) -> None:
+    ) -> frozenset[int]:
         classes_by_symbol = snapshot.required_class_family_index.classes_by_symbol
         owner_arm: dict[str, int | None] = {base_symbol: None}
         arm_targets: list[tuple[str, ResolvedClassTarget]] = []
@@ -3143,6 +3253,35 @@ class TypeTestDispatchProof:
                         NeededInput.OWNER_PICK,
                     )
 
+        # Determine which arms can delegate fallthrough to `base_symbol` via `super()`.
+        # An arm is super-safe iff for every member in `subject_family` dispatched to that
+        # arm, the very next `owner_arm` entry after `winner_symbol` in C3 MRO is `base_symbol`
+        # and no intervening class declares `method_name`.
+        arm_has_member: set[int] = set()
+        super_unsafe_arms: set[int] = set()
+        for _symbol, declarations, winner_symbol in resolved_mros:
+            winning_arm = owner_arm.get(winner_symbol)
+            if winning_arm is None:
+                continue
+            arm_has_member.add(winning_arm)
+            after_winner = False
+            next_owner: str | None = None
+            intervening_conflict = False
+            for decl in declarations:
+                if not after_winner:
+                    if decl.symbol == winner_symbol:
+                        after_winner = True
+                    continue
+                if decl.symbol in owner_arm:
+                    next_owner = decl.symbol
+                    break
+                if method_name in decl.member_binding_names:
+                    intervening_conflict = True
+                    break
+            if next_owner != base_symbol or intervening_conflict:
+                super_unsafe_arms.add(winning_arm)
+        return frozenset(arm_has_member - super_unsafe_arms)
+
     def edits(
         self, snapshot: CodemodSourceSnapshot, rationale: str
     ) -> tuple[NominalSourceEdit, ...]:
@@ -3169,11 +3308,12 @@ class TypeTestDispatchProof:
         line_indent = source_geometry.source[line_start:start]
         if not line_indent.isspace():
             line_indent = ""
+        replacement_text = self.site.render_call_replacement(call, line_indent)
         add_span(
             self.source_path,
             start,
             end,
-            self.site.render_call_replacement(call, line_indent),
+            replacement_text,
         )
 
         # 2. Base method and per-arm overrides (commutative class-member insertions).
@@ -3243,9 +3383,26 @@ class TypeTestDispatchProof:
                         rationale,
                     )
                 )
+        retained_in_source = set(_names_loaded_in_source(replacement_text))
+        if self.base.file_path == self.source_path:
+            retained_in_source.update(_names_loaded_in(self.default_body))
+        for resolved_arm in self.arms:
+            if any(
+                target_cls.file_path == self.source_path
+                for target_cls in resolved_arm.targets
+            ):
+                retained_in_source.update(_names_loaded_in(resolved_arm.body))
+        obsolete_nodes = (
+            *self.site.tested_expr_nodes(),
+            *self.site.replaced_ast_nodes(),
+        )
         extra_edits.extend(
             obsolete_import_edits(
-                snapshot, self.source_path, self.site.tested_expr_nodes(), rationale
+                snapshot,
+                self.source_path,
+                obsolete_nodes,
+                rationale,
+                retained_names=frozenset(retained_in_source),
             )
         )
 

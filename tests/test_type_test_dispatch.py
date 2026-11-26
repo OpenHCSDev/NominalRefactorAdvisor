@@ -1457,6 +1457,8 @@ def test_partial_return_if_without_else_falls_through_to_terminating_tail(
     after = (tmp_path / "pkg" / "partial.py").read_text()
     assert "isinstance" not in after
     assert "return evaluator.check(target)" in after
+    assert "return super().check(target)" in after
+    assert after.count("self.fallback(target)") == 1
     ns: dict[str, object] = {}
     exec(after, ns)
     assert ns["check"](ns["Evaluator"](), 5) is True  # type: ignore[operator]
@@ -1595,6 +1597,109 @@ def test_nested_function_dispatch_captures_enclosing_locals_and_outer_self(
         "p:v1:special",
     ]
     assert _findings(tmp_path) == []
+
+
+def test_partial_return_fallthrough_skips_super_when_intermediate_arm_sits_between(
+    tmp_path: Path,
+) -> None:
+    """When `Leaf -> Mid -> Base` has an arm on `Mid` and a partial-return arm on `Leaf`,
+    `Leaf` must NOT call `super()` (which would dispatch to `Mid`), and instead inlines
+    the base tail directly."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/chain.py": (
+                "class Base:\n"
+                "    pass\n\n\n"
+                "class Mid(Base):\n"
+                "    pass\n\n\n"
+                "class Leaf(Mid):\n"
+                "    pass\n\n\n"
+                "def classify(x: Base, flag: bool) -> int:\n"
+                "    if isinstance(x, Leaf):\n"
+                "        if flag:\n"
+                "            return 1\n"
+                "    elif isinstance(x, Mid):\n"
+                "        return 2\n"
+                "    return 0\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "chain.py").read_text()
+    assert "isinstance" not in after
+    assert "super()" not in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["classify"](ns["Leaf"](), True) == 1  # type: ignore[operator]
+    assert ns["classify"](ns["Leaf"](), False) == 0  # type: ignore[operator]
+    assert ns["classify"](ns["Mid"](), False) == 2  # type: ignore[operator]
+    assert ns["classify"](ns["Base"](), False) == 0  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_defensive_not_isinstance_base_guard_is_not_folded_and_cross_module_imports_clean_up(
+    tmp_path: Path,
+) -> None:
+    """(1) `if not isinstance(x, Base):` must not fold onto `Base` and drop its guard.
+    (2) Moving a `match` body cross-module drops imports used only inside the moved
+    subpattern/body (such as `Kind`) while keeping imports still used at the consumer."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/models.py": (
+                "from dataclasses import dataclass\n"
+                "from enum import Enum\n\n\n"
+                "class Kind(Enum):\n"
+                "    PLAIN = 1\n"
+                "    OTHER = 2\n\n\n"
+                "class Facet:\n"
+                "    pass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Authority(Facet):\n"
+                "    kind: Kind\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class CacheKey:\n"
+                "    value: int\n"
+            ),
+            "pkg/consumer.py": (
+                "from pkg.models import Authority, CacheKey, Facet, Kind\n\n\n"
+                "def check_guard(key: CacheKey) -> str:\n"
+                "    if not isinstance(key, CacheKey):\n"
+                "        return 'corrupt'\n"
+                "    return 'ok'\n\n\n"
+                "def is_plain(facet: Facet) -> bool:\n"
+                "    match facet:\n"
+                "        case Authority(kind=Kind.PLAIN):\n"
+                "            return True\n"
+                "    return False\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"check_guard", "is_plain"}
+    snap = _snapshot(tmp_path)
+
+    guard_ev = OwnTypeTestDetector().evaluate_recipe_for_finding(by_sym["check_guard"], snap)
+    assert guard_ev.executable_recipe is None
+
+    plain_ev = OwnTypeTestDetector().evaluate_recipe_for_finding(by_sym["is_plain"], snap)
+    assert plain_ev.executable_recipe is not None, plain_ev.rejection_reason
+    _apply(tmp_path, plain_ev.executable_recipe)
+
+    consumer_after = (tmp_path / "pkg" / "consumer.py").read_text()
+    assert "Authority" not in consumer_after
+    assert "Kind" not in consumer_after
+    assert "return facet.is_plain()" in consumer_after
 
 
 
