@@ -6,7 +6,7 @@ import ast
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Callable, ClassVar, Generic, TypeVar
 
@@ -1060,6 +1060,12 @@ class TypeArgumentResolver:
     """
 
     parsed_module: ParsedModule
+    _scope_cache: dict[tuple[int, ...], EnclosingScope] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _function_bindings_cache: dict[
+        int, tuple[frozenset[str], dict[str, tuple[str | None, ...]]]
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     @cached_property
     def snapshot(self) -> ModuleNominalBindingSnapshot:
@@ -1166,7 +1172,20 @@ class TypeArgumentResolver:
         return self.qualified_name(member, self.scope_at(ancestors))
 
     def scope_at(self, ancestors: Sequence[ast.AST]) -> EnclosingScope:
-        return EnclosingScope.at(ancestors, self.parsed_module.module_path_identity)
+        functions = tuple(FunctionDefinition.within(ancestors))
+        if not functions:
+            return _EMPTY_ENCLOSING_SCOPE
+        key = tuple(id(function) for function in functions)
+        cached = self._scope_cache.get(key)
+        if cached is not None:
+            return cached
+        scope = EnclosingScope.at_functions(
+            functions,
+            self.parsed_module.module_path_identity,
+            self._function_bindings_cache,
+        )
+        self._scope_cache[key] = scope
+        return scope
 
     def qualified_names(
         self, type_argument: ast.expr, scope: EnclosingScope
@@ -1209,23 +1228,55 @@ class EnclosingScope:
     shadowed: frozenset[str]
     imported: Mapping[str, str]
 
+    @staticmethod
+    def _function_bindings(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        module_identity: PythonModulePathIdentity,
+    ) -> tuple[frozenset[str], dict[str, tuple[str | None, ...]]]:
+        bound, imported = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings(
+            function.body
+        )
+        shadowed = frozenset(
+            bound | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+        )
+        origins_by_name: dict[str, tuple[str | None, ...]] = {}
+        for name, statement in imported.items():
+            origins_by_name[name] = tuple(
+                origin.qualified_name
+                for origin in ImportBoundNameProjection(statement).origins(module_identity)
+                if origin.bound_name == name
+            )
+        return shadowed, origins_by_name
+
     @classmethod
-    def at(
-        cls, ancestors: Sequence[ast.AST], module_identity: PythonModulePathIdentity
+    def at_functions(
+        cls,
+        functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+        module_identity: PythonModulePathIdentity,
+        function_cache: dict[
+            int, tuple[frozenset[str], dict[str, tuple[str | None, ...]]]
+        ]
+        | None = None,
     ) -> EnclosingScope:
+        if not functions:
+            return _EMPTY_ENCLOSING_SCOPE
         shadowed: set[str] = set()
         imports: dict[str, list[str | None]] = defaultdict(list)
-        for function in FunctionDefinition.within(ancestors):
-            bound, imported = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings(
-                function.body
-            )
-            shadowed |= bound | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
-            for name, statement in imported.items():
-                imports[name].extend(
-                    origin.qualified_name
-                    for origin in ImportBoundNameProjection(statement).origins(module_identity)
-                    if origin.bound_name == name
+        for function in functions:
+            if function_cache is not None:
+                fn_key = id(function)
+                cached = function_cache.get(fn_key)
+                if cached is None:
+                    cached = cls._function_bindings(function, module_identity)
+                    function_cache[fn_key] = cached
+                fn_shadowed, fn_imports = cached
+            else:
+                fn_shadowed, fn_imports = cls._function_bindings(
+                    function, module_identity
                 )
+            shadowed |= fn_shadowed
+            for name, origins in fn_imports.items():
+                imports[name].extend(origins)
         resolved = {
             name: qualified
             for name, (qualified, *rest) in imports.items()
@@ -1233,8 +1284,17 @@ class EnclosingScope:
         }
         return cls(frozenset(shadowed | (imports.keys() - resolved.keys())), resolved)
 
+    @classmethod
+    def at(
+        cls, ancestors: Sequence[ast.AST], module_identity: PythonModulePathIdentity
+    ) -> EnclosingScope:
+        return cls.at_functions(tuple(FunctionDefinition.within(ancestors)), module_identity)
+
     def hides(self, name: str) -> bool:
         return name in self.shadowed or name in self.imported
+
+
+_EMPTY_ENCLOSING_SCOPE = EnclosingScope(frozenset(), {})
 
 
 def _matched_subject(ancestors: Sequence[ast.AST]) -> str:

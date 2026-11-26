@@ -28,6 +28,12 @@ class ParseCacheDirectory(ParseCachePolicy):
             return None
         return self.parse_cache_dir / "collected-family"
 
+    @property
+    def inheritance_amortization_cache_dir(self) -> Path | None:
+        if not self.use_parse_cache or self.parse_cache_dir is None:
+            return None
+        return self.parse_cache_dir / "inheritance-amortization"
+
 
 @dataclass(frozen=True)
 class AdvisorCacheLayout:

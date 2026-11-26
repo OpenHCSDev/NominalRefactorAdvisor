@@ -10,6 +10,7 @@ its type map, keyed by the receiver's exact source span.
 from __future__ import annotations
 
 import ast
+from bisect import bisect_right
 import fcntl
 import gc
 import importlib
@@ -111,6 +112,11 @@ class TypeCheckerSources(ABC):
     def build_sources(self, options: Options) -> list[BuildSource]:
         raise NotImplementedError
 
+    def parsed_trees(self) -> Mapping[str, ast.Module]:
+        """Already-parsed ASTs keyed by file path when the source holds them."""
+
+        return {}
+
     def pathed(self, options: Options) -> tuple[tuple[str, BuildSource], ...]:
         """Every source with the file it reads; mypy's optional path is refused here, once."""
 
@@ -144,6 +150,9 @@ class SourceTexts(TypeCheckerSources):
     def build_sources(self, options: Options) -> list[BuildSource]:
         build_source = importlib.import_module("mypy.modulefinder").BuildSource
         return [build_source(path, name, text=text) for path, name, text in self.state]
+
+    def parsed_trees(self) -> Mapping[str, ast.Module]:
+        return {module.file_path: module.module for module in self.modules}
 
     @property
     def state(self) -> tuple[tuple[str, str, str], ...]:
@@ -210,17 +219,35 @@ def _statement_start_line(stmt: ast.stmt) -> int:
 def _elide_unrequested_annotated_bodies(
     text: str,
     requested_ranges: tuple[tuple[int, int], ...],
+    tree: ast.Module | None = None,
 ) -> str:
     """Replace annotated function bodies that hold no requested span and have no
     exported body effect with `...`, preserving line numbers when spans exist in the
     file. Mypy reads the declared signature without type-checking unrequested bodies."""
 
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return text
+    if tree is None:
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return text
     lines = text.splitlines(keepends=True)
     replacements: list[tuple[int, int, str]] = []
+    # Merge sorted requested_ranges into disjoint intervals for O(log R) overlap lookup.
+    merged_starts: list[int] = []
+    merged_ends: list[int] = []
+    for start, end in sorted(requested_ranges):
+        if merged_ends and start <= merged_ends[-1]:
+            if end > merged_ends[-1]:
+                merged_ends[-1] = end
+        else:
+            merged_starts.append(start)
+            merged_ends.append(end)
+
+    def _overlaps_requested(fn_start: int, fn_end: int) -> bool:
+        if not merged_starts:
+            return False
+        idx = bisect_right(merged_starts, fn_end) - 1
+        return idx >= 0 and merged_ends[idx] >= fn_start
 
     def visit_block(stmts: list[ast.stmt], in_class: bool) -> None:
         for stmt in stmts:
@@ -233,10 +260,7 @@ def _elide_unrequested_annotated_bodies(
                 continue
             fn_start = _statement_start_line(stmt)
             fn_end = stmt.end_lineno or stmt.body[-1].end_lineno or stmt.body[-1].lineno
-            if any(
-                start <= fn_end and end >= fn_start
-                for start, end in requested_ranges
-            ):
+            if _overlaps_requested(fn_start, fn_end):
                 continue
             receiver_names: frozenset[str] = frozenset()
             if in_class:
@@ -297,6 +321,7 @@ class ExpressionExtractionScope(ABC):
     def prepare_sources(
         self,
         unique: Sequence[tuple[str, BuildSource]],
+        parsed_trees: Mapping[str, ast.Module] | None = None,
     ) -> list[BuildSource]:
         raise NotImplementedError
 
@@ -383,7 +408,9 @@ class AllBuiltExpressions(ExpressionExtractionScope):
     def prepare_sources(
         self,
         unique: Sequence[tuple[str, BuildSource]],
+        parsed_trees: Mapping[str, ast.Module] | None = None,
     ) -> list[BuildSource]:
+        del parsed_trees
         return [source for _path, source in unique]
 
     def extract(
@@ -451,8 +478,10 @@ class RequestedSpanExpressions(ExpressionExtractionScope):
     def prepare_sources(
         self,
         unique: Sequence[tuple[str, BuildSource]],
+        parsed_trees: Mapping[str, ast.Module] | None = None,
     ) -> list[BuildSource]:
         build_source = importlib.import_module("mypy.modulefinder").BuildSource
+        trees = parsed_trees or {}
         prepared: list[BuildSource] = []
         for path, source in unique:
             raw = source.text
@@ -463,7 +492,7 @@ class RequestedSpanExpressions(ExpressionExtractionScope):
                     prepared.append(source)
                     continue
             elided = _elide_unrequested_annotated_bodies(
-                raw, self.line_ranges_by_file.get(path, ())
+                raw, self.line_ranges_by_file.get(path, ()), trees.get(path)
             )
             prepared.append(
                 source
@@ -648,7 +677,7 @@ class TypeCheckerSession(ABC):
         options.preserve_asts = True
         unique, shared = TypeCheckerSession.unique_sources(sources, options)
         scope.configure_options(options, unique)
-        build_sources = scope.prepare_sources(unique)
+        build_sources = scope.prepare_sources(unique, sources.parsed_trees())
         started = perf_counter()
         try:
             with _quiet_mypy():

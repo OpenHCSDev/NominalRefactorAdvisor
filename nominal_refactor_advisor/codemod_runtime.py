@@ -3741,7 +3741,12 @@ class FindingRecipePlanBuilder:
                 ).evaluate()
                 for finding in scoped
             )
+        seen_prewarms: set[object] = set()
         for det in detector_by_id.values():
+            prewarm_fn = type(det).prewarm_parallel_synthesis
+            if prewarm_fn in seen_prewarms:
+                continue
+            seen_prewarms.add(prewarm_fn)
             det.prewarm_parallel_synthesis(snapshot, scoped)
         initial_keys = frozenset(snapshot._operation_derivations.keys())
         prioritized_indices = sorted(

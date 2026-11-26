@@ -51,7 +51,9 @@ from nominal_refactor_advisor.analysis_cache import (
     PerModuleDetectorFindingBundle,
     SourceFileSignatureCache,
 )
+from nominal_refactor_advisor.cache_paths import ParseCacheDirectory
 from nominal_refactor_advisor.collection_algebra import DeferredBatchSequence
+from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.type_checker_session import (
@@ -5283,11 +5285,16 @@ def analyze_path(
         source_policy=source_policy,
         semantic_descent_source=semantic_descent_source,
     )
-    return (
-        FastCachedPathAnalysisAuthority(request)
-        .result()
-        .answer(SingleRootFindings(request))
-    )
+    family_cache_dir = ParseCacheDirectory(
+        parse_cache_dir=cache_dir,
+        use_parse_cache=use_parse_cache,
+    ).collected_family_cache_dir
+    with InstalledModule.cached_if_unset(family_cache_dir):
+        return (
+            FastCachedPathAnalysisAuthority(request)
+            .result()
+            .answer(SingleRootFindings(request))
+        )
 
 
 @ScanCache.scope()
@@ -5317,11 +5324,16 @@ def analyze_paths(
         source_policy=source_policy,
         semantic_descent_source=semantic_descent_source,
     )
-    return (
-        FastCachedPathAnalysisAuthority(request)
-        .result()
-        .answer(MultiRootFindings(request))
-    )
+    family_cache_dir = ParseCacheDirectory(
+        parse_cache_dir=cache_dir,
+        use_parse_cache=use_parse_cache,
+    ).collected_family_cache_dir
+    with InstalledModule.cached_if_unset(family_cache_dir):
+        return (
+            FastCachedPathAnalysisAuthority(request)
+            .result()
+            .answer(MultiRootFindings(request))
+        )
 
 
 def analyze_lean_export(path: Path) -> list[RefactorFinding]:

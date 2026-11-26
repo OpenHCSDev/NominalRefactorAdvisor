@@ -3,12 +3,16 @@
 import json
 from pathlib import Path
 
+from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.cli import main
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.member_census import (
     CensusFamilyKind,
     build_member_awareness_census,
 )
+from nominal_refactor_advisor.observation_families import type_test_shapes
+from nominal_refactor_advisor.type_checker_session import TypeCheckerSession
 
 NAME_OR_ATTRIBUTE = ("ast.Attribute", "ast.Name")
 
@@ -349,3 +353,89 @@ def test_a_classmethod_call_through_cls_reaches_the_inherited_classmethod(tmp_pa
     )
     [owner] = build_member_awareness_census(tmp_path).inherited.owners
     assert (owner.owner, owner.derived_pairs, owner.members) == ("family.Base", 1, 1)
+
+
+def test_inheritance_amortization_disk_cache_hits_and_invalidates_on_edit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "pkg"
+    root.mkdir()
+    cache = tmp_path / "cache"
+    _write(
+        root,
+        {
+            "family": (
+                "class Base:\n"
+                "    def ping(self) -> int:\n"
+                "        return 1\n"
+                "class Leaf(Base):\n"
+                "    pass\n"
+                "def call_once(x: Leaf) -> int:\n"
+                "    return x.ping()\n"
+            ),
+        },
+    )
+    first = build_member_awareness_census(root, cache_dir=cache).inherited
+    assert first.calls_reaching_inherited == 1
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("warm inheritance amortization cache should skip mypy")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(TypeCheckerSession, "scoped_session", staticmethod(_fail_if_called))
+        second = build_member_awareness_census(root, cache_dir=cache).inherited
+    assert second == first
+
+    _write(
+        root,
+        {
+            "family": (
+                "class Base:\n"
+                "    def ping(self) -> int:\n"
+                "        return 1\n"
+                "class Leaf(Base):\n"
+                "    pass\n"
+                "def call_twice(x: Leaf) -> int:\n"
+                "    return x.ping() + x.ping()\n"
+            ),
+        },
+    )
+    third = build_member_awareness_census(root, cache_dir=cache).inherited
+    assert third.calls_reaching_inherited == 2
+
+
+def test_type_argument_resolver_caches_enclosing_scope_per_function(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "pkg"
+    root.mkdir()
+    _write(
+        root,
+        {
+            "checks": (
+                "class Base:\n    pass\n"
+                "class A(Base):\n    pass\n"
+                "class B(Base):\n    pass\n"
+                "def many(x: Base) -> int:\n"
+                "    a = isinstance(x, A)\n"
+                "    b = isinstance(x, B)\n"
+                "    c = isinstance(x, (A, B))\n"
+                "    d = isinstance(x, Base)\n"
+                "    return int(a) + int(b) + int(c) + int(d)\n"
+            ),
+        },
+    )
+    (parsed,) = tuple(parse_python_modules(root))
+    calls = 0
+    original = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings
+
+    def _counted(body):
+        nonlocal calls
+        calls += 1
+        return original(body)
+
+    monkeypatch.setattr(LEXICAL_SCOPE_BINDING_AUTHORITY, "import_only_bindings", _counted)
+    shapes = tuple(type_test_shapes(parsed))
+    assert len(shapes) == 4
+    assert calls == 1
+

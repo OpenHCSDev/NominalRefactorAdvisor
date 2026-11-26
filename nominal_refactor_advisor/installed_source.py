@@ -62,6 +62,17 @@ class InstalledModule:
         finally:
             cls._family_cache_dir.reset(token)
 
+    @classmethod
+    @contextmanager
+    def cached_if_unset(cls, family_cache_dir: Path | None) -> Iterator[None]:
+        """Use `family_cache_dir` for installed modules when no outer scope already set one."""
+
+        if cls._family_cache_dir.get() is not None or family_cache_dir is None:
+            yield
+            return
+        with cls.cached_in(family_cache_dir):
+            yield
+
     @staticmethod
     def _loaded_module_source_path(module_name: str) -> Path | None:
         """The `.py` or `.pyi` file of a module already loaded in `sys.modules`
