@@ -384,7 +384,7 @@ def test_hoisting_supports_classmethod_and_property_descriptors(tmp_path: Path):
     assert ns_p["SecondPanel"]().title == ""  # type: ignore[operator]
 
 
-def test_hoisting_stops_when_leading_step_binds_local_read_by_middle(tmp_path: Path):
+def test_hoisting_forwards_prefix_bound_local_to_hook(tmp_path: Path):
     source = (
         "from abc import ABC, abstractmethod\n\n\n"
         "class Provider(ABC):\n"
@@ -403,9 +403,237 @@ def test_hoisting_stops_when_leading_step_binds_local_read_by_middle(tmp_path: P
         "        return matcher + '?'\n"
     )
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/providers.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/providers.py")]
+    assert "matcher = self.make_matcher(query)" in rewritten
+    assert "return self._search_step(query, matcher)" in rewritten
+    assert "def _search_step(self, query: str, matcher) -> str:" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "providers.py", "exec"), namespace)
+    assert namespace["First"]().search("Ab") == "ab!"  # type: ignore[operator]
+    assert namespace["Second"]().search("Ab") == "ab?"  # type: ignore[operator]
+
+    (tmp_path / "pkg/providers.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+    # When the declaring method has defaults, forwarded locals become keyword-only.
+    defaulted = source.replace("query: str", "query: str = 'hi'")
+    default_root = tmp_path / "defaulted"
+    _write(default_root, {"pkg/__init__.py": "", "pkg/providers.py": defaulted})
+    _f2, snap2, eval2 = _apply_finding(default_root)
+    sim2 = eval2.executable_recipe.simulate(snap2)
+    assert sim2.is_clean, sim2.preflight_report
+    rewritten2 = sim2.simulation.rewritten_sources[str(default_root / "pkg/providers.py")]
+    assert "return self._search_step(query, matcher=matcher)" in rewritten2
+    assert "def _search_step(self, query: str='hi', *, matcher) -> str:" in rewritten2
+    ns2: dict[str, object] = {}
+    exec(compile(rewritten2, "providers.py", "exec"), ns2)
+    assert ns2["First"]().search() == "hi!"  # type: ignore[operator]
+    assert ns2["Second"]().search("YO") == "yo?"  # type: ignore[operator]
+
+
+def test_hoisting_stops_when_prefix_local_is_only_conditionally_bound(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Base(ABC):\n"
+        "    def prepare(self) -> int:\n"
+        "        return 1\n\n"
+        "    @abstractmethod\n"
+        "    def run(self, flag: bool) -> int:\n"
+        "        ...\n\n\n"
+        "class One(Base):\n"
+        "    def run(self, flag: bool) -> int:\n"
+        "        if flag:\n"
+        "            val = self.prepare()\n"
+        "        return val if flag else 0\n\n\n"
+        "class Two(Base):\n"
+        "    def run(self, flag: bool) -> int:\n"
+        "        if flag:\n"
+        "            val = self.prepare()\n"
+        "        return val + 1 if flag else 2\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/cond.py": source})
     _finding, _snapshot, evaluation = _apply_finding(tmp_path)
     assert "not independent leading or trailing statements" in evaluation.rejection_reason
     assert NeededInput.SOURCE_CHANGE in evaluation.needs
+
+
+def test_hoisting_leading_unconditional_step_expression_from_return(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Outcome(ABC):\n"
+        "    def display_name(self) -> str:\n"
+        "        return 'worker'\n\n"
+        "    @abstractmethod\n"
+        "    def start(self) -> tuple[str, ...]:\n"
+        "        ...\n\n\n"
+        "class Completed(Outcome):\n"
+        "    def start(self) -> tuple[str, ...]:\n"
+        "        return ('ok', self.display_name())\n\n\n"
+        "class Failed(Outcome):\n"
+        "    def start(self) -> tuple[str, ...]:\n"
+        "        return ('fail', self.display_name(), 'err')\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/outcomes.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/outcomes.py")]
+    assert "display_name = self.display_name()" in rewritten
+    assert "return self._start_step(display_name)" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "outcomes.py", "exec"), namespace)
+    assert namespace["Completed"]().start() == ("ok", "worker")  # type: ignore[operator]
+    assert namespace["Failed"]().start() == ("fail", "worker", "err")  # type: ignore[operator]
+
+    (tmp_path / "pkg/outcomes.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_stops_when_impure_call_precedes_shared_step_expression(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Worker(ABC):\n"
+        "    def step(self) -> int:\n"
+        "        return 1\n\n"
+        "    def side_effect(self) -> int:\n"
+        "        return 2\n\n"
+        "    @abstractmethod\n"
+        "    def run(self) -> int:\n"
+        "        ...\n\n\n"
+        "class First(Worker):\n"
+        "    def run(self) -> int:\n"
+        "        return self.side_effect() + self.step()\n\n\n"
+        "class Second(Worker):\n"
+        "    def run(self) -> int:\n"
+        "        return self.step() + 10\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/order.py": source})
+    _finding, _snapshot, evaluation = _apply_finding(tmp_path)
+    assert "not independent leading or trailing statements" in evaluation.rejection_reason
+
+
+def test_hoisting_generator_methods_delegates_with_yield_from(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n"
+        "from collections.abc import Iterator\n\n\n"
+        "class Source(ABC):\n"
+        "    def observed_directory(self) -> str:\n"
+        "        return '/tmp/dir'\n\n"
+        "    @abstractmethod\n"
+        "    def watches(self) -> Iterator[str]:\n"
+        "        ...\n\n\n"
+        "class FileSource(Source):\n"
+        "    def watches(self) -> Iterator[str]:\n"
+        "        yield f'file:{self.observed_directory()}'\n"
+        "        yield 'extra'\n\n\n"
+        "class DirSource(Source):\n"
+        "    def watches(self) -> Iterator[str]:\n"
+        "        directory = self.observed_directory()\n"
+        "        yield f'dir:{directory}'\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/sources.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/sources.py")]
+    assert "directory = self.observed_directory()" in rewritten
+    assert "yield from self._watches_step(directory)" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "sources.py", "exec"), namespace)
+    assert list(namespace["FileSource"]().watches()) == ["file:/tmp/dir", "extra"]  # type: ignore[operator]
+    assert list(namespace["DirSource"]().watches()) == ["dir:/tmp/dir"]  # type: ignore[operator]
+
+    (tmp_path / "pkg/sources.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_promotes_abstract_property_when_all_siblings_use_cached_property(
+    tmp_path: Path,
+):
+    source = (
+        "from abc import ABC, abstractmethod\n"
+        "from functools import cached_property\n\n\n"
+        "class Contents(ABC):\n"
+        "    def __init__(self) -> None:\n"
+        "        self.checks = 0\n\n"
+        "    def require_closed(self) -> None:\n"
+        "        self.checks += 1\n\n"
+        "    @property\n"
+        "    @abstractmethod\n"
+        "    def names(self) -> tuple[str, ...]:\n"
+        "        ...\n\n\n"
+        "class InitialContents(Contents):\n"
+        "    @cached_property\n"
+        "    def names(self) -> tuple[str, ...]:\n"
+        "        self.require_closed()\n"
+        "        return ('a',)\n\n\n"
+        "class FullContents(Contents):\n"
+        "    @cached_property\n"
+        "    def names(self) -> tuple[str, ...]:\n"
+        "        self.require_closed()\n"
+        "        return ('a', 'b')\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/contents.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/contents.py")]
+    assert "@cached_property\n    def names(self) -> tuple[str, ...]:" in rewritten
+    assert "return self._names_step()" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "contents.py", "exec"), namespace)
+    initial = namespace["InitialContents"]()  # type: ignore[operator]
+    assert initial.names == ("a",)
+    assert initial.names == ("a",)
+    assert initial.checks == 1
+    full = namespace["FullContents"]()  # type: ignore[operator]
+    assert full.names == ("a", "b")
+    assert full.checks == 1
+
+    (tmp_path / "pkg/contents.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_return_call_template_substitutes_single_varying_argument(
+    tmp_path: Path,
+):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class PickerPane(ABC):\n"
+        "    def query_one(self, target: str) -> str:\n"
+        "        return f'found:{target}'\n\n"
+        "    @abstractmethod\n"
+        "    def toggled(self) -> str:\n"
+        "        ...\n\n\n"
+        "class FuzzyPane(PickerPane):\n"
+        "    def toggled(self) -> str:\n"
+        "        return self.query_one('tree')\n\n\n"
+        "class TreePane(PickerPane):\n"
+        "    def toggled(self) -> str:\n"
+        "        return self.query_one('fuzzy')\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/picker.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/picker.py")]
+    assert "return self.query_one(self._toggled_step())" in rewritten
+    assert "def _toggled_step(self):\n" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "picker.py", "exec"), namespace)
+    assert namespace["FuzzyPane"]().toggled() == "found:tree"  # type: ignore[operator]
+    assert namespace["TreePane"]().toggled() == "found:fuzzy"  # type: ignore[operator]
+
+    (tmp_path / "pkg/picker.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
 
 
 def test_hoisting_stops_when_middle_returns_early_before_trailing_step(tmp_path: Path):

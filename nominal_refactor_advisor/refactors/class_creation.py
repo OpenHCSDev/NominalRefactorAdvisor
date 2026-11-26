@@ -111,6 +111,7 @@ FUNCTION_DECORATORS = {
     "builtins.classmethod": FunctionDecorator(classmethod),
     "builtins.staticmethod": FunctionDecorator(staticmethod),
     "builtins.property": FunctionDecorator(property),
+    "functools.cached_property": FunctionDecorator(cached_property),
     "typing.final": FunctionDecorator(None, frozenset(("__final__",))),
     "typing.override": FunctionDecorator(None, frozenset(("__override__",))),
 }
