@@ -162,6 +162,22 @@ class HubPlan(ABC):
     dissolved: tuple[HubEdge, ...]
     needs: tuple[tuple[ClosesCycle, NeedsInput], ...]
 
+    def evaluate_plan_recipe(self, context, owner, finding):
+        """Build the recipe evaluation for this hub plan."""
+        if not isinstance(self, HubCut):
+            need = NeedsInput('; '.join((f'{refusal.hidden.location}: {need}' for refusal, need in self.needs)), *(kind for _refusal, need in self.needs for kind in need.needs))
+            return owner.stopped_evaluation(need)
+        operation = self.operation()
+        try:
+            recipe = RefactorRecipe(recipe_id=f'{finding.stable_id}-{operation.operation_key()}', reason=f'Moving {len(self.moved)} declaration(s) to `{self.destination}` lets {len(self.dissolved)} hidden import(s) load with no cycle.').with_proved_operation(operation, context)
+        except ValueError as error:
+            return owner.stopped_evaluation(error)
+        return owner.executable_evaluation(recipe)
+
+    def synthesis_priority(self):
+        """Return parallel synthesis priority for this hub plan."""
+        return 1 if isinstance(self, HubCut) else 0
+
 
 @dataclass(frozen=True)
 class HubCut(HubPlan):
@@ -338,6 +354,17 @@ class HubRetype(HubPlan):
 
     def operation(self) -> RetypeTypeOnlyReadsOperation:
         return RetypeTypeOnlyReadsOperation.of(self.reads)
+
+    def evaluate_plan_recipe(self, context, owner, finding):
+        operation = self.operation()
+        try:
+            recipe = RefactorRecipe(recipe_id=f'{finding.stable_id}-{operation.operation_key()}', reason=f'Annotating with a base below each reader lets {len(self.dissolved)} guarded import(s) load with no cycle: {operation.described}.').with_proved_operation(operation, context)
+        except ValueError as error:
+            return owner.stopped_evaluation(error)
+        return owner.executable_evaluation(recipe)
+
+    def synthesis_priority(self):
+        return 2 + len(self.reads)
 
 
 @dataclass(frozen=True)
@@ -830,9 +857,7 @@ class HiddenImportCutFindingRecipeSynthesizer(
         if not plans:
             return 0
         chosen = next((plan for plan in plans if isinstance(plan, HubCut | HubRetype)), plans[-1])
-        if isinstance(chosen, HubRetype):
-            return 2 + len(chosen.reads)
-        return 1 if isinstance(chosen, HubCut) else 0
+        return chosen.synthesis_priority()
 
     def evaluate_recipe_for_finding(
         self,
@@ -848,37 +873,7 @@ class HiddenImportCutFindingRecipeSynthesizer(
         if not plans:
             return self.rejected_evaluation(f"`{evidence.symbol}` keeps no cycle a hidden import closes")
         plan = next((plan for plan in plans if isinstance(plan, HubCut | HubRetype)), plans[-1])
-        if isinstance(plan, HubRetype):
-            operation = plan.operation()
-            try:
-                recipe = RefactorRecipe(
-                    recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
-                    reason=(
-                        f"Annotating with a base below each reader lets {len(plan.dissolved)} guarded "
-                        f"import(s) load with no cycle: {operation.described}."
-                    ),
-                ).with_proved_operation(operation, context)
-            except ValueError as error:
-                return self.stopped_evaluation(error)
-            return self.executable_evaluation(recipe)
-        if not isinstance(plan, HubCut):
-            need = NeedsInput(
-                "; ".join(f"{refusal.hidden.location}: {need}" for refusal, need in plan.needs),
-                *(kind for _refusal, need in plan.needs for kind in need.needs),
-            )
-            return self.stopped_evaluation(need)
-        operation = plan.operation()
-        try:
-            recipe = RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
-                reason=(
-                    f"Moving {len(plan.moved)} declaration(s) to `{plan.destination}` lets "
-                    f"{len(plan.dissolved)} hidden import(s) load with no cycle."
-                ),
-            ).with_proved_operation(operation, context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(recipe)
+        return plan.evaluate_plan_recipe(context, self, finding)
 
 
 class LayeringViolationFindingRecipeSynthesizer(

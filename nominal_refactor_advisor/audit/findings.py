@@ -329,6 +329,14 @@ class ShapeModel(ABC):
     @abstractmethod
     def describe(self) -> str: ...
 
+    def bypass_count(self):
+        """Return 1 when this shape bypasses an existing class, else 0."""
+        return 0
+
+    def hand_mapped_count(self):
+        """Return 1 when this shape is hand-mapped into a class, else 0."""
+        return 0
+
 
 @dataclass(frozen=True)
 class ModeledBy(ShapeModel):
@@ -337,6 +345,9 @@ class ModeledBy(ShapeModel):
 
     def describe(self) -> str:
         return f"MATCHES {self.model}: a bypass, unless the data is copied into it elsewhere"
+
+    def bypass_count(self):
+        return 1
 
 
 @dataclass(frozen=True)
@@ -348,6 +359,9 @@ class HandMapped(ShapeModel):
 
     def describe(self) -> str:
         return f"HAND-MAPPED into {self.model} (check whether that class decodes this data or presents it)"
+
+    def hand_mapped_count(self):
+        return 1
 
 
 @dataclass(frozen=True)
@@ -395,8 +409,8 @@ class RawShape(PerFunctionFinding, Listed):
 
     @classmethod
     def summary_note(cls, findings: list[Self]) -> str:
-        hand_mapped = sum(1 for f in findings if f.model.hand_mapped)
-        return f"(bypassing an existing class: {sum(1 for f in findings if f.model.bypasses)}; hand-mapped into one: {hand_mapped})"
+        hand_mapped = sum(f.model.hand_mapped_count() for f in findings)
+        return f"(bypassing an existing class: {sum(f.model.bypass_count() for f in findings)}; hand-mapped into one: {hand_mapped})"
 
 
 class PerNodeFinding(Finding):

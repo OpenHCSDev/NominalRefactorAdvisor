@@ -1618,8 +1618,7 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
                     )
         for _i, class_node in index.indexed_nodes_of_type(ast.ClassDef):
             config_walk = registry_config_walk_root(parsed_module, class_node)
-            if isinstance(config_walk, PackageWalkRoot):
-                enumerated.add(config_walk)
+            config_walk.collect_walk_references(enumerated)
             header_walk = cls.class_keyword_walk_root(parsed_module, class_node)
             if header_walk is not None:
                 enumerated.add(header_walk)

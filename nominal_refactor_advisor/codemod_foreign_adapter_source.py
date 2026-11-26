@@ -169,13 +169,9 @@ class BindArm:
     @staticmethod
     def binding(statement: ast.stmt) -> tuple[str, ast.expr] | None:
         assignment = AssignmentStatement.decoded(statement)
-        if (
-            assignment is None
-            or assignment.annotation is not None
-            or assignment.single_name is None
-        ):
+        if assignment is None:
             return None
-        return assignment.single_name, assignment.value
+        return assignment.bind_target_name()
 
     @property
     def names(self) -> tuple[str, ...]:

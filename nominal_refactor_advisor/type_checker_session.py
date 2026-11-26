@@ -587,7 +587,7 @@ class TypeCheckerSession(ABC):
             if synced is not None:
                 return synced
         built = FineGrainedTypeChecker.seeded(sources)
-        slot[0] = built if isinstance(built, FineGrainedTypeChecker) else None
+        slot[0] = built.fine_grained_or_none()
         return built
 
     @staticmethod
@@ -737,6 +737,10 @@ class TypeCheckerSession(ABC):
             yield session
         finally:
             session.stop()
+
+    def fine_grained_or_none(self):
+        """Return this session when fine-grained, else None."""
+        return None
 
 
 @dataclass(frozen=True)
@@ -2257,6 +2261,9 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             f"mypy fine-grained ({len(self._path_by_module)} module(s); "
             f"{len(self._shared)} file(s) left out for a module name another file shares)"
         )
+
+    def fine_grained_or_none(self):
+        return self
 
 
 __all__ = (

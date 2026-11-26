@@ -1531,6 +1531,16 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
             )
         ) and (self.after is None or self.after.may_precede(mutation.position))
 
+    def require_fresh_child_interval(self):
+        """Raise when this child prefix already carries an after cut."""
+        if self.after is not None:
+            raise ValueError('Child entry requires a parent cut and a fresh child interval')
+
+    def require_fresh_body_interval(self):
+        """Raise when this callee body prefix already carries an after cut."""
+        if self.after is not None:
+            raise ValueError("Function entry requires the callee declaration's fresh body interval")
+
 
 @dataclass(frozen=True, eq=False)
 class CapturedFlowPrefix(SingleFlowPrefix):
@@ -1579,10 +1589,9 @@ class ChildExecutionPrefix(AdmittedExecutionPrefixABC):
             raise ValueError("Child entry requires its actual parent definition event")
         if self.definition.target.owner is not child.context.flow.owner:
             raise ValueError("Child entry requires the definition's actual flow owner")
-        if parent.position is None or child.after is not None:
-            raise ValueError(
-                "Child entry requires a parent cut and a fresh child interval"
-            )
+        if parent.position is None:
+            raise ValueError('Child entry requires a parent cut and a fresh child interval')
+        child.require_fresh_child_interval()
 
     @property
     def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:
@@ -1690,10 +1699,9 @@ class DefinitionApplicationPrefix(AdmittedExecutionPrefixABC):
             raise ValueError(
                 "Function entry requires its original definition application cut"
             )
-        if child.context.flow.owner is not self.declaration or child.after is not None:
-            raise ValueError(
-                "Function entry requires the callee declaration's fresh body interval"
-            )
+        if child.context.flow.owner is not self.declaration:
+            raise ValueError("Function entry requires the callee declaration's fresh body interval")
+        child.require_fresh_body_interval()
 
     @property
     def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:

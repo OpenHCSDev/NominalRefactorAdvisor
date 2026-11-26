@@ -99,6 +99,12 @@ class AssignmentStatement(ForeignAdapter):
             case _:
                 return None
 
+    def bind_target_name(self):
+        """Resolve the target name when the statement is an unannotated single-name assignment."""
+        if self.annotation is not None or self.single_name is None:
+            return None
+        return (self.single_name, self.value)
+
 
 class AssignStatement(AssignmentStatement):
     """``a = b = value``."""

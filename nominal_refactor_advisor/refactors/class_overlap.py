@@ -4138,10 +4138,7 @@ def in_order_edits(
         result.preflight_report.require_clean()
         step_edits = state.edit_batch_for_recipes((recipe,)).edits
         for edit in step_edits:
-            if isinstance(edit, ModuleImportMutation):
-                import_mutations_by_file.setdefault(edit.file_path, []).append(edit)
-            else:
-                non_import_files.add(edit.file_path)
+            edit.classify_edit(import_mutations_by_file, non_import_files)
         states.append(state.with_virtual_sources(result.simulation.rewritten_sources))
 
     current = states[-1]

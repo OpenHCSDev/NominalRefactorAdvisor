@@ -1265,6 +1265,9 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             ),
         )
 
+    def classify_edit(self, import_mutations_by_file, non_import_files):
+        import_mutations_by_file.setdefault(self.file_path, []).append(self)
+
 
 class ImportSourceGroup(StrEnum):
     """Canonical Python import group derived from an import declaration."""

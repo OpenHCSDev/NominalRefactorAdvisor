@@ -213,6 +213,11 @@ class NamedValueBinding:
     value: ast.AST | None
     line: int
 
+    def record_module_value(self, values):
+        """Record this named binding's value when present."""
+        if self.value is not None:
+            values[self.name] = (self.line, self.value)
+
 
 @dataclass(frozen=True)
 class AstTemplateNameBinding:
