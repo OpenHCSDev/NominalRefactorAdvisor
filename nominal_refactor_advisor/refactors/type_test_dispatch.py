@@ -28,6 +28,7 @@ from typing import ClassVar, cast
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
     optional_values,
+    variadic_parameters,
 )
 from nominal_refactor_advisor.ast_tools import AstParentIndex, ParsedModule
 from nominal_refactor_advisor.class_index import CompactIndexedClass
@@ -107,6 +108,10 @@ class DispatchKind(ABC):
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    def matches_method_decorators(self, decorators: Sequence[ast.expr]) -> bool:
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class InstanceDispatchKind(DispatchKind):
@@ -133,6 +138,9 @@ class InstanceDispatchKind(DispatchKind):
                 NeededInput.SOURCE_CHANGE,
             )
 
+    def matches_method_decorators(self, decorators: Sequence[ast.expr]) -> bool:
+        return not decorators
+
 
 @dataclass(frozen=True)
 class ClassDispatchKind(DispatchKind):
@@ -156,6 +164,13 @@ class ClassDispatchKind(DispatchKind):
                 "which is not a class type (`type[Base]`)",
                 NeededInput.SOURCE_CHANGE,
             )
+
+    def matches_method_decorators(self, decorators: Sequence[ast.expr]) -> bool:
+        return (
+            len(decorators) == 1
+            and isinstance(decorators[0], ast.Name)
+            and decorators[0].id == "classmethod"
+        )
 
 
 @dataclass(frozen=True)
@@ -3759,6 +3774,548 @@ def _super_precedence_statement(
     return ast.Expr(value=call) if is_void else ast.Return(value=call)
 
 
+class _AlphaRenameParameters(ast.NodeTransformer):
+    """Alpha-rename free parameter references without entering nested scopes."""
+
+    def __init__(self, rename_map: dict[str, str]) -> None:
+        self.rename_map = rename_map
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        mapped = self.rename_map.get(node.id)
+        if mapped is None:
+            return node
+        return ast.copy_location(ast.Name(id=mapped, ctx=node.ctx), node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        return node
+
+    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        return node
+
+
+def _statements_without_docstring(body: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
+    if (
+        len(body) > 1
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        return tuple(body[1:])
+    return tuple(body)
+
+
+def _body_shadows_parameter(body: Sequence[ast.stmt], param_names: frozenset[str]) -> bool:
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.comprehension):
+                for target_node in ast.walk(node.target):
+                    if isinstance(target_node, ast.Name) and target_node.id in param_names:
+                        return True
+    return False
+
+
+def _normalized_body_dumps(
+    body: Sequence[ast.stmt], param_names: Sequence[str]
+) -> tuple[str, ...] | None:
+    stripped = _statements_without_docstring(body)
+    if _body_shadows_parameter(stripped, frozenset(param_names)):
+        return None
+    rename_map = {name: f"__p{index}" for index, name in enumerate(param_names)}
+    transformer = _AlphaRenameParameters(rename_map)
+    return tuple(
+        ast.dump(transformer.visit(copy.deepcopy(stmt)), include_attributes=False)
+        for stmt in stripped
+    )
+
+
+def _free_module_bindings_match(
+    snapshot: CodemodSourceSnapshot,
+    source_module: ParsedModule,
+    source_line: int,
+    dest_module: ParsedModule,
+    dest_line: int,
+    expected_body: tuple[ast.stmt, ...],
+    local_exclusions: frozenset[str],
+) -> bool:
+    """Whether every free module-level name in `expected_body` resolves identically in `dest_module`."""
+
+    if source_module.file_path == dest_module.file_path:
+        return True
+    bindings = snapshot.module_binding_proof
+    excluded = local_exclusions | _body_bound_names(expected_body)
+    names = {
+        node.id
+        for stmt in expected_body
+        for node in ast.walk(stmt)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id not in excluded
+    }
+    for name in names:
+        reference = ast.Name(id=name, ctx=ast.Load())
+        expected = bindings.reference_or_builtin_witness_at(
+            source_module, reference, line=source_line
+        )
+        if expected is None:
+            if name in builtins.__dict__:
+                actual = bindings.reference_or_builtin_witness_at(
+                    dest_module, reference, line=dest_line
+                )
+                if actual is not None and not actual.qualified_name.startswith("builtins."):
+                    return False
+                continue
+            return False
+        actual = bindings.reference_or_builtin_witness_at(
+            dest_module, reference, line=dest_line
+        )
+        if actual is None or actual.qualified_name != expected.qualified_name:
+            return False
+    return True
+
+
+def _class_method_def(
+    snapshot: CodemodSourceSnapshot,
+    decl: CompactIndexedClass,
+    method_name: str,
+) -> tuple[ParsedModule, FunctionNode] | None:
+    if decl.file_path not in snapshot.sources_by_file_path:
+        return None
+    target = ResolvedClassTarget.from_rewrite_target(
+        snapshot, SourceRewriteTarget(file_path=decl.file_path, qualname=decl.qualname)
+    )
+    matches = [
+        stmt
+        for stmt in target.node.body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and stmt.name == method_name
+    ]
+    if len(matches) != 1:
+        return None
+    return snapshot.parsed_module_for_source_path(decl.file_path), matches[0]
+
+
+def _matching_existing_dispatch_methods(
+    snapshot: CodemodSourceSnapshot,
+    source_module: ParsedModule,
+    test_line: int,
+    subject_family: frozenset[str],
+    base: ResolvedClassTarget,
+    base_symbol: str,
+    checked_arms: tuple[TypeTestArm, ...],
+    checked_arm_symbols: list[tuple[str, ...]],
+    kind: DispatchKind,
+    rewritten_default: tuple[ast.stmt, ...],
+    rewritten_arm_bodies: Sequence[tuple[ast.stmt, ...]],
+    captured_args: tuple[CapturedArgument, ...],
+    is_async: bool,
+) -> tuple[str, ...]:
+    """Find non-dunder methods already declared on `base` whose family-wide C3 dispatch
+    matches the exact generated bodies for every member of `subject_family`."""
+
+    receiver = kind.receiver
+    param_names = tuple(arg.param_name for arg in captured_args)
+    generated_params = (receiver, *param_names)
+    local_exclusions = frozenset(generated_params)
+    default_dumps = _normalized_body_dumps(rewritten_default, generated_params)
+    if default_dumps is None:
+        return ()
+
+    arm_full_bodies: list[tuple[ast.stmt, ...]] = []
+    arm_full_dumps: list[tuple[str, ...] | None] = []
+    for arm, body in zip(checked_arms, rewritten_arm_bodies, strict=True):
+        full_body = (*body, *rewritten_default) if arm.falls_through_to_default else body
+        arm_full_bodies.append(full_body)
+        arm_full_dumps.append(_normalized_body_dumps(full_body, generated_params))
+    if any(dumps is None for dumps in arm_full_dumps):
+        return ()
+
+    candidate_names: list[str] = []
+    for stmt in base.node.body:
+        if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if stmt.name.startswith("__") and stmt.name.endswith("__"):
+            continue
+        if isinstance(stmt, ast.AsyncFunctionDef) != is_async:
+            continue
+        if not kind.matches_method_decorators(stmt.decorator_list):
+            continue
+        args = stmt.args
+        if (
+            args.posonlyargs
+            or args.kwonlyargs
+            or variadic_parameters(args)
+            or args.defaults
+            or len(args.args) != len(generated_params)
+        ):
+            continue
+        candidate_names.append(stmt.name)
+    if not candidate_names:
+        return ()
+
+    compact_index = snapshot.compact_class_index
+    authority = compact_index.declared_mro_authority
+    family_mros: list[tuple[str, tuple[CompactIndexedClass, ...], int | None]] = []
+    for symbol in sorted(subject_family):
+        mro = authority.resolve(symbol).mro_type
+        if mro is None:
+            return ()
+        order = tuple(decl.symbol for decl in mro.declarations)
+        expected_arm: int | None = None
+        for arm_idx, (arm, arm_syms) in enumerate(
+            zip(checked_arms, checked_arm_symbols, strict=True)
+        ):
+            matched = (
+                symbol in arm_syms
+                if arm.exact
+                else any(tested in order for tested in arm_syms)
+            )
+            if matched:
+                expected_arm = arm_idx
+                break
+        family_mros.append((symbol, mro.declarations, expected_arm))
+
+    method_cache: dict[tuple[str, str], tuple[ParsedModule, FunctionNode] | None] = {}
+    matched_names: list[str] = []
+    for cand in candidate_names:
+        ok = True
+        for _symbol, declarations, expected_arm in family_mros:
+            winner_idx: int | None = None
+            for idx, decl in enumerate(declarations):
+                if cand in decl.member_binding_names:
+                    winner_idx = idx
+                    break
+            if winner_idx is None:
+                ok = False
+                break
+            winner_decl = declarations[winner_idx]
+            cache_key = (winner_decl.symbol, cand)
+            if cache_key not in method_cache:
+                method_cache[cache_key] = _class_method_def(snapshot, winner_decl, cand)
+            located = method_cache[cache_key]
+            if located is None:
+                ok = False
+                break
+            dest_module, existing_fn = located
+            if isinstance(existing_fn, ast.AsyncFunctionDef) != is_async:
+                ok = False
+                break
+            if not kind.matches_method_decorators(existing_fn.decorator_list):
+                ok = False
+                break
+            args = existing_fn.args
+            if (
+                args.posonlyargs
+                or args.kwonlyargs
+                or variadic_parameters(args)
+                or args.defaults
+                or len(args.args) != len(generated_params)
+            ):
+                ok = False
+                break
+            existing_dumps = _normalized_body_dumps(
+                existing_fn.body, tuple(arg.arg for arg in args.args)
+            )
+            if existing_dumps is None:
+                ok = False
+                break
+            if expected_arm is None:
+                expected_body = rewritten_default
+                expected_options = (default_dumps,)
+            else:
+                expected_body = arm_full_bodies[expected_arm]
+                arm_dump = arm_full_dumps[expected_arm]
+                assert arm_dump is not None
+                if checked_arms[expected_arm].falls_through_to_default:
+                    next_decl_sym: str | None = None
+                    for later in declarations[winner_idx + 1 :]:
+                        if cand in later.member_binding_names:
+                            next_decl_sym = later.symbol
+                            break
+                    if next_decl_sym == base_symbol:
+                        super_body = (
+                            *rewritten_arm_bodies[expected_arm],
+                            _super_fallback_return(cand, param_names, is_async=is_async),
+                        )
+                        super_dump = _normalized_body_dumps(super_body, generated_params)
+                        expected_options = (
+                            (arm_dump, super_dump)
+                            if super_dump is not None
+                            else (arm_dump,)
+                        )
+                    else:
+                        expected_options = (arm_dump,)
+                else:
+                    expected_options = (arm_dump,)
+            if existing_dumps not in expected_options:
+                ok = False
+                break
+            if not _free_module_bindings_match(
+                snapshot,
+                source_module,
+                test_line,
+                dest_module,
+                existing_fn.lineno,
+                expected_body,
+                local_exclusions,
+            ):
+                ok = False
+                break
+        if ok:
+            matched_names.append(cand)
+    return tuple(matched_names)
+
+
+@dataclass(frozen=True)
+class DispatchMethodTarget(ABC):
+    """Whether a type-test push adds a new polymorphic method family or reuses an exact existing one."""
+
+    method_name: str
+
+    @property
+    def docstring(self) -> str | None:
+        return None
+
+    @abstractmethod
+    def member_and_import_edits(
+        self,
+        proof: TypeTestDispatchProof,
+        snapshot: CodemodSourceSnapshot,
+        geometry: object,
+        param_names: tuple[str, ...],
+        rationale: str,
+    ) -> tuple[tuple[NominalSourceEdit, ...], frozenset[str]]:
+        """Return `(extra_edits, retained_names_in_source)` beyond the consumer call replacement."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def rationale(self, proof: TypeTestDispatchProof) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ExistingDispatchMethod(DispatchMethodTarget):
+    """Reuse an already-declared polymorphic method family whose C3 dispatch matches identically."""
+
+    def member_and_import_edits(
+        self,
+        proof: TypeTestDispatchProof,
+        snapshot: CodemodSourceSnapshot,
+        geometry: object,
+        param_names: tuple[str, ...],
+        rationale: str,
+    ) -> tuple[tuple[NominalSourceEdit, ...], frozenset[str]]:
+        del proof, snapshot, geometry, param_names, rationale
+        return (), frozenset()
+
+    def rationale(self, proof: TypeTestDispatchProof) -> str:
+        return (
+            f"Reuses existing `{proof.base.qualname}.{self.method_name}` for the "
+            f"type test in `{proof.function.name}`."
+        )
+
+
+@dataclass(frozen=True)
+class NewDispatchMethod(DispatchMethodTarget):
+    """Append a newly factored polymorphic method onto the base and tested classes."""
+
+    _docstring: str | None = None
+
+    @property
+    def docstring(self) -> str | None:
+        return self._docstring
+
+    def member_and_import_edits(
+        self,
+        proof: TypeTestDispatchProof,
+        snapshot: CodemodSourceSnapshot,
+        geometry: object,
+        param_names: tuple[str, ...],
+        rationale: str,
+    ) -> tuple[tuple[NominalSourceEdit, ...], frozenset[str]]:
+        parsed_source = snapshot.parsed_module_for_source_path(proof.source_path)
+        all_destinations = (
+            proof.base,
+            *(target_cls for arm in proof.arms for target_cls in arm.targets),
+            *(po.target for po in proof.precedence_overrides),
+        )
+        method_annotations = ResolvedMethodAnnotations.for_push(
+            snapshot,
+            parsed_source,
+            proof.test_line,
+            proof.enclosure,
+            proof.function,
+            proof.outer_receiver_aliases,
+            proof.captured_args,
+            all_destinations,
+            propagates_function_return_type=proof.site.propagates_function_return_type,
+            is_void_method=proof.site.is_void_method,
+            constant_bool_return=proof.site.returns_constant_bool,
+            rationale=rationale,
+        )
+        param_annotations = method_annotations.param_map
+        base_method = _render_method(
+            proof.site.kind,
+            self.method_name,
+            param_names,
+            proof.default_body,
+            is_async=proof.is_async,
+            docstring=self._docstring,
+            param_annotations=param_annotations,
+            return_annotation=method_annotations.return_annotation,
+        )
+        member_edits: list[NominalSourceEdit] = [
+            *_class_append_edits(
+                proof.base.file_path,
+                geometry(proof.base.file_path),  # type: ignore[operator]
+                proof.base.node,
+                base_method,
+                member_names=(self.method_name,),
+                rationale=rationale,
+            )
+        ]
+        for resolved_arm in proof.arms:
+            arm_method = _render_method(
+                proof.site.kind,
+                self.method_name,
+                param_names,
+                resolved_arm.body,
+                is_async=proof.is_async,
+                param_annotations=param_annotations,
+                return_annotation=method_annotations.return_annotation,
+            )
+            for target_cls in resolved_arm.targets:
+                member_edits.extend(
+                    _class_append_edits(
+                        target_cls.file_path,
+                        geometry(target_cls.file_path),  # type: ignore[operator]
+                        target_cls.node,
+                        arm_method,
+                        member_names=(self.method_name,),
+                        rationale=rationale,
+                    )
+                )
+        for reorder in proof.base_reorders:
+            header = ClassHeaderSpanSourceAuthority(
+                node=reorder.target.node,
+                source=snapshot.sources_by_file_path[reorder.target.file_path],
+            )
+            reordered_items = tuple(
+                header.base_items[i] for i in reorder.new_base_order
+            )
+            member_edits.extend(
+                header.source_edits(
+                    header.with_base_items(reordered_items),
+                    file_path=reorder.target.file_path,
+                    rationale=rationale,
+                )
+            )
+        precedence_imports: list[NominalSourceEdit] = []
+        for po in proof.precedence_overrides:
+            po_stmt = _super_precedence_statement(
+                po.winner_target.qualname,
+                proof.site.kind.receiver,
+                self.method_name,
+                param_names,
+                is_async=proof.is_async,
+                is_void=proof.site.is_void_method,
+            )
+            po_method = _render_method(
+                proof.site.kind,
+                self.method_name,
+                param_names,
+                (po_stmt,),
+                is_async=proof.is_async,
+                param_annotations=param_annotations,
+                return_annotation=method_annotations.return_annotation,
+            )
+            member_edits.extend(
+                _class_append_edits(
+                    po.target.file_path,
+                    geometry(po.target.file_path),  # type: ignore[operator]
+                    po.target.node,
+                    po_method,
+                    member_names=(self.method_name,),
+                    rationale=rationale,
+                )
+            )
+            if po.import_source is not None:
+                precedence_imports.append(
+                    ModuleImportMutation.from_source(
+                        file_path=po.target.file_path,
+                        import_source=po.import_source,
+                        rationale=rationale,
+                    )
+                )
+
+        local_exclusions = frozenset((proof.site.kind.receiver, *param_names))
+        extra_edits: list[NominalSourceEdit] = [
+            *member_edits,
+            *precedence_imports,
+            *method_annotations.import_edits,
+            *_cross_module_imports_for_body(
+                snapshot,
+                parsed_source,
+                proof.test_line,
+                proof.base,
+                proof.default_body,
+                local_exclusions,
+                rationale,
+            ),
+        ]
+        for resolved_arm in proof.arms:
+            for target_cls in resolved_arm.targets:
+                extra_edits.extend(
+                    _cross_module_imports_for_body(
+                        snapshot,
+                        parsed_source,
+                        proof.test_line,
+                        target_cls,
+                        resolved_arm.body,
+                        local_exclusions,
+                        rationale,
+                    )
+                )
+        retained_in_source: set[str] = set()
+        if any(dest.file_path == proof.source_path for dest in all_destinations):
+            retained_in_source.update(
+                _names_loaded_in(method_annotations.annotation_nodes())
+            )
+        for po in proof.precedence_overrides:
+            if po.target.file_path == proof.source_path:
+                retained_in_source.add(po.winner_target.qualname)
+        if proof.base.file_path == proof.source_path:
+            retained_in_source.update(_names_loaded_in(proof.default_body))
+        for resolved_arm in proof.arms:
+            if any(
+                target_cls.file_path == proof.source_path
+                for target_cls in resolved_arm.targets
+            ):
+                retained_in_source.update(_names_loaded_in(resolved_arm.body))
+        return tuple(extra_edits), frozenset(retained_in_source)
+
+    def rationale(self, proof: TypeTestDispatchProof) -> str:
+        targets = ", ".join(
+            f"`{cls.qualname}`"
+            for arm in proof.arms
+            for cls in arm.targets
+        )
+        if not targets:
+            return (
+                f"Pushes the type test in `{proof.function.name}` onto "
+                f"`{proof.base.qualname}.{self.method_name}`."
+            )
+        return (
+            f"Pushes the type test in `{proof.function.name}` onto "
+            f"`{proof.base.qualname}.{self.method_name}` with overrides on {targets}."
+        )
+
+
 @dataclass(frozen=True)
 class TypeTestDispatchProof:
     """A type test proved safe to push onto a closed scanned class family."""
@@ -3773,12 +4330,20 @@ class TypeTestDispatchProof:
     default_body: tuple[ast.stmt, ...]
     captured_args: tuple[CapturedArgument, ...]
     is_async: bool
-    method_name: str
-    docstring: str | None
+    method_target: DispatchMethodTarget
+    matching_existing_methods: tuple[str, ...] = ()
     enclosure: FunctionEnclosure = ModuleEnclosure()
     outer_receiver_aliases: tuple[OuterReceiverAlias, ...] = ()
     base_reorders: tuple[BaseReorderPlan, ...] = ()
     precedence_overrides: tuple[PrecedenceOverridePlan, ...] = ()
+
+    @property
+    def method_name(self) -> str:
+        return self.method_target.method_name
+
+    @property
+    def docstring(self) -> str | None:
+        return self.method_target.docstring
 
     @classmethod
     def locate_function(
@@ -3964,17 +4529,6 @@ class TypeTestDispatchProof:
             [] if folds_onto_base else resolved_arm_symbols
         )
 
-        mro_plan = cls._require_dispatch_mro_safe(
-            snapshot,
-            subject_family,
-            base,
-            base_symbol,
-            checked_arms,
-            checked_arm_symbols,
-            method_name,
-        )
-        super_safe_arms = mro_plan.super_safe_arms
-
         receiver = site.kind.receiver
         enclosing_locals = enclosure.enclosing_local_names()
         raw_bodies: tuple[tuple[ast.stmt, ...], ...] = (
@@ -4034,6 +4588,50 @@ class TypeTestDispatchProof:
             outer_receiver_aliases=outer_receiver_aliases,
             enclosing_locals=enclosing_locals,
         )
+
+        matching_existing = _matching_existing_dispatch_methods(
+            snapshot,
+            parsed_module,
+            test_line,
+            subject_family,
+            base,
+            base_symbol,
+            checked_arms,
+            checked_arm_symbols,
+            site.kind,
+            rewritten_default,
+            tuple(arm.body for arm in rewritten_arms),
+            captured_args,
+            is_async,
+        )
+        if method_name in matching_existing:
+            return cls(
+                source_path=source_path,
+                test_line=test_line,
+                function=function,
+                site=site,
+                base=base,
+                base_symbol=base_symbol,
+                arms=tuple(rewritten_arms),
+                default_body=rewritten_default,
+                captured_args=captured_args,
+                is_async=is_async,
+                method_target=ExistingDispatchMethod(method_name=method_name),
+                matching_existing_methods=matching_existing,
+                enclosure=enclosure,
+                outer_receiver_aliases=outer_receiver_aliases,
+            )
+
+        mro_plan = cls._require_dispatch_mro_safe(
+            snapshot,
+            subject_family,
+            base,
+            base_symbol,
+            checked_arms,
+            checked_arm_symbols,
+            method_name,
+        )
+        super_safe_arms = mro_plan.super_safe_arms
 
         if not folds_onto_base:
             param_names = tuple(arg.param_name for arg in captured_args)
@@ -4099,8 +4697,11 @@ class TypeTestDispatchProof:
             default_body=rewritten_default,
             captured_args=captured_args,
             is_async=is_async,
-            method_name=method_name,
-            docstring=docstring.strip() if docstring else None,
+            method_target=NewDispatchMethod(
+                method_name=method_name,
+                _docstring=docstring.strip() if docstring else None,
+            ),
+            matching_existing_methods=matching_existing,
             enclosure=enclosure,
             outer_receiver_aliases=outer_receiver_aliases,
             base_reorders=mro_plan.base_reorders,
@@ -4665,180 +5266,27 @@ class TypeTestDispatchProof:
             replacement_text,
         )
 
-        # 2. Base method and per-arm overrides (commutative class-member insertions).
-        parsed_source = snapshot.parsed_module_for_source_path(self.source_path)
-        all_destinations = (
-            self.base,
-            *(target_cls for arm in self.arms for target_cls in arm.targets),
-            *(po.target for po in self.precedence_overrides),
+        # 2. Target-method edits (new polymorphic family or empty for exact existing-method reuse).
+        target_edits, target_retained = self.method_target.member_and_import_edits(
+            self, snapshot, geometry, param_names, rationale
         )
-        method_annotations = ResolvedMethodAnnotations.for_push(
-            snapshot,
-            parsed_source,
-            self.test_line,
-            self.enclosure,
-            self.function,
-            self.outer_receiver_aliases,
-            self.captured_args,
-            all_destinations,
-            propagates_function_return_type=self.site.propagates_function_return_type,
-            is_void_method=self.site.is_void_method,
-            constant_bool_return=self.site.returns_constant_bool,
-            rationale=rationale,
+        retained_in_source = set(_names_loaded_in_source(replacement_text)) | set(
+            target_retained
         )
-        param_annotations = method_annotations.param_map
-        base_method = _render_method(
-            self.site.kind,
-            self.method_name,
-            param_names,
-            self.default_body,
-            is_async=self.is_async,
-            docstring=self.docstring,
-            param_annotations=param_annotations,
-            return_annotation=method_annotations.return_annotation,
-        )
-        member_edits: list[NominalSourceEdit] = [
-            *_class_append_edits(
-                self.base.file_path,
-                geometry(self.base.file_path),
-                self.base.node,
-                base_method,
-                member_names=(self.method_name,),
-                rationale=rationale,
-            )
-        ]
-        for resolved_arm in self.arms:
-            arm_method = _render_method(
-                self.site.kind,
-                self.method_name,
-                param_names,
-                resolved_arm.body,
-                is_async=self.is_async,
-                param_annotations=param_annotations,
-                return_annotation=method_annotations.return_annotation,
-            )
-            for target_cls in resolved_arm.targets:
-                member_edits.extend(
-                    _class_append_edits(
-                        target_cls.file_path,
-                        geometry(target_cls.file_path),
-                        target_cls.node,
-                        arm_method,
-                        member_names=(self.method_name,),
-                        rationale=rationale,
-                    )
-                )
-        for reorder in self.base_reorders:
-            header = ClassHeaderSpanSourceAuthority(
-                node=reorder.target.node,
-                source=snapshot.sources_by_file_path[reorder.target.file_path],
-            )
-            reordered_items = tuple(
-                header.base_items[i] for i in reorder.new_base_order
-            )
-            member_edits.extend(
-                header.source_edits(
-                    header.with_base_items(reordered_items),
-                    file_path=reorder.target.file_path,
-                    rationale=rationale,
-                )
-            )
-        precedence_imports: list[NominalSourceEdit] = []
-        for po in self.precedence_overrides:
-            po_stmt = _super_precedence_statement(
-                po.winner_target.qualname,
-                self.site.kind.receiver,
-                self.method_name,
-                param_names,
-                is_async=self.is_async,
-                is_void=self.site.is_void_method,
-            )
-            po_method = _render_method(
-                self.site.kind,
-                self.method_name,
-                param_names,
-                (po_stmt,),
-                is_async=self.is_async,
-                param_annotations=param_annotations,
-                return_annotation=method_annotations.return_annotation,
-            )
-            member_edits.extend(
-                _class_append_edits(
-                    po.target.file_path,
-                    geometry(po.target.file_path),
-                    po.target.node,
-                    po_method,
-                    member_names=(self.method_name,),
-                    rationale=rationale,
-                )
-            )
-            if po.import_source is not None:
-                precedence_imports.append(
-                    ModuleImportMutation.from_source(
-                        file_path=po.target.file_path,
-                        import_source=po.import_source,
-                        rationale=rationale,
-                    )
-                )
-
-        # 3. Cross-module imports for moved bodies and obsolete-import cleanup at consumer.
-        local_exclusions = frozenset((self.site.kind.receiver, *param_names))
-        extra_edits: list[NominalSourceEdit] = [
-            *member_edits,
-            *precedence_imports,
-            *method_annotations.import_edits,
-            *_cross_module_imports_for_body(
-                snapshot,
-                parsed_source,
-                self.test_line,
-                self.base,
-                self.default_body,
-                local_exclusions,
-                rationale,
-            ),
-        ]
-        for resolved_arm in self.arms:
-            for target_cls in resolved_arm.targets:
-                extra_edits.extend(
-                    _cross_module_imports_for_body(
-                        snapshot,
-                        parsed_source,
-                        self.test_line,
-                        target_cls,
-                        resolved_arm.body,
-                        local_exclusions,
-                        rationale,
-                    )
-                )
-        retained_in_source = set(_names_loaded_in_source(replacement_text))
-        if any(dest.file_path == self.source_path for dest in all_destinations):
-            retained_in_source.update(
-                _names_loaded_in(method_annotations.annotation_nodes())
-            )
-        for po in self.precedence_overrides:
-            if po.target.file_path == self.source_path:
-                retained_in_source.add(po.winner_target.qualname)
-        if self.base.file_path == self.source_path:
-            retained_in_source.update(_names_loaded_in(self.default_body))
-        for resolved_arm in self.arms:
-            if any(
-                target_cls.file_path == self.source_path
-                for target_cls in resolved_arm.targets
-            ):
-                retained_in_source.update(_names_loaded_in(resolved_arm.body))
         obsolete_nodes = (
             *self.site.tested_expr_nodes(),
             *self.site.replaced_ast_nodes(),
         )
-        extra_edits.extend(
-            obsolete_import_edits(
+        extra_edits: list[NominalSourceEdit] = [
+            *target_edits,
+            *obsolete_import_edits(
                 snapshot,
                 self.source_path,
                 obsolete_nodes,
                 rationale,
                 retained_names=frozenset(retained_in_source),
-            )
-        )
+            ),
+        ]
 
         span_edits = tuple(
             geometry(file_path).nominal_edit(
@@ -4856,20 +5304,7 @@ class TypeTestDispatchProof:
         return (*span_edits, *extra_edits)
 
     def rationale(self) -> str:
-        targets = ", ".join(
-            f"`{cls.qualname}`"
-            for arm in self.arms
-            for cls in arm.targets
-        )
-        if not targets:
-            return (
-                f"Pushes the type test in `{self.function.name}` onto "
-                f"`{self.base.qualname}.{self.method_name}`."
-            )
-        return (
-            f"Pushes the type test in `{self.function.name}` onto "
-            f"`{self.base.qualname}.{self.method_name}` with overrides on {targets}."
-        )
+        return self.method_target.rationale(self)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4953,16 +5388,11 @@ class OwnTypeTestFindingRecipeSynthesizer(
         if pick is not None:
             method_name = pick.name
             docstring: str | None = pick.judgement
-        elif site.is_whole_function and not (
-            function.name.startswith("__") and function.name.endswith("__")
-        ):
-            method_name = function.name
-            docstring = ast.get_docstring(function)
         else:
-            # Verify the site is structurally proved before asking for a method name.
+            # Verify the site is structurally proved and detect an exact existing family method first.
             probe_name = "__nra_probe_method"
             try:
-                proof = TypeTestDispatchProof.proved(
+                probe_proof = TypeTestDispatchProof.proved(
                     snapshot,
                     target,
                     primary.line,
@@ -4973,14 +5403,23 @@ class OwnTypeTestFindingRecipeSynthesizer(
                 )
             except ValueError as error:
                 return self.stopped_evaluation(error)
-            return self.stopped_evaluation(
-                NeedsInput(
-                    f"embedded type test in `{primary.symbol}` can push onto "
-                    f"`{proof.base.qualname}`; supply `owner` `{primary.symbol}` with a "
-                    "method name and one-line judgement in `--codemod-owner-picks`",
-                    NeededInput.OWNER_PICK,
+            if len(probe_proof.matching_existing_methods) == 1:
+                method_name = probe_proof.matching_existing_methods[0]
+                docstring = None
+            elif site.is_whole_function and not (
+                function.name.startswith("__") and function.name.endswith("__")
+            ):
+                method_name = function.name
+                docstring = ast.get_docstring(function)
+            else:
+                return self.stopped_evaluation(
+                    NeedsInput(
+                        f"embedded type test in `{primary.symbol}` can push onto "
+                        f"`{probe_proof.base.qualname}`; supply `owner` `{primary.symbol}` with a "
+                        "method name and one-line judgement in `--codemod-owner-picks`",
+                        NeededInput.OWNER_PICK,
+                    )
                 )
-            )
 
         try:
             proof = TypeTestDispatchProof.proved(

@@ -85,6 +85,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _is_pure_subject,
     _names_referenced_outside,
     _names_stored_in,
+    _normalized_body_dumps,
     _outer_receiver_aliases,
     _render_indented_statements,
     _render_method,
@@ -975,66 +976,6 @@ def _resolve_scanned_instance_owner(
             NeededInput.SOURCE_CHANGE,
         )
     return ResolvedClassTarget.from_rewrite_target(snapshot, source_rewrite_target(owner_indexed))
-
-
-class _AlphaRenameParameters(ast.NodeTransformer):
-    """Alpha-rename free parameter references without entering nested scopes."""
-
-    def __init__(self, rename_map: dict[str, str]) -> None:
-        self.rename_map = rename_map
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        mapped = self.rename_map.get(node.id)
-        if mapped is None:
-            return node
-        return ast.copy_location(ast.Name(id=mapped, ctx=node.ctx), node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        return node
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
-        return node
-
-    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
-        return node
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
-        return node
-
-
-def _statements_without_docstring(body: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
-    if (
-        len(body) > 1
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        return tuple(body[1:])
-    return tuple(body)
-
-
-def _body_shadows_parameter(body: Sequence[ast.stmt], param_names: frozenset[str]) -> bool:
-    for stmt in body:
-        for node in ast.walk(stmt):
-            if isinstance(node, ast.comprehension):
-                for target_node in ast.walk(node.target):
-                    if isinstance(target_node, ast.Name) and target_node.id in param_names:
-                        return True
-    return False
-
-
-def _normalized_body_dumps(
-    body: Sequence[ast.stmt], param_names: Sequence[str]
-) -> tuple[str, ...] | None:
-    stripped = _statements_without_docstring(body)
-    if _body_shadows_parameter(stripped, frozenset(param_names)):
-        return None
-    rename_map = {name: f"__p{index}" for index, name in enumerate(param_names)}
-    transformer = _AlphaRenameParameters(rename_map)
-    return tuple(
-        ast.dump(transformer.visit(copy.deepcopy(stmt)), include_attributes=False)
-        for stmt in stripped
-    )
 
 
 def _matching_existing_method_names(
