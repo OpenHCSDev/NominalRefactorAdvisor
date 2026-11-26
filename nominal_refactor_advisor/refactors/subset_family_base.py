@@ -34,6 +34,10 @@ from typing import cast
 from nominal_refactor_advisor.assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
+from nominal_refactor_advisor.ast_field_decoders import (
+    end_column_offsets,
+    end_line_numbers,
+)
 from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
 from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
@@ -437,17 +441,19 @@ class SubsetFamilyBase:
 
         start = self.header_start(member.node)
         end = member.node.body[0].lineno - 1
-        if end < member.node.lineno or base.end_lineno is None or base.end_col_offset is None:
-            raise ValueError(f"`{member.simple_name}` declares its body on its header line")
-        lines = list(self.source_lines[start - 1 : end])
-        if base.lineno != base.end_lineno:
-            raise ValueError(f"`{member.simple_name}` spells its base over several lines")
-        row = base.lineno - start
-        encoded = lines[row].encode("utf-8")
-        lines[row] = (
-            encoded[: base.col_offset] + self.base_name.encode("utf-8") + encoded[base.end_col_offset :]
-        ).decode("utf-8")
-        return start, end, tuple(lines)
+        if not end < member.node.lineno:
+            for end_line in end_line_numbers(base):
+                for end_column in end_column_offsets(base):
+                    lines = list(self.source_lines[start - 1 : end])
+                    if base.lineno != end_line:
+                        raise ValueError(f"`{member.simple_name}` spells its base over several lines")
+                    row = base.lineno - start
+                    encoded = lines[row].encode("utf-8")
+                    lines[row] = (
+                        encoded[: base.col_offset] + self.base_name.encode("utf-8") + encoded[end_column :]
+                    ).decode("utf-8")
+                    return start, end, tuple(lines)
+        raise ValueError(f"`{member.simple_name}` declares its body on its header line")
 
     @staticmethod
     def physical(lines: tuple[str, ...]) -> tuple[str, ...]:

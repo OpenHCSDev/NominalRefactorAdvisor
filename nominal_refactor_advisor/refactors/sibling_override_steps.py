@@ -21,6 +21,7 @@ from typing import ClassVar
 
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
+    kwarg_parameters,
     optional_values,
     variadic_parameters,
 )
@@ -526,7 +527,7 @@ class ExtraHookParams:
                 return None
         args = method.args
         keyword_only = bool(args.defaults or args.vararg or args.kwonlyargs)
-        if keyword_only and args.kwarg is not None:
+        if keyword_only and kwarg_parameters(args):
             return None
         ann_map = dict(annotations) if annotations else {}
         ann_pairs = tuple((n, ann_map[n]) for n in ordered if n in ann_map)

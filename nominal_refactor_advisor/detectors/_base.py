@@ -39,7 +39,11 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig
 
-from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
+from nominal_refactor_advisor.ast_field_decoders import (
+    ParameterAnnotations,
+    end_line_numbers,
+    optional_values,
+)
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.implementation_identity import AnswerDeclaration
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -7616,32 +7620,33 @@ class DeclarativeDetectorClassCandidate(
         module: ParsedModule,
         node: ast.ClassDef,
     ) -> DeclarativeDetectorClassCandidate | None:
-        if node.end_lineno is None or len(node.bases) != 1:
-            return None
-        base = ParameterizedBaseSource.from_node(node.bases[0])
-        assignment_values = cls.assignment_values(node)
-        if (
-            base is None
-            or not base.parameter_source.isidentifier()
-            or assignment_values is None
-        ):
-            return None
-        reference = CandidateCollectorBaseReference.from_node(
-            module,
-            node.bases[0],
-            line=node.lineno,
-        )
-        if reference is None or not reference.is_candidate:
-            return None
-        return cls(
-            file_path=module.file_path,
-            line=node.lineno,
-            class_name=node.name,
-            base_name=base.base_name,
-            candidate_type_name=base.parameter_source,
-            assignment_names=tuple(assignment_values),
-            line_count=node.end_lineno - node.lineno + 1,
-        )
+        for end_line in end_line_numbers(node):
+            if len(node.bases) == 1:
+                base = ParameterizedBaseSource.from_node(node.bases[0])
+                assignment_values = cls.assignment_values(node)
+                if (
+                    base is None
+                    or not base.parameter_source.isidentifier()
+                    or assignment_values is None
+                ):
+                    return None
+                reference = CandidateCollectorBaseReference.from_node(
+                    module,
+                    node.bases[0],
+                    line=node.lineno,
+                )
+                if reference is None or not reference.is_candidate:
+                    return None
+                return cls(
+                    file_path=module.file_path,
+                    line=node.lineno,
+                    class_name=node.name,
+                    base_name=base.base_name,
+                    candidate_type_name=base.parameter_source,
+                    assignment_names=tuple(assignment_values),
+                    line_count=end_line - node.lineno + 1,
+                )
+        return None
 
     @classmethod
     def from_module(
@@ -7725,9 +7730,13 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
                     target.id,
                     ast.unparse(assignment.annotation),
                     (
-                        ast.unparse(assignment.value)
-                        if assignment.value is not None
-                        else None
+                        next(
+                            (
+                                ast.unparse(optional_value)
+                                for optional_value in optional_values(assignment)
+                            ),
+                            None,
+                        )
                     ),
                 )
             )
