@@ -1925,6 +1925,327 @@ def test_aliases_and_annotates_outer_self_when_instance_method_pushes_classmetho
     assert _findings(tmp_path) == []
 
 
+def test_push_type_test_dispatch_try_finally_tail(tmp_path: Path) -> None:
+    """An early-return type test followed by a `try: return ... finally: ...` tail
+    pushes cleanly onto the family."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/sessions.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Sources:\n"
+                "    pass\n\n\n"
+                "class InlineSources(Sources):\n"
+                "    def __init__(self, cached: str | None) -> None:\n"
+                "        self.cached = cached\n\n\n"
+                "class FileSources(Sources):\n"
+                "    pass\n\n\n"
+                "def resolve(sources: Sources, log: list[str]) -> str:\n"
+                "    if isinstance(sources, InlineSources):\n"
+                "        if sources.cached is not None:\n"
+                "            return sources.cached\n"
+                "    log.append('open')\n"
+                "    try:\n"
+                "        return 'built'\n"
+                "    finally:\n"
+                "        log.append('close')\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "sessions.py").read_text()
+    assert "return sources.resolve(log)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    log: list[str] = []
+    assert ns["resolve"](ns["InlineSources"]("hit"), log) == "hit"  # type: ignore[operator]
+    assert log == []
+    assert ns["resolve"](ns["InlineSources"](None), log) == "built"  # type: ignore[operator]
+    assert log == ["open", "close"]
+    log.clear()
+    assert ns["resolve"](ns["FileSources"](), log) == "built"  # type: ignore[operator]
+    assert log == ["open", "close"]
+    assert _findings(tmp_path) == []
+
+
+def test_push_type_test_dispatch_consecutive_early_return_ifs(tmp_path: Path) -> None:
+    """Consecutive early-return `if isinstance(x, A): return ...; if isinstance(x, B): return ...`
+    statements on the same subject merge into one multi-arm polymorphic method."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/kinds.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Declared:\n"
+                "    pass\n\n\n"
+                "class DeclaredClass(Declared):\n"
+                "    pass\n\n\n"
+                "class DeclaredInst(Declared):\n"
+                "    pass\n\n\n"
+                "class DeclaredOther(Declared):\n"
+                "    pass\n\n\n"
+                "def classify(declared: Declared, fallback: str) -> str:\n"
+                "    if isinstance(declared, DeclaredClass):\n"
+                "        return 'class'\n"
+                "    if isinstance(declared, DeclaredInst):\n"
+                "        return 'instance'\n"
+                "    return fallback\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "kinds.py").read_text()
+    assert "return declared.classify(fallback)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["classify"](ns["DeclaredClass"](), "fb") == "class"  # type: ignore[operator]
+    assert ns["classify"](ns["DeclaredInst"](), "fb") == "instance"  # type: ignore[operator]
+    assert ns["classify"](ns["DeclaredOther"](), "fb") == "fb"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_push_type_test_dispatch_prefix_guarded_ternary(tmp_path: Path) -> None:
+    """Prefix-guarded `IfExp` (`A if guard and isinstance(x, Sub) else B` and
+    `A if guard or isinstance(x, Sub) else B`) preserve short-circuit guard order
+    while pushing the type test onto the family."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/picks.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Metrics:\n"
+                "    pass\n\n\n"
+                "class PickMetrics(Metrics):\n"
+                "    def __init__(self, tag: str) -> None:\n"
+                "        self.tag = tag\n\n\n"
+                "class PlainMetrics(Metrics):\n"
+                "    pass\n\n\n"
+                "def apply_and(metrics: Metrics, enabled: bool, default_tag: str) -> str:\n"
+                "    chosen = (\n"
+                "        metrics.tag\n"
+                "        if enabled and isinstance(metrics, PickMetrics)\n"
+                "        else default_tag\n"
+                "    )\n"
+                "    return chosen\n\n\n"
+                "def apply_or(metrics: Metrics, force_empty: bool) -> str:\n"
+                "    chosen = (\n"
+                "        'empty'\n"
+                "        if force_empty or isinstance(metrics, PlainMetrics)\n"
+                "        else 'picked'\n"
+                "    )\n"
+                "    return chosen\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 2
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["apply_and"].stable_id,
+                owner="apply_and",
+                because="Metrics family owns selected tag",
+                name="selected_tag",
+                judgement="Tag selected when enabled.",
+            ),
+            OwnerPick(
+                finding=by_sym["apply_or"].stable_id,
+                owner="apply_or",
+                because="Metrics family owns status label",
+                name="status_label",
+                judgement="Label when not forced empty.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(findings)
+    snap = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "picks.py").read_text()
+    assert "metrics.selected_tag(default_tag) if enabled else default_tag" in after
+    assert "'empty' if force_empty else metrics.status_label()" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    pm = ns["PickMetrics"]("base")  # type: ignore[operator]
+    plain = ns["PlainMetrics"]()  # type: ignore[operator]
+    assert ns["apply_and"](pm, True, "def") == "base"  # type: ignore[operator]
+    assert ns["apply_and"](pm, False, "def") == "def"  # type: ignore[operator]
+    assert ns["apply_and"](plain, True, "def") == "def"  # type: ignore[operator]
+    assert ns["apply_or"](pm, True) == "empty"  # type: ignore[operator]
+    assert ns["apply_or"](pm, False) == "picked"  # type: ignore[operator]
+    assert ns["apply_or"](plain, False) == "empty"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_push_type_test_dispatch_inline_boolean_and_nested_all(tmp_path: Path) -> None:
+    """Bare inline type tests inside `any(...)`, `all(...)`, and assignments push
+    onto the tested family, and a compound `if` whose first operand is another
+    type test does not steal a nested `all(isinstance(...))` on a later line."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/kinds.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Kind:\n"
+                "    pass\n\n\n"
+                "class PropKind(Kind):\n"
+                "    pass\n\n\n"
+                "class CachedKind(Kind):\n"
+                "    pass\n\n\n"
+                "class PlainKind(Kind):\n"
+                "    pass\n\n\n"
+                "def has_cached_cls(kinds: tuple[type[Kind], ...]) -> bool:\n"
+                "    if not any(issubclass(k, CachedKind) for k in kinds):\n"
+                "        return False\n"
+                "    return True\n\n\n"
+                "def flag_cached(kind: Kind) -> bool:\n"
+                "    is_cached = isinstance(kind, CachedKind)\n"
+                "    return is_cached\n\n\n"
+                "def check_pair(parent: Kind, children: tuple[Kind, ...]) -> bool:\n"
+                "    if (\n"
+                "        isinstance(parent, PropKind)\n"
+                "        and children\n"
+                "        and all(isinstance(child, CachedKind) for child in children)\n"
+                "    ):\n"
+                "        return True\n"
+                "    return False\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    snap = _snapshot(tmp_path)
+    # Locate the 3 specific sites: has_cached_cls, flag_cached, and the nested `child` in check_pair.
+    target_sites = [
+        (
+            f.primary_evidence.symbol,
+            f.primary_evidence.line,
+            f.metrics.tested_symbols,
+        )
+        for f in findings
+    ]
+    assert any(sym == "has_cached_cls" for sym, _, _ in target_sites)
+    assert any(sym == "flag_cached" for sym, _, _ in target_sites)
+    child_findings = [
+        f
+        for f in findings
+        if f.primary_evidence.symbol == "check_pair"
+        and any(s.endswith(".CachedKind") for s in f.metrics.tested_symbols)
+    ]
+    assert len(child_findings) == 1
+    child_finding = child_findings[0]
+
+    # Verify all three push cleanly via OwnerPicks + codemod_plan_from_findings.
+    f_any = next(f for f in findings if f.primary_evidence.symbol == "has_cached_cls")
+    f_flag = next(f for f in findings if f.primary_evidence.symbol == "flag_cached")
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=f_any.stable_id,
+                owner="has_cached_cls",
+                because="Kind class owns cached capability",
+                name="is_cached_kind_cls",
+                judgement="Whether this kind class is cached.",
+            ),
+            OwnerPick(
+                finding=f_flag.stable_id,
+                owner="flag_cached",
+                because="Kind instance owns cached capability",
+                name="is_cached_instance",
+                judgement="Whether this kind instance is cached.",
+            ),
+            OwnerPick(
+                finding=child_finding.stable_id,
+                owner="check_pair",
+                because="Kind child owns cached capability",
+                name="is_cached_child",
+                judgement="Whether this child kind is cached.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied([f_any, f_flag, child_finding])
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 3
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "kinds.py").read_text()
+    assert "k.is_cached_kind_cls()" in after
+    assert "kind.is_cached_instance()" in after
+    assert "child.is_cached_child()" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    PropKind = ns["PropKind"]
+    CachedKind = ns["CachedKind"]
+    PlainKind = ns["PlainKind"]
+    assert ns["has_cached_cls"]((PlainKind, CachedKind)) is True  # type: ignore[operator]
+    assert ns["has_cached_cls"]((PlainKind, PropKind)) is False  # type: ignore[operator]
+    assert ns["flag_cached"](CachedKind()) is True  # type: ignore[operator]
+    assert ns["flag_cached"](PlainKind()) is False  # type: ignore[operator]
+    assert ns["check_pair"](PropKind(), (CachedKind(),)) is True  # type: ignore[operator]
+    assert ns["check_pair"](PropKind(), (PlainKind(),)) is False  # type: ignore[operator]
+
+
+def test_non_pushable_if_test_does_not_downgrade_to_boolean_predicate(
+    tmp_path: Path,
+) -> None:
+    """A non-pushable `if isinstance(x, Sub): return x.sub_only` inside a loop
+    must stay refused instead of downgrading to `if x.is_sub():` (which breaks
+    narrowing and exports a derived boolean)."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/loop.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Item:\n"
+                "    pass\n\n\n"
+                "class Special(Item):\n"
+                "    def __init__(self, payload: str) -> None:\n"
+                "        self.payload = payload\n\n\n"
+                "class Plain(Item):\n"
+                "    pass\n\n\n"
+                "def first_payload(items: list[Item]) -> str | None:\n"
+                "    for item in items:\n"
+                "        if isinstance(item, Special):\n"
+                "            return item.payload\n"
+                "    return None\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.recipe is None
+    assert "not a pushable dispatch shape" in (ev.rejection_reason or "")
+
+
+
 
 
 
