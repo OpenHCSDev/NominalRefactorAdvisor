@@ -854,6 +854,25 @@ class ConstantSubtypeAnswerMetrics(DeclaredBasePickMetrics):
 
 
 @dataclass(frozen=True)
+class ForeignAbsenceProbeMetrics(DeclaredBasePickMetrics):
+    """One foreign absence probe group on a receiver, ready for a method-name pick when embedded."""
+
+    consumer_symbol: str
+    subject_source: str
+    probe_lines: tuple[int, ...]
+    owner_symbol: str | None = None
+
+    def base_pick_owner_name(
+        self, authority_evidence: SourceLocation | None
+    ) -> str | None:
+        del authority_evidence
+        return self.consumer_symbol
+
+    def base_pick_owner_label(self) -> str:
+        return "consumer"
+
+
+@dataclass(frozen=True)
 class RegistrationMetrics(RegistrationFindingMetrics, DeclaredBasePickMetrics):
     """Metrics for manual or duplicated class-registration surfaces."""
 
