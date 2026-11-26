@@ -1913,9 +1913,9 @@ def test_aliases_and_annotates_outer_self_when_instance_method_pushes_classmetho
 
     after = (tmp_path / "pkg" / "origin.py").read_text()
     assert "class DirectChange(Attributed, ChangeKind):" in after
-    assert "def record(cls, owner: Attribution, label: str) -> None:" in after
+    assert "def record(cls, label: str, owner: Attribution) -> None:" in after
     assert "owner.items.append(label)" in after
-    assert "kind.record(self, label)" in after
+    assert "kind.record(label, self)" in after
     ns: dict[str, object] = {}
     exec(after, ns)
     attr = ns["Attribution"]()  # type: ignore[operator]
