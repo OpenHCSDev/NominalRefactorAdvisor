@@ -44,7 +44,7 @@ from typing import (
     cast,
 )
 
-from nominal_refactor_advisor.analysis import DetectorAnalysisWorkerPlan
+from nominal_refactor_advisor.worker_plan import DetectorAnalysisWorkerPlan
 from nominal_refactor_advisor.type_checker_session import DeferredTypeChecker, SourceTexts, TypeErrors
 from nominal_refactor_advisor.implementation_identity import AnswerFreeDeclaration
 from nominal_refactor_advisor.module_node_index import ModuleImportStatements

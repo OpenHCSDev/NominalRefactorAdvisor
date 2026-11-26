@@ -45,7 +45,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from nominal_refactor_advisor.amortization import IntrospectionSource, NoTrace
-from nominal_refactor_advisor.analysis import DetectorAnalysisWorkerPlan
+from nominal_refactor_advisor.worker_plan import DetectorAnalysisWorkerPlan
 from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
 from nominal_refactor_advisor.codemod_architecture_guards import ArchitectureGuardSuite
 from nominal_refactor_advisor.codemod_source_edits import FileText
