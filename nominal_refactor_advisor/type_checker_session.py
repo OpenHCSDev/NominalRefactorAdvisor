@@ -127,6 +127,14 @@ class TypeCheckerSources(ABC):
             pathed.append((source.path, source))
         return tuple(pathed)
 
+    def resolve_answers(self, asked) -> Mapping[ReceiverSpan, ReceiverType]:
+        """Resolve requested receiver-type answers from this source snapshot."""
+        session = TypeCheckerSession._built(self, RequestedSpanExpressions.of(asked))
+        try:
+            return session.receiver_types(asked)
+        finally:
+            session.stop()
+
 
 @dataclass(frozen=True)
 class SourceFiles(TypeCheckerSources):
@@ -159,6 +167,16 @@ class SourceTexts(TypeCheckerSources):
         """Everything a build of these modules reads: each one's file, name and text."""
 
         return tuple((module.file_path, module.module_name, module.source) for module in self.modules)
+
+    def resolve_answers(self, asked) -> Mapping[ReceiverSpan, ReceiverType]:
+        existing = TypeCheckerSession._active_incremental()
+        if existing is not None:
+            synced = existing.sync_overlay(self)
+            if synced is not None:
+                return synced.receiver_types(asked)
+            if existing._failed:
+                _incremental_type_checker_slot()[0] = None
+        return super().resolve_answers(asked)
 
 
 def _writes_receiver_attribute(node: ast.AST, receiver_names: frozenset[str]) -> bool:
@@ -647,19 +665,7 @@ class TypeCheckerSession(ABC):
         check untyped defs and only the requested spans are formatted and exported."""
 
         asked = tuple(spans)
-        if isinstance(sources, SourceTexts):
-            existing = TypeCheckerSession._active_incremental()
-            if existing is not None:
-                synced = existing.sync_overlay(sources)
-                if synced is not None:
-                    return synced.receiver_types(asked)
-                if existing._failed:
-                    _incremental_type_checker_slot()[0] = None
-        session = TypeCheckerSession._built(sources, RequestedSpanExpressions.of(asked))
-        try:
-            return session.receiver_types(asked)
-        finally:
-            session.stop()
+        return sources.resolve_answers(asked)
 
     @staticmethod
     def _built(

@@ -1546,6 +1546,10 @@ class CompactAssignmentTargetABC(ValueExpressionShapeABC, DataclassGraphNode):
     ) -> frozenset[str]:
         raise NotImplementedError
 
+    def is_definition_target(self) -> bool:
+        """Whether this assignment target is a definition target."""
+        return False
+
 
 class CompactLexicalBindingTargetABC(CompactAssignmentTargetABC):
     """Lexical write behaviour independent of how the binding name is supplied."""
@@ -1612,6 +1616,9 @@ class CompactDefinitionTarget(CompactLexicalBindingTargetABC):
     def __post_init__(self) -> None:
         if not isinstance(self.owner, CompactDefinitionFlowOwner):
             raise TypeError("Definition targets require their source declaration")
+
+    def is_definition_target(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True)
@@ -1731,9 +1738,7 @@ class CompactMutation(DataclassGraphNode, Generic[AssignmentTargetT]):
 
     def __post_init__(self) -> None:
         self.kind.validate_import_origin(self.imported_origin)
-        if self.kind.is_definition_binding != isinstance(
-            self.target, CompactDefinitionTarget
-        ):
+        if self.kind.is_definition_binding != self.target.is_definition_target():
             raise TypeError(
                 "Definition mutations require a definition target exclusively"
             )

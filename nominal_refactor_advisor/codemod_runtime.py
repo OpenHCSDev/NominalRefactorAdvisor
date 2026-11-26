@@ -1682,9 +1682,7 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
             edit
             for recipe in self.recipes
             for edit in recipe.text_file_changes(
-                snapshot.recipe_derivation_context(recipe)
-                if isinstance(snapshot, CodemodSourceSnapshot)
-                else snapshot
+                snapshot.context_for_recipe(recipe)
             )
         )
 

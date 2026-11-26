@@ -978,6 +978,10 @@ class ContextualGlobalCacheContract(ABC):
             context_signature=type(self).context_signature(modules, config),
         )
 
+    def uses_semantic_descent_graph(self) -> bool:
+        """Whether this cache contract requires the semantic descent graph."""
+        return False
+
 
 CompactProjectionItemT = TypeVar("CompactProjectionItemT")
 CompactProjectionGroups: TypeAlias = dict[
@@ -1446,6 +1450,9 @@ class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
                 includes_path(Path(evidence.file_path)) for evidence in finding.evidence
             )
         ]
+
+    def uses_semantic_descent_graph(self) -> bool:
+        return True
 
 
 CandidateItemT = TypeVar("CandidateItemT")
