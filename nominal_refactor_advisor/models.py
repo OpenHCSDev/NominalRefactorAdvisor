@@ -29,7 +29,6 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from nominal_refactor_advisor.class_composition import CompositeClassSpec
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty, ConstantProperty
 from nominal_refactor_advisor.json_reports import (
     SemanticRecord as SemanticRecord,
@@ -442,24 +441,20 @@ class SemanticMirrorMetricRelation:
     class_key_pairs: tuple[str, ...]
 
 
-BehaviorFindingMetrics = CompositeClassSpec(
-    "BehaviorFindingMetrics", (FindingMetrics, ABC)
-).build(__name__)
+class BehaviorFindingMetrics(FindingMetrics):
+    pass
 
 
-MappingFindingMetrics = CompositeClassSpec(
-    "MappingFindingMetrics", (FindingMetrics, ABC)
-).build(__name__)
+class MappingFindingMetrics(FindingMetrics):
+    pass
 
 
-RegistrationFindingMetrics = CompositeClassSpec(
-    "RegistrationFindingMetrics", (FindingMetrics, ABC)
-).build(__name__)
+class RegistrationFindingMetrics(FindingMetrics):
+    pass
 
 
-DispatchFindingMetrics = CompositeClassSpec(
-    "DispatchFindingMetrics", (FindingMetrics, ABC)
-).build(__name__)
+class DispatchFindingMetrics(FindingMetrics):
+    pass
 
 
 @dataclass(frozen=True)
@@ -625,7 +620,7 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
 
 
 @dataclass(frozen=True)
-class EnvironmentBooleanDriftMetrics(BehaviorFindingMetrics, ABC):
+class EnvironmentBooleanDriftMetrics(BehaviorFindingMetrics):
     """Typed evidence shared by environment-boolean drift shapes."""
 
     environment_key: str
@@ -951,7 +946,7 @@ class SentinelSimulationMetrics(FindingMetrics):
     branch_site_count: int
 
 
-class CountedDispatchMetrics(DispatchFindingMetrics, ABC, metaclass=AutoRegisterMeta):
+class CountedDispatchMetrics(DispatchFindingMetrics, metaclass=AutoRegisterMeta):
     """Shared dispatch-count substrate for dispatch-oriented findings."""
 
     __registry_key__ = "count_field_name"
