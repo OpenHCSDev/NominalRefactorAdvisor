@@ -941,7 +941,7 @@ class _AlphaRenameParameters(ast.NodeTransformer):
         return node
 
 
-def _body_without_docstring(body: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
+def _statements_without_docstring(body: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
     if (
         len(body) > 1
         and isinstance(body[0], ast.Expr)
@@ -965,7 +965,7 @@ def _body_shadows_parameter(body: Sequence[ast.stmt], param_names: frozenset[str
 def _normalized_body_dumps(
     body: Sequence[ast.stmt], param_names: Sequence[str]
 ) -> tuple[str, ...] | None:
-    stripped = _body_without_docstring(body)
+    stripped = _statements_without_docstring(body)
     if _body_shadows_parameter(stripped, frozenset(param_names)):
         return None
     rename_map = {name: f"__p{index}" for index, name in enumerate(param_names)}
