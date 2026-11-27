@@ -50,7 +50,10 @@ from nominal_refactor_advisor.models import (
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
-from nominal_refactor_advisor.probe_owner import ReceiverSpan
+from nominal_refactor_advisor.probe_owner import (
+    MethodOwnerReceiverProof,
+    ReceiverSpan,
+)
 from nominal_refactor_advisor.refactor_concepts import ThreadedAbsenceFamilyConcept
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
@@ -2535,7 +2538,7 @@ def _collect_closed_call_args(
 
     # Pass 1: collect definite hits and defer receiver-type queries for one batched mypy call.
     definite_hits: list[tuple[str, ast.Attribute, ast.Call | None]] = []
-    deferred_checks: list[tuple[str, ast.Attribute, ast.Call | None, ReceiverSpan]] = []
+    deferred_checks: list[tuple[ParsedModule, ast.Attribute, ast.Call | None, ReceiverSpan]] = []
     for mod in snapshot.parsed_modules:
         if function.name not in mod.source:
             continue
@@ -2588,7 +2591,7 @@ def _collect_closed_call_args(
                 continue
             deferred_checks.append(
                 (
-                    mod.file_path,
+                    mod,
                     node,
                     parent_call,
                     ReceiverSpan.of(mod.file_path, node.value),
@@ -2602,21 +2605,21 @@ def _collect_closed_call_args(
         if deferred_checks
         else {}
     )
+    receiver_proof = MethodOwnerReceiverProof(
+        snapshot.compact_class_index,
+        snapshot.declared_receiver_typing,
+        reaching_symbols,
+    )
     all_hits = list(definite_hits)
-    for file_path, node, parent_call, span in deferred_checks:
-        answer = inferred_receivers.get(span)
-        if answer is None:
-            raise NeedsInput(
-                f"{file_path}:{node.lineno} accesses `.{function.name}` on an unproved receiver",
-                NeededInput.PROOF,
-            )
-        if answer.reaches_method_owner(
-            reaching_symbols,
-            file_path=file_path,
-            line=node.lineno,
+    for mod, node, parent_call, span in deferred_checks:
+        if receiver_proof.reaches(
+            inferred_receivers.get(span),
+            mod,
+            node.value,
             method_name=function.name,
+            line=node.lineno,
         ):
-            all_hits.append((file_path, node, parent_call))
+            all_hits.append((mod.file_path, node, parent_call))
 
     for file_path, node, parent_call in all_hits:
         if parent_call is None:

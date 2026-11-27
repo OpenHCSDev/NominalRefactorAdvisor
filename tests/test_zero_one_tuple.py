@@ -388,3 +388,89 @@ def test_zero_one_tuple_overriding_hierarchy_across_modules_and_abstract_base(
     with ScanCache.scope():
         _mods_after, _snap_after, findings_after = _scan(tmp_path)
         assert findings_after == []
+
+
+def test_zero_one_tuple_resolves_installed_family_member_returning_type_self(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """When an installed base class declares `member_named(cls, name) -> type[Self]`,
+    `DeclaredReceiverTyping` resolves `Self` through the installed module's import aliases
+    so `zero_one_tuple` proves the call site reaches the scanned tag hierarchy."""
+
+    ext_root = tmp_path / "ext_fam"
+    ext_pkg = ext_root / "nra_ext_fam_mod"
+    ext_pkg.mkdir(parents=True)
+    (ext_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (ext_pkg / "family.py").write_text(
+        "from __future__ import annotations\n"
+        "from typing import Self\n\n"
+        "class ExtFamily:\n"
+        "    @classmethod\n"
+        "    def member_named(cls, name: str) -> type[Self]:\n"
+        "        for sub in cls.__subclasses__():\n"
+        "            if sub.__name__ == name:\n"
+        "                return sub\n"
+        "        raise KeyError(name)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(ext_root))
+
+    scan_root = tmp_path / "scan_fam"
+    pkg = scan_root / "tags_pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "tags.py").write_text(
+        "from __future__ import annotations\n"
+        "from nra_ext_fam_mod.family import ExtFamily\n\n"
+        "class BaseTag(ExtFamily):\n"
+        "    @classmethod\n"
+        "    def decode_block(cls, text: str) -> tuple[str, ...]:\n"
+        "        return ()\n\n"
+        "class NoteTag(BaseTag):\n"
+        "    @classmethod\n"
+        "    def decode_block(cls, text: str) -> tuple[str, ...]:\n"
+        "        if not text:\n"
+        "            return ()\n"
+        "        return (text,)\n\n"
+        "def decode_all(kind: str, text: str) -> list[str]:\n"
+        "    tag_member = BaseTag.member_named(kind)\n"
+        "    return [item for item in tag_member.decode_block(text)]\n",
+        encoding="utf-8",
+    )
+
+    before_mod = _import_fresh(scan_root, "tags_pkg.tags")
+    assert before_mod.decode_all("NoteTag", "hello") == ["hello"]
+    assert before_mod.decode_all("NoteTag", "") == []
+
+    with ScanCache.scope():
+        _mods, snap, findings = _scan(scan_root)
+        assert len(findings) == 1
+        picks = OwnerPicks(
+            "picks.json",
+            "",
+            (
+                OwnerPick(
+                    finding=findings[0].stable_id,
+                    owner="NoteTag.decode_block",
+                    because="decoded block presence belongs on a nominal family",
+                    name="DecodedTagBlock",
+                    judgement="Present or absent decoded tag block.",
+                ),
+            ),
+        )
+        picked, report = picks.applied(findings)
+        assert not report.unmatched
+        plan = codemod_plan_from_findings(picked, selector_context=snap)
+        assert plan.candidate_count == 1, plan.report
+        sim = plan.document.simulate(snap)
+        assert sim.is_clean, sim.preflight_report
+        sim.apply()
+
+    after_mod = _import_fresh(scan_root, "tags_pkg.tags")
+    assert after_mod.decode_all("NoteTag", "hello") == ["hello"]
+    assert after_mod.decode_all("NoteTag", "") == []
+
+    with ScanCache.scope():
+        _, _, findings_after = _scan(scan_root)
+        assert findings_after == []

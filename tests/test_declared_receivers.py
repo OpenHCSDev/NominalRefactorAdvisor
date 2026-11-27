@@ -660,3 +660,113 @@ def test_declared_receiver_typing_expands_module_and_reexported_type_aliases(
         use_mod.module_name, "CyclicA", OUTSIDE_METHOD
     )
     assert isinstance(cyclic, UndeclaredType)
+
+
+def test_declared_receiver_typing_resolves_init_annotations_and_keeps_class_objects_separate(
+    tmp_path: Path,
+) -> None:
+    """`self.<attr>: T` annotations in `__init__` resolve on instances (including
+    subclasses of open bases), stay off class objects, and reject conflicting annotations."""
+
+    pkg = tmp_path / "init_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "models.py").write_text(
+        "from __future__ import annotations\n"
+        "from nonexistent_external_pkg import ExternalBase\n\n"
+        "class Base: pass\n"
+        "class Left(Base): pass\n"
+        "class Right(Base): pass\n\n"
+        "class Holder(ExternalBase):\n"
+        "    def __init__(self, flag: bool) -> None:\n"
+        "        self._choice: Left | Right = Left() if flag else Right()\n"
+        "        if flag:\n"
+        "            self._ambig: Left = Left()\n"
+        "        else:\n"
+        "            self._ambig: Right = Right()\n\n"
+        "def read_all(h: Holder, cls: type[Holder]):\n"
+        "    a = h._choice\n"
+        "    b = h._ambig\n"
+        "    c = cls._choice\n"
+        "    return a, b, c\n"
+    )
+    modules = parse_python_modules(pkg)
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_stub(module) for module in modules
+    )
+    class_index = CompactClassFamilyIndexBuilder(projections).build()
+    typing = DeclaredReceiverTyping.from_projections(projections, class_index)
+    mod = next(m for m in modules if m.module_name == "init_pkg.models")
+    builder = ReceiverPathBuilder(
+        mod.module_name,
+        mod.module,
+        module_import_aliases(mod),
+        mod.syntax_index.parent_index,
+    )
+    assigns = {
+        stmt.targets[0].id: stmt.value
+        for fn in mod.module.body
+        if isinstance(fn, ast.FunctionDef) and fn.name == "read_all"
+        for stmt in fn.body
+        if isinstance(stmt, ast.Assign) and isinstance(stmt.targets[0], ast.Name)
+    }
+    assert builder.path_of(assigns["a"]).declared(typing) == DeclaredInstance(
+        ("init_pkg.models.Left", "init_pkg.models.Right")
+    )
+    assert isinstance(builder.path_of(assigns["b"]).declared(typing), UndeclaredType)
+    assert isinstance(builder.path_of(assigns["c"]).declared(typing), UndeclaredType)
+
+
+def test_declared_receiver_typing_unwraps_awaited_async_calls_only(
+    tmp_path: Path,
+) -> None:
+    """`await` unwraps `async def` methods and functions, and rejects non-async callables."""
+
+    pkg = tmp_path / "async_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "service.py").write_text(
+        "from __future__ import annotations\n"
+        "from typing import Self\n\n"
+        "class Catalog:\n"
+        "    @classmethod\n"
+        "    async def read(cls) -> Self:\n"
+        "        return cls()\n\n"
+        "    def sync_read(self) -> Self:\n"
+        "        return self\n\n"
+        "async def load_catalog() -> Catalog:\n"
+        "    return Catalog()\n\n"
+        "def sync_catalog() -> Catalog:\n"
+        "    return Catalog()\n\n"
+        "async def use(cat: Catalog):\n"
+        "    a = await Catalog.read()\n"
+        "    b = await load_catalog()\n"
+        "    c = await cat.sync_read()\n"
+        "    d = await sync_catalog()\n"
+        "    return a, b, c, d\n"
+    )
+    modules = parse_python_modules(pkg)
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_stub(module) for module in modules
+    )
+    class_index = CompactClassFamilyIndexBuilder(projections).build()
+    typing = DeclaredReceiverTyping.from_projections(projections, class_index)
+    mod = next(m for m in modules if m.module_name == "async_pkg.service")
+    builder = ReceiverPathBuilder(
+        mod.module_name,
+        mod.module,
+        module_import_aliases(mod),
+        mod.syntax_index.parent_index,
+    )
+    assigns = {
+        stmt.targets[0].id: stmt.value
+        for fn in mod.module.body
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "use"
+        for stmt in fn.body
+        if isinstance(stmt, ast.Assign) and isinstance(stmt.targets[0], ast.Name)
+    }
+    expected = DeclaredInstance(("async_pkg.service.Catalog",))
+    assert builder.path_of(assigns["a"]).declared(typing) == expected
+    assert builder.path_of(assigns["b"]).declared(typing) == expected
+    assert isinstance(builder.path_of(assigns["c"]).declared(typing), UndeclaredType)
+    assert isinstance(builder.path_of(assigns["d"]).declared(typing), UndeclaredType)

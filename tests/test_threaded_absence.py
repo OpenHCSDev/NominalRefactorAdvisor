@@ -857,3 +857,85 @@ def test_threaded_absence_prefix_guarded_returning_void_ifexp_and_bool_probe(
 
     _, _, after_findings = _scan(tmp_path)
     assert after_findings == []
+
+
+def test_threaded_absence_declared_receiver_proof_clears_installed_non_protocol_and_blocks_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When mypy degrades an unfollowed installed import to `Any`, `MethodOwnerReceiverProof`
+    proves non-reaching nominal installed classes (including `__init__`-annotated fields)
+    while refusing to dismiss an installed `Protocol` or scanned `Protocol`."""
+
+    ext_root = tmp_path / "ext_site"
+    ext_pkg = ext_root / "nra_ext_tok_mod"
+    ext_pkg.mkdir(parents=True)
+    (ext_pkg / "__init__.py").write_text("")
+    (ext_pkg / "tokens.py").write_text(
+        "from __future__ import annotations\n"
+        "from typing import Protocol\n\n"
+        "class ForeignToken:\n"
+        "    def accepts(self, value: str) -> bool:\n"
+        "        return bool(value)\n\n"
+        "class ForeignProto(Protocol):\n"
+        "    def accepts(self, value: str) -> bool: ...\n"
+    )
+    monkeypatch.syspath_prepend(str(ext_root))
+
+    scan_ok = tmp_path / "scan_ok"
+    _write(
+        scan_ok,
+        {
+            "app_ok/__init__.py": "",
+            "app_ok/gate.py": (
+                "from __future__ import annotations\n"
+                "from nra_ext_tok_mod.tokens import ForeignToken\n\n"
+                "class LocalGate:\n"
+                "    def accepts(self, tag: str | None) -> bool:\n"
+                "        if tag is None:\n"
+                "            return False\n"
+                "        return tag == 'ok'\n\n"
+                "class Attachment:\n"
+                "    def __init__(self, tok: ForeignToken) -> None:\n"
+                "        self._tok: ForeignToken = tok\n\n"
+                "    def check(self, text: str) -> bool:\n"
+                "        return self._tok.accepts(text)\n\n"
+                "def call_local(gate: LocalGate, value: str | None) -> bool:\n"
+                "    return gate.accepts(value)\n"
+            ),
+        },
+    )
+    _, snap_ok, findings_ok = _scan(scan_ok)
+    assert len(findings_ok) == 1
+    eval_ok = ThreadedAbsenceDetector().evaluate_recipe_for_finding(
+        findings_ok[0], snap_ok
+    )
+    assert eval_ok.needs == (NeededInput.OWNER_PICK,), eval_ok.reason
+
+    # A foreign Protocol must stay blocked on PROOF (a nominal class can satisfy it structurally).
+    scan_proto = tmp_path / "scan_proto"
+    _write(
+        scan_proto,
+        {
+            "app_proto/__init__.py": "",
+            "app_proto/gate.py": (
+                "from __future__ import annotations\n"
+                "from nra_ext_tok_mod.tokens import ForeignProto\n\n"
+                "class LocalGate:\n"
+                "    def accepts(self, tag: str | None) -> bool:\n"
+                "        if tag is None:\n"
+                "            return False\n"
+                "        return tag == 'ok'\n\n"
+                "def check_proto(proto: ForeignProto, text: str) -> bool:\n"
+                "    return proto.accepts(text)\n\n"
+                "def call_local(gate: LocalGate, value: str | None) -> bool:\n"
+                "    return gate.accepts(value)\n"
+            ),
+        },
+    )
+    _, snap_proto, findings_proto = _scan(scan_proto)
+    assert len(findings_proto) == 1
+    eval_proto = ThreadedAbsenceDetector().evaluate_recipe_for_finding(
+        findings_proto[0], snap_proto
+    )
+    assert NeededInput.PROOF in eval_proto.needs, eval_proto.reason

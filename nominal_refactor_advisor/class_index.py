@@ -831,6 +831,7 @@ class CompactAnnotatedMethod(CompactCallableMemberDeclaration):
     """A method with a return annotation: calling it has that type."""
 
     return_annotation_expression: str
+    is_async: bool = False
 
     def answer(self, owner: CompactIndexedClass, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
         return answers.annotated_method(owner, self)
@@ -942,6 +943,7 @@ class CompactAnnotatedFunctionReturn:
     name: str
     line: int
     return_annotation_expression: str
+    is_async: bool = False
 
 
 class CompactDataclassFieldRole(StrEnum):
@@ -1418,6 +1420,8 @@ class CompactIndexedClass(CompactClassHeader):
     end_line: int | None = None
     method_names: tuple[str, ...] = ()
     callable_member_declarations: tuple[CompactCallableMemberDeclaration, ...] = ()
+    init_attribute_annotations: tuple[tuple[str, str], ...] = ()
+    """Unambiguous `self.<attr>: T` annotations declared directly inside `__init__`."""
     base_argument_sources: tuple[tuple[str, ...], ...] = ()
     """Each referenced base's subscript arguments (`Base[A, B]`), aligned with its base references."""
     type_parameter_names: tuple[str, ...] = ()
@@ -5566,6 +5570,7 @@ def _compact_indexed_classes(
             callable_member_declarations=_compact_callable_member_declarations(
                 node, binding_snapshots[node.lineno]
             ),
+            init_attribute_annotations=_compact_init_attribute_annotations(node),
             abstract_method_names=sorted_tuple(
                 statement.name
                 for statement in FunctionDefinition.within(node.body)
@@ -6094,7 +6099,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             type_aliases=_module_type_aliases(parsed_module),
             annotated_function_returns=tuple(
                 CompactAnnotatedFunctionReturn(
-                    node.name, node.lineno, ast.unparse(returns)
+                    node.name,
+                    node.lineno,
+                    ast.unparse(returns),
+                    is_async=isinstance(node, ast.AsyncFunctionDef),
                 )
                 for node in FunctionDefinition.within(parsed_module.module.body)
                 for returns in declared_annotations(node)
@@ -6142,7 +6150,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             type_aliases=_module_type_aliases(parsed_module),
                 annotated_function_returns=tuple(
                     CompactAnnotatedFunctionReturn(
-                        node.name, node.lineno, ast.unparse(returns)
+                        node.name,
+                        node.lineno,
+                        ast.unparse(returns),
+                        is_async=isinstance(node, ast.AsyncFunctionDef),
                     )
                     for node in FunctionDefinition.within(parsed_module.module.body)
                     for returns in declared_annotations(node)
@@ -7752,9 +7763,14 @@ def _compact_callable_member_declarations(
         )
         if reads_as_property:
             property_names.add(statement.name)
+        is_async = isinstance(statement, ast.AsyncFunctionDef)
         declared = tuple(
-            (CompactAnnotatedProperty if reads_as_property else CompactAnnotatedMethod)(
-                statement.name, statement.lineno, ast.unparse(returns)
+            (
+                CompactAnnotatedProperty(statement.name, statement.lineno, ast.unparse(returns))
+                if reads_as_property
+                else CompactAnnotatedMethod(
+                    statement.name, statement.lineno, ast.unparse(returns), is_async=is_async
+                )
             )
             for returns in declared_annotations(statement)
         )
@@ -7762,6 +7778,58 @@ def _compact_callable_member_declarations(
             declared or (CompactUnannotatedCallable(statement.name, statement.lineno),)
         )
     return tuple(declarations)
+
+
+def _compact_init_attribute_annotations(
+    node: ast.ClassDef,
+) -> tuple[tuple[str, str], ...]:
+    """Unambiguous `self.<attr>: T` annotations declared inside `__init__`."""
+
+    init_defs = [
+        statement
+        for statement in FunctionDefinition.within(node.body)
+        if statement.name == "__init__"
+    ]
+    if len(init_defs) != 1:
+        return ()
+    init_def = init_defs[0]
+    positional = (*init_def.args.posonlyargs, *init_def.args.args)
+    if not positional:
+        return ()
+    self_name = positional[0].arg
+    annotations: dict[str, str] = {}
+    ambiguous: set[str] = set()
+
+    def walk(statements: Sequence[ast.stmt]) -> None:
+        for stmt in statements:
+            match stmt:
+                case ast.AnnAssign(
+                    target=ast.Attribute(value=ast.Name(id=receiver), attr=attr),
+                    annotation=annotation,
+                ) if receiver == self_name:
+                    source = ast.unparse(annotation)
+                    previous = annotations.get(attr)
+                    if previous is not None and previous != source:
+                        ambiguous.add(attr)
+                    else:
+                        annotations[attr] = source
+                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+                    continue
+                case _:
+                    for field_value in ast.iter_child_nodes(stmt):
+                        if isinstance(field_value, ast.stmt):
+                            walk((field_value,))
+                        elif isinstance(field_value, ast.ExceptHandler):
+                            walk(field_value.body)
+                        elif isinstance(field_value, ast.match_case):
+                            walk(field_value.body)
+
+    walk(init_def.body)
+    return tuple(
+        (name, source)
+        for name, source in annotations.items()
+        if name not in ambiguous
+    )
 
 
 def _redefines_property(
@@ -7824,6 +7892,44 @@ class InstalledClassDeclarations:
             return None
         (projection,) = found
         return projection
+
+    @staticmethod
+    @cache
+    def import_aliases_map(module_name: str) -> Mapping[str, str]:
+        """Import aliases of an installed module, cached once per module."""
+
+        projection = InstalledClassDeclarations.module(module_name)
+        return dict(projection.import_aliases) if projection is not None else {}
+
+    @classmethod
+    def is_nominal_non_protocol_class(
+        cls,
+        qualified_name: str,
+        scan: CompactRepositoryPublicExposureIndex,
+    ) -> bool:
+        """Whether `qualified_name` resolves to an installed non-`Protocol`, non-`object` class."""
+
+        if qualified_name in {"builtins.object", "typing.Any", "typing_extensions.Any"}:
+            return False
+        protocol_names = frozenset(("typing.Protocol", "typing_extensions.Protocol"))
+        root = cls.declaration(qualified_name, scan)
+        if root is None:
+            return False
+        pending = [root]
+        seen: set[str] = {root.symbol}
+        while pending:
+            current = pending.pop()
+            for base_ref in current.base_references:
+                base_name = base_ref.qualified_name
+                if base_name in protocol_names:
+                    return False
+                if base_name == "builtins.object" or base_name in seen:
+                    continue
+                seen.add(base_name)
+                resolved_base = cls.declaration(base_name, scan)
+                if resolved_base is not None:
+                    pending.append(resolved_base)
+        return True
 
     @staticmethod
     @cache

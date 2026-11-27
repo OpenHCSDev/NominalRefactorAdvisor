@@ -47,7 +47,10 @@ from nominal_refactor_advisor.codemod_source_edits import (
 from nominal_refactor_advisor.models import RefactorFinding, ZeroOneTupleMetrics
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
-from nominal_refactor_advisor.probe_owner import ReceiverSpan
+from nominal_refactor_advisor.probe_owner import (
+    MethodOwnerReceiverProof,
+    ReceiverSpan,
+)
 from nominal_refactor_advisor.refactor_concepts import ZeroOneTupleFamilyConcept
 from nominal_refactor_advisor.refactors.constant_subtype_answer import (
     _contains_super_call,
@@ -1066,19 +1069,19 @@ def _collect_closed_consumers(
         if deferred_checks
         else {}
     )
+    receiver_proof = MethodOwnerReceiverProof(
+        snapshot.compact_class_index,
+        snapshot.declared_receiver_typing,
+        reaching_symbols,
+    )
     all_hits = list(definite_hits)
     for mod, node_index, node, parent_call, span in deferred_checks:
-        answer = inferred_receivers.get(span)
-        if answer is None:
-            raise NeedsInput(
-                f"{mod.file_path}:{node.lineno} accesses `.{function.name}` on an unproved receiver",
-                NeededInput.PROOF,
-            )
-        if answer.reaches_method_owner(
-            reaching_symbols,
-            file_path=mod.file_path,
-            line=node.lineno,
+        if receiver_proof.reaches(
+            inferred_receivers.get(span),
+            mod,
+            node.value,
             method_name=function.name,
+            line=node.lineno,
         ):
             all_hits.append((mod, node_index, node, parent_call))
 
