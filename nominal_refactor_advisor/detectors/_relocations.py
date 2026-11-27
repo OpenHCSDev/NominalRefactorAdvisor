@@ -32,6 +32,7 @@ from nominal_refactor_advisor.models import (
     RefactorFinding,
     SourceLocation,
     ThreadedAbsenceMetrics,
+    ZeroOneTupleMetrics,
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.constant_subtype_answer import (
@@ -46,6 +47,10 @@ from nominal_refactor_advisor.refactors.own_state_branch_answer import (
 from nominal_refactor_advisor.refactors.threaded_absence import (
     ThreadedAbsenceFindingRecipeSynthesizer,
     ThreadedAbsenceToFamilyOperation,
+)
+from nominal_refactor_advisor.refactors.zero_one_tuple import (
+    ZeroOneTupleFindingRecipeSynthesizer,
+    ZeroOneTupleToFamilyOperation,
 )
 from nominal_refactor_advisor.relocation_observations import (
     BranchRead,
@@ -585,7 +590,10 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
         )
 
 
-class ZeroOneTupleDetector(SingleFamilyRestatedFactDetector):
+class ZeroOneTupleDetector(
+    SingleFamilyRestatedFactDetector,
+    ZeroOneTupleFindingRecipeSynthesizer,
+):
     """A function whose returns are all `()` or `(x,)`, with both."""
 
     module_projection_family = ZeroOneTupleSiteFamily
@@ -593,6 +601,7 @@ class ZeroOneTupleDetector(SingleFamilyRestatedFactDetector):
         fact="Returning `()` or a one-element tuple spells present and absent as a collection, so each caller that iterates it branches on absence without naming it.",
         owner="The owner is a family with a present member and an absent member (or a null member) that the function returns instead.",
         factoring="Return a member of a present/absent family instead of the tuple, and move each `for x in ...:` consumer body onto the present member as a method the absent member answers with nothing.",
+        operations=(ZeroOneTupleToFamilyOperation,),
     )
     finding_spec = restated.spec(
         PatternId.ZERO_ONE_TUPLE,
@@ -602,6 +611,12 @@ class ZeroOneTupleDetector(SingleFamilyRestatedFactDetector):
         (),
         (ObservationTag.BRANCH_DISPATCH,),
     )
+
+    def finding_context(
+        self, sites: Sequence[RestatingSite], context: None
+    ) -> dict[str, object]:
+        del context
+        return {"metrics": ZeroOneTupleMetrics(function_symbol=sites[0].symbol)}
 
     def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
         return f"`{sites[0].symbol}` encodes absence as a 0/1 tuple: it returns `()` on one path and `(x,)` on another."

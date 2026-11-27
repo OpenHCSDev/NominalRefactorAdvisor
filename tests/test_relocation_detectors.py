@@ -18,6 +18,9 @@ from nominal_refactor_advisor.refactors.own_state_branch_answer import (
 from nominal_refactor_advisor.refactors.threaded_absence import (
     ThreadedAbsenceToFamilyOperation,
 )
+from nominal_refactor_advisor.refactors.zero_one_tuple import (
+    ZeroOneTupleToFamilyOperation,
+)
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 from relocation_excerpts import (
@@ -62,6 +65,7 @@ def test_every_finding_states_fact_owner_and_prescription(detector):
             DeleteConstantSubtypeAnswerOperation,
         ),
         OwnStateBranchAnswerDetector: (OwnStateBranchAnswerOperation,),
+        ZeroOneTupleDetector: (ZeroOneTupleToFamilyOperation,),
         ThreadedAbsenceDetector: (ThreadedAbsenceToFamilyOperation,),
     }
     assert detector.restated.operations == expected_operations.get(detector, ())
