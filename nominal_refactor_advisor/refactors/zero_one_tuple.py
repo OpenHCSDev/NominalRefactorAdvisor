@@ -59,6 +59,8 @@ from nominal_refactor_advisor.refactors.finding_recipes import (
     PrewarmTypeCheckerMixin,
 )
 from nominal_refactor_advisor.refactors.threaded_absence import (
+    _is_abstract_or_stub_body,
+    _locate_class_method,
     _module_exports_name,
     _module_top_level_bound_names,
     _top_level_enclosing_stmt,
@@ -172,32 +174,6 @@ class _HeldTupleReturn(_ZeroOneReturnRewrite):
 
     def arity(self) -> int:
         return 1
-
-
-def _is_abstract_or_stub_body(function: FunctionNode) -> bool:
-    """Whether `function` is an abstract/stub declaration with no concrete return path."""
-
-    body = list(function.body)
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        body = body[1:]
-    if not body:
-        return True
-    if len(body) == 1:
-        stmt = body[0]
-        if isinstance(stmt, (ast.Pass, ast.Raise)):
-            return True
-        if (
-            isinstance(stmt, ast.Expr)
-            and isinstance(stmt.value, ast.Constant)
-            and stmt.value.value is Ellipsis
-        ):
-            return True
-    return False
 
 
 def _collect_override_zero_one_returns(
@@ -321,23 +297,6 @@ def _element_type_assignable(
         return True
     index = snapshot.compact_class_index
     return root_w.qualified_name in index.ancestor_symbols(sub_w.qualified_name)
-
-
-def _locate_class_method(
-    mod: ParsedModule,
-    class_symbol: str,
-    method_name: str,
-) -> tuple[ast.ClassDef, FunctionNode] | None:
-    for _cls_idx, cls_node in mod.syntax_index.indexed_nodes_of_type(ast.ClassDef):
-        if f"{mod.module_name}.{cls_node.name}" != class_symbol:
-            continue
-        for stmt in cls_node.body:
-            if (
-                isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and stmt.name == method_name
-            ):
-                return cls_node, stmt
-    return None
 
 
 def _resolve_zero_one_hierarchy(
