@@ -722,3 +722,138 @@ def test_threaded_absence_multi_probe_same_function(tmp_path: Path) -> None:
 
     _, _, after_findings = _scan(tmp_path)
     assert after_findings == []
+
+
+def test_threaded_absence_prefix_guarded_returning_void_ifexp_and_bool_probe(
+    tmp_path: Path,
+) -> None:
+    """Prefix-guarded returning `and` with trivial tail, void-terminating `or`,
+    prefix-guarded `IfExp` (`and`/`or`), and standalone presence boolean probe
+    all push cleanly onto Held/Absent families with exact short-circuit semantics."""
+
+    _write(
+        tmp_path,
+        {
+            "pg/__init__.py": "",
+            "pg/shapes.py": (
+                "from __future__ import annotations\n\n\n"
+                "def prefixed_and_ret(flag: bool, name: str | None) -> str | None:\n"
+                "    if flag and name is not None:\n"
+                "        return f'ok:{name}'\n"
+                "    return None\n\n\n"
+                "def prefixed_or_void(out: list[str], stop: bool, tag: str | None) -> None:\n"
+                "    if stop or tag is None:\n"
+                "        return\n"
+                "    out.append(tag.upper())\n\n\n"
+                "def prefixed_ifexp(enabled: bool, label: str | None) -> str:\n"
+                "    return label.upper() if enabled and label is not None else 'none'\n\n\n"
+                "def bool_probe_cmp(expected: bool, token: str | None) -> bool:\n"
+                "    return (token is not None) == expected\n\n\n"
+                "def run_shapes() -> tuple[object, ...]:\n"
+                "    seen: list[str] = []\n"
+                "    prefixed_or_void(seen, True, 'skip')\n"
+                "    prefixed_or_void(seen, False, None)\n"
+                "    prefixed_or_void(seen, False, 'go')\n"
+                "    return (\n"
+                "        prefixed_and_ret(False, 'a'),\n"
+                "        prefixed_and_ret(True, None),\n"
+                "        prefixed_and_ret(True, 'a'),\n"
+                "        tuple(seen),\n"
+                "        prefixed_ifexp(False, 'hi'),\n"
+                "        prefixed_ifexp(True, None),\n"
+                "        prefixed_ifexp(True, 'hi'),\n"
+                "        bool_probe_cmp(False, None),\n"
+                "        bool_probe_cmp(True, 'tok'),\n"
+                "        bool_probe_cmp(True, None),\n"
+                "    )\n"
+            ),
+        },
+    )
+
+    _, snap, findings = _scan(tmp_path)
+    by_sym = {f.evidence[0].symbol: f for f in findings}
+    assert set(by_sym) == {
+        "prefixed_and_ret",
+        "prefixed_or_void",
+        "prefixed_ifexp",
+        "bool_probe_cmp",
+    }
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["prefixed_and_ret"].stable_id,
+                owner="prefixed_and_ret",
+                because="name presence belongs on a nominal family",
+                name="NameChoice",
+                judgement="Present or absent name.",
+                hoisted_name="format_name",
+            ),
+            OwnerPick(
+                finding=by_sym["prefixed_or_void"].stable_id,
+                owner="prefixed_or_void",
+                because="tag presence belongs on a nominal family",
+                name="TagChoice",
+                judgement="Present or absent tag.",
+                hoisted_name="record_tag",
+            ),
+            OwnerPick(
+                finding=by_sym["prefixed_ifexp"].stable_id,
+                owner="prefixed_ifexp",
+                because="label presence belongs on a nominal family",
+                name="LabelChoice",
+                judgement="Present or absent label.",
+                hoisted_name="render_label",
+            ),
+            OwnerPick(
+                finding=by_sym["bool_probe_cmp"].stable_id,
+                owner="bool_probe_cmp",
+                because="token presence belongs on a nominal family",
+                name="TokenChoice",
+                judgement="Present or absent token.",
+                hoisted_name="is_present",
+            ),
+        ),
+    )
+    picked, report = picks.applied(findings)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 4, plan.report
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after_src = (tmp_path / "pg/shapes.py").read_text()
+    for fam in ("NameChoice", "TagChoice", "LabelChoice", "TokenChoice"):
+        assert f"class {fam}(ABC):" in after_src
+
+    import importlib
+    import sys as _sys
+
+    for key in [k for k in _sys.modules if k == "pg" or k.startswith("pg.")]:
+        del _sys.modules[key]
+    _sys.path.insert(0, str(tmp_path))
+    try:
+        mod = importlib.import_module("pg.shapes")
+        assert mod.run_shapes() == (
+            None,
+            None,
+            "ok:a",
+            ("GO",),
+            "none",
+            "none",
+            "HI",
+            True,
+            True,
+            False,
+        )
+    finally:
+        if _sys.path and _sys.path[0] == str(tmp_path):
+            _sys.path.pop(0)
+        for key in [k for k in _sys.modules if k == "pg" or k.startswith("pg.")]:
+            del _sys.modules[key]
+
+    _, _, after_findings = _scan(tmp_path)
+    assert after_findings == []

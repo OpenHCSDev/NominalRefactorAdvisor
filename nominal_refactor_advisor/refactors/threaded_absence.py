@@ -440,6 +440,26 @@ class TernaryThreadedSite(ThreadedAbsenceBranchSite):
 
     node: ast.expr
 
+    @classmethod
+    def from_exprs(
+        cls,
+        *,
+        param_name: str,
+        probe_node: ast.Compare,
+        absent_expr: ast.expr,
+        held_expr: ast.expr,
+        is_whole_function: bool,
+        node: ast.expr,
+    ) -> TernaryThreadedSite:
+        return cls(
+            param_name=param_name,
+            probe_node=probe_node,
+            absent_body=(ast.Return(value=absent_expr),),
+            held_body=(ast.Return(value=held_expr),),
+            is_whole_function=is_whole_function,
+            node=node,
+        )
+
     def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
         return geometry.required_node_offsets(self.node)
 
@@ -449,6 +469,62 @@ class TernaryThreadedSite(ThreadedAbsenceBranchSite):
 
     def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
         return (self.node,)
+
+
+@dataclass(frozen=True)
+class PrefixGuardedTernaryThreadedSite(ThreadedAbsenceBranchSite):
+    """Inline `a if PREFIX and|or param is [not] None else b` replaced by
+    `param.method(...) if PREFIX else b` (for `and`) or `a if PREFIX else param.method(...)` (for `or`)."""
+
+    node: ast.IfExp
+    guard_expr: ast.expr
+    fallback_expr: ast.expr
+    guard_selects_call: bool
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        return geometry.required_node_offsets(self.node)
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        guard_src = ast.unparse(self.guard_expr)
+        fallback_src = ast.unparse(self.fallback_expr)
+        if self.guard_selects_call:
+            return f"{call_expr} if {guard_src} else {fallback_src}"
+        return f"{fallback_src} if {guard_src} else {call_expr}"
+
+    def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
+        return (self.node,)
+
+
+@dataclass(frozen=True)
+class PrefixGuardedAndReturningThreadedSite(ThreadedAbsenceBranchSite):
+    """Returning `if PREFIX and param is [not] None: return ...; return <trivial>` replaced by
+    `if PREFIX:\\n    return param.method(...)\\nreturn <trivial>`."""
+
+    replaced_nodes: tuple[ast.stmt, ...]
+    guard_expr: ast.expr
+    fallback_return: ast.Return
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        start, _ = geometry.required_node_offsets(self.replaced_nodes[0])
+        _, end = geometry.required_node_offsets(self.replaced_nodes[-1])
+        return start, end
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return "\n".join(
+            (
+                f"if {ast.unparse(self.guard_expr)}:",
+                f"{line_indent}    return {call_expr}",
+                f"{line_indent}{ast.unparse(self.fallback_return)}",
+            )
+        )
+
+    def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
+        return self.replaced_nodes
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True)
@@ -523,6 +599,29 @@ class PrefixGuardedOrThreadedSite(ThreadedAbsenceBranchSite):
     @property
     def is_void_method(self) -> bool:
         return not self.returns_value
+
+
+def _is_trivial_expr(expr: ast.expr) -> bool:
+    """Whether `expr` is a side-effect-free trivial literal/name/attribute safe to emit in a guard fallback."""
+
+    match expr:
+        case ast.Constant() | ast.Name():
+            return True
+        case ast.Attribute(value=ast.Name()):
+            return True
+        case ast.Tuple(elts=[]) | ast.List(elts=[]) | ast.Set(elts=[]) | ast.Dict(keys=[]):
+            return True
+    return False
+
+
+def _is_trivial_return_tail(tail: Sequence[ast.stmt]) -> ast.Return | None:
+    if len(tail) != 1 or not isinstance(tail[0], ast.Return):
+        return None
+    ret = tail[0]
+    vals = optional_values(ret)
+    if not vals or _is_trivial_expr(vals[0]):
+        return ret
+    return None
 
 
 def _extract_threaded_if_site(
@@ -686,7 +785,40 @@ def _extract_threaded_if_site(
     )
     if isinstance(stmt.test.op, ast.And):
         if guard_expr is not None:
-            if stmt.orelse or _has_any_return(stmt.body) or _has_loop_escape(stmt.body):
+            if stmt.orelse:
+                return None
+            if _has_any_return(stmt.body):
+                tail = container[index + 1 :]
+                trivial_ret = _is_trivial_return_tail(tail)
+                if (
+                    trivial_ret is not None
+                    and _always_terminates(stmt.body)
+                    and not _has_break_or_continue((stmt, *tail))
+                    and not any(
+                        isinstance(node, (ast.Yield, ast.YieldFrom))
+                        for body_stmt in stmt.body
+                        for node in ast.walk(body_stmt)
+                    )
+                ):
+                    cond_body: tuple[ast.stmt, ...] = (
+                        (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
+                        if suffix_expr is not None
+                        else tuple(stmt.body)
+                    )
+                    absent_body = cond_body if is_none else tuple(tail)
+                    held_body = tuple(tail) if is_none else cond_body
+                    return PrefixGuardedAndReturningThreadedSite(
+                        param_name=param_name,
+                        probe_node=probe_node,
+                        absent_body=absent_body,
+                        held_body=held_body,
+                        is_whole_function=False,
+                        replaced_nodes=tuple(container[index:]),
+                        guard_expr=guard_expr,
+                        fallback_return=trivial_ret,
+                    )
+                return None
+            if _has_loop_escape(stmt.body):
                 return None
             hit_body: tuple[ast.stmt, ...] = (
                 (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),)
@@ -855,6 +987,32 @@ def _extract_threaded_if_site(
                     guard_body=tuple(stmt.body),
                     returns_value=_has_any_return(replaced),
                 )
+            if (
+                container is whole_fn_body
+                and tail
+                and _always_void_terminates(stmt.body)
+                and not _has_value_return(tail)
+                and not _has_break_or_continue((stmt, *tail))
+            ):
+                stripped = _strip_trailing_bare_return(stmt.body)
+                fallback_body = (
+                    (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
+                    if suffix_expr is not None
+                    else tuple(tail)
+                )
+                absent_body = stripped if is_none else fallback_body
+                held_body = fallback_body if is_none else stripped
+                return PrefixGuardedOrThreadedSite(
+                    param_name=param_name,
+                    probe_node=probe_node,
+                    absent_body=absent_body,
+                    held_body=held_body,
+                    is_whole_function=False,
+                    replaced_nodes=tuple(container[index:]),
+                    guard_expr=guard_expr,
+                    guard_body=tuple(stmt.body),
+                    returns_value=False,
+                )
             return None
         if suffix_expr is None:
             return None
@@ -991,7 +1149,7 @@ def _extract_threaded_ifexp_site(
     probe_line: int,
     *,
     is_whole_function: bool,
-) -> TernaryThreadedSite | None:
+) -> ThreadedAbsenceBranchSite | None:
     if not _node_covers_line(node.test, probe_line):
         return None
     direct = _parse_param_probe(node.test, param_name)
@@ -999,42 +1157,105 @@ def _extract_threaded_ifexp_site(
         is_none, probe_node = direct
         absent_expr = node.body if is_none else node.orelse
         held_expr = node.orelse if is_none else node.body
-        return TernaryThreadedSite(
+        return TernaryThreadedSite.from_exprs(
             param_name=param_name,
             probe_node=probe_node,
-            absent_body=(ast.Return(value=absent_expr),),
-            held_body=(ast.Return(value=held_expr),),
+            absent_expr=absent_expr,
+            held_expr=held_expr,
             is_whole_function=is_whole_function,
             node=node,
         )
     if isinstance(node.test, ast.BoolOp) and len(node.test.values) >= 2:
-        first_val = node.test.values[0]
-        if not _node_covers_line(first_val, probe_line):
+        match_idx: int | None = None
+        matched_probe: tuple[bool, ast.Compare] | None = None
+        for idx, value in enumerate(node.test.values):
+            if not _node_covers_line(value, probe_line):
+                continue
+            parsed = _parse_param_probe(value, param_name)
+            if parsed is not None:
+                match_idx = idx
+                matched_probe = parsed
+                break
+        if match_idx is None or matched_probe is None:
             return None
-        parsed = _parse_param_probe(first_val, param_name)
-        if parsed is None:
+        is_none, probe_node = matched_probe
+        prefix_values = node.test.values[:match_idx]
+        suffix_values = node.test.values[match_idx + 1 :]
+        if any(_name_used_in(param_name, (v,)) for v in prefix_values):
             return None
-        is_none, probe_node = parsed
-        suffix_values = node.test.values[1:]
-        suffix_expr: ast.expr = (
-            suffix_values[0]
-            if len(suffix_values) == 1
-            else ast.BoolOp(op=node.test.op, values=suffix_values)
+        suffix_expr: ast.expr | None = (
+            None
+            if not suffix_values
+            else (
+                suffix_values[0]
+                if len(suffix_values) == 1
+                else ast.BoolOp(op=node.test.op, values=suffix_values)
+            )
         )
-        deferred = ast.IfExp(test=suffix_expr, body=node.body, orelse=node.orelse)
-        if isinstance(node.test.op, ast.Or):
-            absent_expr = node.body if is_none else deferred
-            held_expr = deferred if is_none else node.body
-        else:
-            absent_expr = deferred if is_none else node.orelse
-            held_expr = node.orelse if is_none else deferred
-        return TernaryThreadedSite(
+        if not prefix_values:
+            assert suffix_expr is not None
+            deferred = ast.IfExp(test=suffix_expr, body=node.body, orelse=node.orelse)
+            if isinstance(node.test.op, ast.Or):
+                absent_expr = node.body if is_none else deferred
+                held_expr = deferred if is_none else node.body
+            else:
+                absent_expr = deferred if is_none else node.orelse
+                held_expr = node.orelse if is_none else deferred
+            return TernaryThreadedSite.from_exprs(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_expr=absent_expr,
+                held_expr=held_expr,
+                is_whole_function=is_whole_function,
+                node=node,
+            )
+        guard_expr: ast.expr = (
+            prefix_values[0]
+            if len(prefix_values) == 1
+            else ast.BoolOp(op=node.test.op, values=prefix_values)
+        )
+        if isinstance(node.test.op, ast.And):
+            if not _is_trivial_expr(node.orelse) or _name_used_in(
+                param_name, (node.orelse,)
+            ):
+                return None
+            deferred_and: ast.expr = (
+                ast.IfExp(test=suffix_expr, body=node.body, orelse=node.orelse)
+                if suffix_expr is not None
+                else node.body
+            )
+            absent_expr = deferred_and if is_none else node.orelse
+            held_expr = node.orelse if is_none else deferred_and
+            return PrefixGuardedTernaryThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=(ast.Return(value=absent_expr),),
+                held_body=(ast.Return(value=held_expr),),
+                is_whole_function=is_whole_function,
+                node=node,
+                guard_expr=guard_expr,
+                fallback_expr=node.orelse,
+                guard_selects_call=True,
+            )
+        if not _is_trivial_expr(node.body) or _name_used_in(param_name, (node.body,)):
+            return None
+        deferred_or: ast.expr = (
+            ast.IfExp(test=suffix_expr, body=node.body, orelse=node.orelse)
+            if suffix_expr is not None
+            else node.orelse
+        )
+        absent_expr = node.body if is_none else deferred_or
+        held_expr = deferred_or if is_none else node.body
+        return PrefixGuardedTernaryThreadedSite(
             param_name=param_name,
             probe_node=probe_node,
             absent_body=(ast.Return(value=absent_expr),),
             held_body=(ast.Return(value=held_expr),),
             is_whole_function=is_whole_function,
             node=node,
+            guard_expr=guard_expr,
+            fallback_expr=node.body,
+            guard_selects_call=False,
         )
     return None
 
@@ -1092,11 +1313,11 @@ def _extract_threaded_boolop_expr_site(
         short_circuit = ast.Constant(value=False)
         absent_expr = continue_expr if is_none else short_circuit
         held_expr = short_circuit if is_none else continue_expr
-    return TernaryThreadedSite(
+    return TernaryThreadedSite.from_exprs(
         param_name=param_name,
         probe_node=probe_node,
-        absent_body=(ast.Return(value=absent_expr),),
-        held_body=(ast.Return(value=held_expr),),
+        absent_expr=absent_expr,
+        held_expr=held_expr,
         is_whole_function=is_whole_function,
         node=expr,
     )
@@ -1158,6 +1379,28 @@ def find_threaded_absence_site(
             )
             if bool_site is not None:
                 return bool_site
+    # Fallback: standalone presence boolean probe `param is [not] None`
+    # (e.g. `(binding is not None) != expected` or `flag or opt is not None`).
+    stack: list[ast.AST] = list(function.body)
+    while stack:
+        cur = stack.pop()
+        if isinstance(
+            cur, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
+            continue
+        if isinstance(cur, ast.Compare) and _node_covers_line(cur, probe_line):
+            parsed = _parse_param_probe(cur, param_name)
+            if parsed is not None:
+                is_none, probe_node = parsed
+                return TernaryThreadedSite.from_exprs(
+                    param_name=param_name,
+                    probe_node=probe_node,
+                    absent_expr=ast.Constant(value=is_none),
+                    held_expr=ast.Constant(value=not is_none),
+                    is_whole_function=False,
+                    node=probe_node,
+                )
+        stack.extend(ast.iter_child_nodes(cur))
     return None
 
 
