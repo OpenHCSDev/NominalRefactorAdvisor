@@ -873,6 +873,15 @@ class ParsedModule(SourceFileIdentity):
         return ModuleSyntaxIndex.build(self.module)
 
     @cached_property
+    def has_star_import(self) -> bool:
+        """Whether this module contains any `from ... import *` statement, computed once."""
+
+        return any(
+            isinstance(statement, ast.ImportFrom) and any(alias.name == "*" for alias in statement.names)
+            for statement in ast.walk(self.module)
+        )
+
+    @cached_property
     def _facts(self) -> dict[type[ParsedModuleFact], ParsedModuleFact]:
         return {}
 

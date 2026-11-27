@@ -440,10 +440,210 @@ def test_class_creation_refuses_node_subclass_or_marker_or_dir_or_moved_dict_key
     with pytest.raises(Exception, match="Marker"):
         _compose_proof(site, scan, base_app, main_source, "Panel", "MarkerMixin", ("format_label",)).require_unchanged()
 
-    # Composing a mixin with an annotation changes `dir(cls)` (`__annotations__`/`__annotate_func__`).
+    # Composing a mixin with an annotation changes unfiltered `dir(cls)` (`__annotations__`/`__annotate_func__`),
+    # whereas a `startswith('compute_')`-filtered `dir(cls)` walk ignores `__annotations__` and refuses `compute_*`.
+    _compose_proof(site, scan, base_app, main_source, "Panel", "ExtraAnnMixin", ("format_label",)).require_unchanged()
+    unfiltered_node = COMPOSITION_NODE.replace(
+        "cls._computed = frozenset(name for name in dir(cls) if name.startswith('compute_'))",
+        "cls._all_dir = frozenset(dir(cls))",
+    )
+    _write(site, {"toolkit/comp.py": unfiltered_node})
+    _write(scan, {"app/comp.py": base_app, "main.py": main_source})
+    for cached in CACHES:
+        cached.cache_clear()
+    unfiltered_snap = CodemodSourceSnapshot.from_modules(parse_python_modules(scan, use_parse_cache=False))
     with pytest.raises(Exception, match="dir"):
-        _compose_proof(site, scan, base_app, main_source, "Panel", "ExtraAnnMixin", ("format_label",)).require_unchanged()
+        ComposedAncestry(
+            unfiltered_snap,
+            OverlapClass.for_symbol(unfiltered_snap, "app.comp.Panel"),
+            (OverlapClass.for_symbol(unfiltered_snap, "app.comp.ExtraAnnMixin"),),
+            frozenset(("format_label",)),
+        ).creation().require_unchanged()
 
     # Moving `'render'` out of `Panel` changes `any(method in cls.__dict__ for method in ('render', '_render'))`.
     with pytest.raises(Exception, match="reads the class namespace"):
         _compose_proof(site, scan, base_app, main_source, "Panel", "RenderMixin", ("render",)).require_unchanged()
+
+
+def test_class_creation_proves_unmatched_prefix_namespace_loop_and_refuses_matching(roots):
+    """Textual `_MessagePumpMeta.__new__` walks `class_dict.items()` behind `if attr_name.startswith(prefix)`
+    (`prefix = 'compute_'`). When the composer binds no `compute_*` names before or after, the loop body
+    never runs; when it does bind a `compute_*` name (or moves one), NRA still refuses."""
+    site, scan = roots
+    prefix_meta_node = (
+        "class Reactive:\n    pass\n\n\n"
+        "class PumpMeta(type):\n"
+        "    def __new__(mcs, name, bases, class_dict, **kwargs):\n"
+        "        prefix = 'compute_'\n"
+        "        prefix_len = len(prefix)\n"
+        "        for attr_name, value in class_dict.items():\n"
+        "            if attr_name.startswith(prefix) and callable(value):\n"
+        "                reactive_name = attr_name[prefix_len:]\n"
+        "                if reactive_name in class_dict and isinstance(class_dict[reactive_name], Reactive):\n"
+        "                    raise RuntimeError(reactive_name)\n"
+        "        built = super().__new__(mcs, name, bases, class_dict, **kwargs)\n"
+        "        built._compile_dispatch()\n"
+        "        return built\n\n"
+        "    def _compile_dispatch(cls):\n"
+        "        cls._compiled = True\n\n\n"
+        "class PumpWidget(metaclass=PumpMeta):\n    pass\n"
+    )
+    _write(site, {"toolkit/pump.py": prefix_meta_node})
+    app_source = (
+        "from toolkit.pump import PumpWidget, Reactive\n\n\n"
+        "class SharedBehavior:\n"
+        "    def toggled(self):\n        return True\n\n\n"
+        "class SharedCompute:\n"
+        "    def compute_x(self):\n        return 1\n\n\n"
+        "class PlainPane(PumpWidget):\n"
+        "    def toggled(self):\n        return True\n\n\n"
+        "class ComputePane(PumpWidget):\n"
+        "    def compute_x(self):\n        return 1\n\n\n"
+        "class ReactivePane(PumpWidget):\n"
+        "    x = Reactive()\n\n"
+        "    def compute_x(self):\n        return 1\n\n"
+        "    def toggled(self):\n        return True\n"
+    )
+    _write(scan, {"app/panes.py": app_source})
+    for cached in CACHES:
+        cached.cache_clear()
+    snap = CodemodSourceSnapshot.from_modules(parse_python_modules(scan, use_parse_cache=False))
+    owner_cls = OverlapClass.for_symbol(snap, "app.panes.SharedBehavior")
+    compute_owner = OverlapClass.for_symbol(snap, "app.panes.SharedCompute")
+
+    plain = OverlapClass.for_symbol(snap, "app.panes.PlainPane")
+    ComposedAncestry(snap, plain, (owner_cls,), frozenset({"toggled"})).creation().require_unchanged()
+
+    reactive = OverlapClass.for_symbol(snap, "app.panes.ReactivePane")
+    with pytest.raises(Exception, match="reads the class namespace"):
+        ComposedAncestry(snap, reactive, (owner_cls,), frozenset({"toggled"})).creation().require_unchanged()
+    compute_pane = OverlapClass.for_symbol(snap, "app.panes.ComputePane")
+    with pytest.raises(Exception, match="reads the class namespace"):
+        ComposedAncestry(snap, compute_pane, (compute_owner,), frozenset({"compute_x"})).creation().require_unchanged()
+
+
+def test_member_deletion_proves_textual_pump_meta_dispatch_scope_and_actions_and_refuses_handler_or_action(roots):
+    """Order-preserving member deletion under a Textual-style metaclass (`AbstractHooksMeta`,
+    `_MessagePumpMeta._compile_dispatch` -> `DispatchScope.from_class(owner)` walking
+    `owner.__dict__.values()` behind `isinstance(value, MessageHandler)`, `dir(cls)` behind
+    `startswith(('_compute_', 'compute_'))`, and `DeclaredWidgetActions`-style `setattr` +
+    `f'action_{...}'` MRO check) proves deleting plain methods/properties and refuses deleting
+    a `MessageHandler`, a `compute_*` member, or an `action_*` member."""
+    site, scan = roots
+    toolkit_source = (
+        "from dataclasses import dataclass\n"
+        "from functools import partialmethod\n"
+        "from metaclass_registry.abstract_hooks import AbstractHooksMeta\n\n\n"
+        "class MessageHandler:\n    pass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class DispatchScope:\n"
+        "    owner: type\n\n"
+        "    @classmethod\n"
+        "    def from_class(cls, owner: type) -> 'DispatchScope':\n"
+        "        routes = []\n"
+        "        for value in owner.__dict__.values():\n"
+        "            if isinstance(value, MessageHandler):\n"
+        "                routes.append(value)\n"
+        "        if routes:\n"
+        "            return ClassScope(owner=owner, routes=tuple(routes))\n"
+        "        return cls(owner=owner)\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class ClassScope(DispatchScope):\n"
+        "    routes: tuple[MessageHandler, ...]\n\n\n"
+        "class PumpMeta(AbstractHooksMeta):\n"
+        "    def __new__(mcs, name, bases, class_dict, **kwargs):\n"
+        "        prefix = 'compute_'\n"
+        "        for attr_name, value in class_dict.items():\n"
+        "            if attr_name.startswith(prefix) and callable(value):\n"
+        "                raise RuntimeError(attr_name)\n"
+        "        built = super().__new__(mcs, name, bases, class_dict, **kwargs)\n"
+        "        built._compile_dispatch()\n"
+        "        return built\n\n"
+        "    def _compile_dispatch(cls) -> None:\n"
+        "        cls._dispatch_declarations = tuple(\n"
+        "            DispatchScope.from_class(owner) for owner in cls.__mro__\n"
+        "        )\n\n\n"
+        "class PumpNode(metaclass=PumpMeta):\n"
+        "    def __init_subclass__(cls, actions: tuple[str, ...] = (), **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        for declared in actions:\n"
+        "            name = f'action_{declared}'\n"
+        "            _ = tuple(\n"
+        "                base for base in cls.__mro__\n"
+        "                if name in base.__dict__ and not isinstance(base.__dict__[name], partialmethod)\n"
+        "            )\n"
+        "            setattr(cls, name, partialmethod(cls._run, declared))\n"
+        "        cls._computes = frozenset(\n"
+        "            name for name in dir(cls) if name.startswith(('_compute_', 'compute_'))\n"
+        "        )\n\n"
+        "    def _run(self, declared: str) -> str:\n"
+        "        return declared\n"
+    )
+    app_source = (
+        "from toolkit.textual_like import MessageHandler, PumpNode\n\n\n"
+        "class BasePane(PumpNode, actions=('open',)):\n"
+        "    on_click = MessageHandler()\n\n"
+        "    @property\n"
+        "    def toggled(self) -> bool:\n"
+        "        return True\n\n\n"
+        "class LeafPane(BasePane):\n"
+        "    @property\n"
+        "    def toggled(self) -> bool:\n"
+        "        return True\n"
+    )
+    main_source = (
+        "from app.panes import LeafPane\n"
+        "print(LeafPane().toggled, len(LeafPane._dispatch_declarations), sorted(LeafPane._computes))\n"
+    )
+    _write(site, {"toolkit/textual_like.py": toolkit_source})
+    _write(scan, {"app/panes.py": app_source, "main.py": main_source})
+    expected = _run(site, scan)
+    evaluation, snapshot = _evaluation(RestatedOverrideDetector(), scan, "LeafPane")
+    assert evaluation.rejection_reason == ""
+    _apply(evaluation, snapshot)
+    assert "class LeafPane(BasePane):\n    pass\n" in (scan / "app/panes.py").read_text()
+    assert _run(site, scan) == expected
+
+    # Deleting a MessageHandler binding must be refused by `_is_type_filtered_namespace_loop`.
+    handler_app = (
+        "from toolkit.textual_like import MessageHandler, PumpNode\n\n\n"
+        "HANDLER = MessageHandler()\n\n\n"
+        "class BasePane(PumpNode):\n"
+        "    on_click = HANDLER\n\n\n"
+        "class LeafPane(BasePane):\n"
+        "    on_click = HANDLER\n"
+    )
+    _write(scan, {"app/panes.py": handler_app})
+    handler_eval, _ = _evaluation(RestatedOverrideDetector(), scan, "LeafPane")
+    assert handler_eval.rejection_reason != ""
+    assert NeededInput.PROOF in handler_eval.needs
+
+    # Deleting an `action_*` method must be refused by `f'action_{declared}'` key avoidance.
+    action_app = (
+        "from toolkit.textual_like import PumpNode\n\n\n"
+        "class BasePane(PumpNode):\n"
+        "    def action_open(self) -> int:\n"
+        "        return 1\n\n\n"
+        "class LeafPane(BasePane):\n"
+        "    def action_open(self) -> int:\n"
+        "        return 1\n"
+    )
+    _write(scan, {"app/panes.py": action_app})
+    action_eval, _ = _evaluation(RestatedOverrideDetector(), scan, "LeafPane")
+    assert action_eval.rejection_reason != ""
+    assert NeededInput.PROOF in action_eval.needs
+
+    # Deleting a `_compute_*` method must be refused by prefix-filtered `dir(cls)`.
+    compute_app = (
+        "from toolkit.textual_like import PumpNode\n\n\n"
+        "class BasePane(PumpNode):\n"
+        "    def _compute_x(self) -> int:\n"
+        "        return 1\n\n\n"
+        "class LeafPane(BasePane):\n"
+        "    def _compute_x(self) -> int:\n"
+        "        return 1\n"
+    )
+    _write(scan, {"app/panes.py": compute_app})
+    compute_eval, _ = _evaluation(RestatedOverrideDetector(), scan, "LeafPane")
+    assert "dir()" in compute_eval.rejection_reason
+    assert NeededInput.PROOF in compute_eval.needs

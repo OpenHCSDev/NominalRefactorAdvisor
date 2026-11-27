@@ -48,6 +48,7 @@ from nominal_refactor_advisor.refactors.class_creation import (
     CreationCode,
     CreationReads,
     MroWalk,
+    OrderPreservingReads,
     Role,
 )
 from nominal_refactor_advisor.refactors.class_overlap import (
@@ -835,14 +836,7 @@ class NamespaceReaders(ClassAttributeReaders):
 
     @staticmethod
     def text_avoids(value: ast.expr, deleted: frozenset[str]) -> bool:
-        if not isinstance(value, ast.JoinedStr) or not value.values:
-            return False
-        first, last = value.values[0], value.values[-1]
-        prefix = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else ""
-        suffix = last.value if isinstance(last, ast.Constant) and isinstance(last.value, str) else ""
-        return bool(prefix or suffix) and not any(
-            name.startswith(prefix) and name.endswith(suffix) for name in deleted
-        )
+        return CreationReads.joined_str_avoids(value, deleted)
 
 
 @dataclass(frozen=True)
@@ -855,7 +849,7 @@ class MemberDeletionCreationProof(ClassCreationProof):
 
 
 @dataclass
-class MemberDeletionReads(CreationReads):
+class MemberDeletionReads(OrderPreservingReads):
     """One creation function's reads, judged against the deleted members."""
 
     @property

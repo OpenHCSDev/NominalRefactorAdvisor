@@ -37,7 +37,12 @@ from nominal_refactor_advisor.foreign_family import FunctionDefinition
 FunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
 MODELLED_METACLASSES = frozenset(
-    ("builtins.type", "abc.ABCMeta", "metaclass_registry.core.AutoRegisterMeta")
+    (
+        "builtins.type",
+        "abc.ABCMeta",
+        "metaclass_registry.abstract_hooks.AbstractHooksMeta",
+        "metaclass_registry.core.AutoRegisterMeta",
+    )
 )
 """Metaclasses whose class creation NRA knows without reading it: they keep the
 bases they are handed and bind only registry names (`MODELLED_BINDINGS`)."""
