@@ -631,3 +631,94 @@ def test_threaded_absence_multi_brancher_and_super_forwarding_hierarchy(
 
     _, _, after_findings = _scan(tmp_path)
     assert after_findings == []
+
+
+def test_threaded_absence_multi_probe_same_function(tmp_path: Path) -> None:
+    """Multiple disjoint absence branches on the same `param: T | None` inside one
+    function (void guard + ternary + returning branch) push onto one Held/Absent family."""
+
+    _write(
+        tmp_path,
+        {
+            "mp/__init__.py": "",
+            "mp/scorer.py": (
+                "from __future__ import annotations\n\n\n"
+                "def score_item(name: str, bonus: str | None, *, strict: bool) -> tuple[str, int, str]:\n"
+                "    notes: list[str] = []\n"
+                "    if bonus is None:\n"
+                "        notes.append('no-bonus')\n"
+                "    weight = 0 if bonus is None else len(bonus)\n"
+                "    if strict:\n"
+                "        if bonus is None:\n"
+                "            return (name, weight, 'strict-absent')\n"
+                "        return (name, weight + 10, f'strict:{bonus}')\n"
+                "    tag = ','.join(notes) or 'ok'\n"
+                "    return (name, weight, tag)\n\n\n"
+                "def run_scores() -> tuple[tuple[str, int, str], ...]:\n"
+                "    return (\n"
+                "        score_item('a', None, strict=False),\n"
+                "        score_item('b', 'hi', strict=False),\n"
+                "        score_item('c', None, strict=True),\n"
+                "        score_item('d', 'hey', strict=True),\n"
+                "    )\n"
+            ),
+        },
+    )
+
+    _, snap, findings = _scan(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].evidence[0].symbol == "score_item"
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="score_item",
+                because="bonus presence drives all three branches in score_item",
+                name="BonusChoice",
+                judgement="Present or absent bonus tag for scoring.",
+                hoisted_name="apply_bonus",
+            ),
+        ),
+    )
+    picked, report = picks.applied(findings)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 1, plan.report
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after_scorer = (tmp_path / "mp/scorer.py").read_text()
+    assert "class BonusChoice(ABC):" in after_scorer
+    assert "def apply_bonus(" in after_scorer
+    assert "def apply_bonus_2(" in after_scorer
+    assert "def apply_bonus_3(" in after_scorer
+    assert after_scorer.count("bonus: BonusChoice") == 1
+    assert "AbsentBonusChoice()" in after_scorer
+    assert "HeldBonusChoice('hi')" in after_scorer
+
+    import importlib
+    import sys as _sys
+
+    for key in [k for k in _sys.modules if k == "mp" or k.startswith("mp.")]:
+        del _sys.modules[key]
+    _sys.path.insert(0, str(tmp_path))
+    try:
+        mod = importlib.import_module("mp.scorer")
+        assert mod.run_scores() == (
+            ("a", 0, "no-bonus"),
+            ("b", 2, "ok"),
+            ("c", 0, "strict-absent"),
+            ("d", 13, "strict:hey"),
+        )
+    finally:
+        if _sys.path and _sys.path[0] == str(tmp_path):
+            _sys.path.pop(0)
+        for key in [k for k in _sys.modules if k == "mp" or k.startswith("mp.")]:
+            del _sys.modules[key]
+
+    _, _, after_findings = _scan(tmp_path)
+    assert after_findings == []

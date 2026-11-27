@@ -1714,91 +1714,199 @@ def _collect_param_probe_lines(
     return tuple(lines)
 
 
-def _prove_pushed_branch(
+@dataclass(frozen=True)
+class _ProvedBranch:
+    """One proved absence branch ready to become a method on the Held/Absent family."""
+
+    probe_line: int
+    site: ThreadedAbsenceBranchSite
+    absent_body: tuple[ast.stmt, ...]
+    held_body: tuple[ast.stmt, ...]
+    captured_args: tuple[CapturedArgument, ...]
+    is_async: bool
+    outer_receiver_aliases: tuple[OuterReceiverAlias, ...]
+
+
+def _resolve_local_store_escapes(
+    function: FunctionNode, site: ThreadedAbsenceBranchSite
+) -> ThreadedAbsenceBranchSite:
+    if not site.checks_local_store_escapes:
+        return site
+    stored = _names_stored_in((*site.absent_body, *site.held_body))
+    used_outside = _names_referenced_outside(function, site.replaced_ast_nodes())
+    escaping = sorted(stored & used_outside)
+    if not escaping:
+        return site
+    upgraded = _upgrade_threaded_to_assigning(function, site, escaping)
+    if upgraded is not None:
+        return upgraded
+    raise NeedsInput(
+        f"`{function.name}` assigns outer local(s) {', '.join(escaping)} inside the absence branch",
+        NeededInput.SOURCE_CHANGE,
+    )
+
+
+def _site_ast_ids(site: ThreadedAbsenceBranchSite) -> set[int]:
+    """Object identities of every statement/expression node replaced by `site`."""
+
+    return {
+        id(node)
+        for root in site.replaced_ast_nodes()
+        for node in ast.walk(root)
+        if isinstance(node, (ast.stmt, ast.expr))
+    }
+
+
+def _prove_pushed_branches(
     source_path: str,
     enclosure: FunctionEnclosure,
     function: FunctionNode,
     parameter_name: str,
     probe_line: int,
-) -> tuple[
-    ThreadedAbsenceBranchSite,
-    tuple[ast.stmt, ...],
-    tuple[ast.stmt, ...],
-    tuple[CapturedArgument, ...],
-    bool,
-    tuple[OuterReceiverAlias, ...],
-]:
-    """Prove `function`'s absence probe at `probe_line` can be pushed onto a Held/Absent family."""
+) -> tuple[_ProvedBranch, ...]:
+    """Prove one or more disjoint absence branches on `parameter_name` in `function`
+    can be pushed onto the same Held/Absent family."""
 
-    site = find_threaded_absence_site(function, parameter_name, probe_line)
-    if site is None:
+    primary_site = find_threaded_absence_site(function, parameter_name, probe_line)
+    if primary_site is None:
         raise NeedsInput(
             f"absence probe on `{parameter_name}` at {source_path}:{probe_line} is not a pushable branch shape",
             NeededInput.SOURCE_CHANGE,
         )
+    primary_site = _resolve_local_store_escapes(function, primary_site)
+    selected: list[tuple[int, ThreadedAbsenceBranchSite]] = [(probe_line, primary_site)]
 
-    if site.checks_local_store_escapes:
-        stored = _names_stored_in((*site.absent_body, *site.held_body))
-        used_outside = _names_referenced_outside(function, site.replaced_ast_nodes())
-        escaping = sorted(stored & used_outside)
-        if escaping:
-            upgraded = _upgrade_threaded_to_assigning(function, site, escaping)
-            if upgraded is not None:
-                site = upgraded
-            else:
-                raise NeedsInput(
-                    f"`{function.name}` assigns outer local(s) {', '.join(escaping)} inside the absence branch",
-                    NeededInput.SOURCE_CHANGE,
-                )
-
-    # Soundness: `parameter_name` must not be referenced outside the replaced branch,
-    # must not be read in the absent arm, and must not be stored/deleted anywhere in `function`.
-    outside_names = _names_referenced_outside(function, site.replaced_ast_nodes())
+    outside_names = _names_referenced_outside(
+        function, primary_site.replaced_ast_nodes()
+    )
     if parameter_name in outside_names:
+        covered_ids = _site_ast_ids(primary_site)
+        for other_line in _collect_param_probe_lines(function, parameter_name):
+            if other_line == probe_line:
+                continue
+            extra_site = find_threaded_absence_site(
+                function, parameter_name, other_line
+            )
+            if extra_site is None:
+                continue
+            extra_ids = _site_ast_ids(extra_site)
+            if extra_ids & covered_ids:
+                continue
+            try:
+                extra_site = _resolve_local_store_escapes(function, extra_site)
+            except NeedsInput:
+                continue
+            extra_ids = _site_ast_ids(extra_site)
+            if extra_ids & covered_ids:
+                continue
+            selected.append((other_line, extra_site))
+            covered_ids |= extra_ids
+
+    # Soundness: `parameter_name` must not be referenced outside the union of replaced branches,
+    # must not be read in any absent arm, and must not be stored/deleted anywhere in `function`.
+    all_replaced = tuple(
+        node for _, site in selected for node in site.replaced_ast_nodes()
+    )
+    if parameter_name in _names_referenced_outside(function, all_replaced):
         raise NeedsInput(
             f"parameter `{parameter_name}` is still referenced outside the pushed absence branch",
             NeededInput.SOURCE_CHANGE,
         )
-    if _name_used_in(parameter_name, site.absent_body):
-        raise NeedsInput(
-            f"absent branch still reads `{parameter_name}`",
-            NeededInput.SOURCE_CHANGE,
-        )
+    for _, site in selected:
+        if _name_used_in(parameter_name, site.absent_body):
+            raise NeedsInput(
+                f"absent branch still reads `{parameter_name}`",
+                NeededInput.SOURCE_CHANGE,
+            )
     if parameter_name in _names_stored_in(function.body):
         raise NeedsInput(
             f"`{function.name}` rebinds `{parameter_name}`",
             NeededInput.SOURCE_CHANGE,
         )
 
-    adapter = site.as_dispatch_adapter()
     enclosing_locals = enclosure.enclosing_local_names()
-    outer_receiver_aliases = _outer_receiver_aliases(
-        function,
-        adapter,
-        (site.absent_body, site.held_body),
-        enclosing_locals=enclosing_locals,
-    )
-    rewritten_absent = _rewrite_outer_aliases_only(
-        site.absent_body, outer_receiver_aliases
-    )
-    rewritten_held = _rewrite_param_to_self_value(
-        site.held_body, parameter_name, outer_receiver_aliases
-    )
-    captured_args, is_async = _analyze_arm_bodies(
-        function,
-        adapter,
-        (rewritten_absent, rewritten_held),
-        outer_receiver_aliases=outer_receiver_aliases,
-        enclosing_locals=enclosing_locals,
-    )
-    return (
-        site,
-        rewritten_absent,
-        rewritten_held,
-        captured_args,
-        is_async,
-        outer_receiver_aliases,
-    )
+    proved: list[_ProvedBranch] = []
+    for line, site in selected:
+        adapter = site.as_dispatch_adapter()
+        outer_receiver_aliases = _outer_receiver_aliases(
+            function,
+            adapter,
+            (site.absent_body, site.held_body),
+            enclosing_locals=enclosing_locals,
+        )
+        rewritten_absent = _rewrite_outer_aliases_only(
+            site.absent_body, outer_receiver_aliases
+        )
+        rewritten_held = _rewrite_param_to_self_value(
+            site.held_body, parameter_name, outer_receiver_aliases
+        )
+        captured_args, is_async = _analyze_arm_bodies(
+            function,
+            adapter,
+            (rewritten_absent, rewritten_held),
+            outer_receiver_aliases=outer_receiver_aliases,
+            enclosing_locals=enclosing_locals,
+        )
+        proved.append(
+            _ProvedBranch(
+                probe_line=line,
+                site=site,
+                absent_body=rewritten_absent,
+                held_body=rewritten_held,
+                captured_args=captured_args,
+                is_async=is_async,
+                outer_receiver_aliases=outer_receiver_aliases,
+            )
+        )
+    return tuple(proved)
+
+
+def _method_specs_for_branches(
+    *,
+    file_path: str,
+    function: FunctionNode,
+    enclosure: FunctionEnclosure,
+    param_name: str,
+    param_annotations: tuple[ast.expr, ...],
+    default_exprs: tuple[ast.expr, ...],
+    base_method_name: str,
+    primary_docstring: str | None,
+    branches: Sequence[_ProvedBranch],
+    used_method_names: set[str],
+) -> tuple[_FamilyMethodSpec, ...]:
+    specs: list[_FamilyMethodSpec] = []
+    for idx, branch in enumerate(branches):
+        name = base_method_name if idx == 0 else f"{base_method_name}_{idx + 1}"
+        if (
+            not name.isidentifier()
+            or keyword_module.iskeyword(name)
+            or name in used_method_names
+        ):
+            raise NeedsInput(
+                f"generated method name `{name}` collides on family",
+                NeededInput.OWNER_PICK,
+            )
+        used_method_names.add(name)
+        specs.append(
+            _FamilyMethodSpec(
+                file_path=file_path,
+                probe_line=branch.probe_line,
+                function=function,
+                enclosure=enclosure,
+                param_name=param_name,
+                param_annotations=param_annotations if idx == 0 else (),
+                default_exprs=default_exprs if idx == 0 else (),
+                site=branch.site,
+                method_name=name,
+                method_docstring=primary_docstring if idx == 0 else None,
+                absent_body=branch.absent_body,
+                held_body=branch.held_body,
+                captured_args=branch.captured_args,
+                is_async=branch.is_async,
+                outer_receiver_aliases=branch.outer_receiver_aliases,
+            )
+        )
+    return tuple(specs)
 
 
 def _collect_super_passthrough_arg_nodes(
@@ -1919,6 +2027,7 @@ def _resolve_threaded_hierarchy(
     param_name: str,
     inner_type: ast.expr,
     method_name: str,
+    used_method_names: set[str],
     placement: _OverrideParamPlacement,
 ) -> _ResolvedThreadedHierarchy:
     """Resolve a standalone function or an overriding hierarchy (passive, `super()`-forwarding,
@@ -1961,7 +2070,6 @@ def _resolve_threaded_hierarchy(
     passive_overrides: list[_PassiveOverrideParamEdit] = []
     branching_overrides: list[_FamilyMethodSpec] = []
     passthrough_super_args: set[tuple[str, int, int]] = set()
-    used_method_names: set[str] = {method_name, "from_optional"}
     anchor_lines: list[int] = [function.lineno]
     qualnames_by_file: dict[str, set[str]] = {
         source_path: {classes[owner_symbol].qualname}
@@ -2032,7 +2140,7 @@ def _resolve_threaded_hierarchy(
                             NeededInput.PROOF,
                         )
                 probe_lines = _collect_param_probe_lines(other_fn, param_name)
-                proved_override: _FamilyMethodSpec | None = None
+                proved_specs: tuple[_FamilyMethodSpec, ...] = ()
                 for other_probe_line in probe_lines:
                     try:
                         _, other_enclosure, located_fn = TypeTestDispatchProof.locate_function(
@@ -2043,14 +2151,7 @@ def _resolve_threaded_hierarchy(
                             ),
                             test_line=other_probe_line,
                         )
-                        (
-                            other_site,
-                            other_absent,
-                            other_held,
-                            other_captured,
-                            other_is_async,
-                            other_aliases,
-                        ) = _prove_pushed_branch(
+                        other_branches = _prove_pushed_branches(
                             decl.file_path,
                             other_enclosure,
                             located_fn,
@@ -2062,41 +2163,26 @@ def _resolve_threaded_hierarchy(
                     override_method_name = (
                         f"{method_name}_for_{snake_case(decl.qualname.rsplit('.', 1)[-1])}"
                     )
-                    if (
-                        not override_method_name.isidentifier()
-                        or keyword_module.iskeyword(override_method_name)
-                        or override_method_name in used_method_names
-                    ):
-                        raise NeedsInput(
-                            f"generated method name `{override_method_name}` collides on family",
-                            NeededInput.OWNER_PICK,
-                        )
-                    used_method_names.add(override_method_name)
-                    proved_override = _FamilyMethodSpec(
+                    proved_specs = _method_specs_for_branches(
                         file_path=decl.file_path,
-                        probe_line=other_probe_line,
                         function=located_fn,
                         enclosure=other_enclosure,
                         param_name=param_name,
                         param_annotations=anns,
                         default_exprs=defs,
-                        site=other_site,
-                        method_name=override_method_name,
-                        method_docstring=None,
-                        absent_body=other_absent,
-                        held_body=other_held,
-                        captured_args=other_captured,
-                        is_async=other_is_async,
-                        outer_receiver_aliases=other_aliases,
+                        base_method_name=override_method_name,
+                        primary_docstring=None,
+                        branches=other_branches,
+                        used_method_names=used_method_names,
                     )
                     break
-                if proved_override is None:
+                if not proved_specs:
                     raise NeedsInput(
                         f"`{decl.qualname}` also uses `{param_name}` in `{function.name}`; "
                         "overriding hierarchy is not rewritten",
                         NeededInput.PROOF,
                     )
-                branching_overrides.append(proved_override)
+                branching_overrides.extend(proved_specs)
             else:
                 raise NeedsInput(
                     f"`{decl.qualname}` also uses `{param_name}` in `{function.name}`; "
@@ -2378,37 +2464,27 @@ class ThreadedAbsenceProof:
                 NeededInput.PROOF,
             )
 
-        (
-            site,
-            rewritten_absent,
-            rewritten_held,
-            captured_args,
-            is_async,
-            outer_receiver_aliases,
-        ) = _prove_pushed_branch(
+        used_method_names: set[str] = {"from_optional"}
+        primary_branches = _prove_pushed_branches(
             source_path,
             enclosure,
             function,
             parameter_name,
             probe_line,
         )
-        primary_spec = _FamilyMethodSpec(
+        primary_specs = _method_specs_for_branches(
             file_path=source_path,
-            probe_line=probe_line,
             function=function,
             enclosure=enclosure,
             param_name=parameter_name,
             param_annotations=(param_ann,),
             default_exprs=(default_expr,) if default_expr is not None else (),
-            site=site,
-            method_name=method_name,
-            method_docstring=method_docstring,
-            absent_body=rewritten_absent,
-            held_body=rewritten_held,
-            captured_args=captured_args,
-            is_async=is_async,
-            outer_receiver_aliases=outer_receiver_aliases,
+            base_method_name=method_name,
+            primary_docstring=method_docstring,
+            branches=primary_branches,
+            used_method_names=used_method_names,
         )
+        site = primary_specs[0].site
 
         source_module = snapshot.parsed_module_for_source_path(source_path)
         existing_top = _module_top_level_bound_names(source_module.module)
@@ -2437,6 +2513,7 @@ class ThreadedAbsenceProof:
             parameter_name,
             inner_type,
             method_name,
+            used_method_names,
             placement,
         )
 
@@ -2499,7 +2576,7 @@ class ThreadedAbsenceProof:
             site=site,
             family_name=family_name,
             family_docstring=family_docstring,
-            method_specs=(primary_spec, *hierarchy.branching_overrides),
+            method_specs=(*primary_specs, *hierarchy.branching_overrides),
             call_args=call_args,
             passive_overrides=hierarchy.passive_overrides,
             insert_before_stmt=insert_before,
