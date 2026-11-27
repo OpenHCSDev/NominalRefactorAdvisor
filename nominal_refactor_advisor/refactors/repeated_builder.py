@@ -11,12 +11,14 @@ from collections.abc import (
     Callable,
     Iterable,
     Mapping,
+    Sequence,
 )
 from dataclasses import (
     dataclass,
     replace,
 )
 from enum import StrEnum
+import textwrap
 from typing import (
     Generic,
     Self,
@@ -29,6 +31,7 @@ from nominal_refactor_advisor.annotation_semantics import (
 )
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
+    optional_values,
     variadic_parameters,
 )
 from nominal_refactor_advisor.ast_projection import (
@@ -42,7 +45,23 @@ from nominal_refactor_advisor.ast_tools import (
     walk_function_body_nodes,
 )
 from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
+from nominal_refactor_advisor.class_index import (
+    ClassBodyModuleScope,
+    reads_class_cell_or_private_name,
+)
 from nominal_refactor_advisor.class_method_facets import ClassMethodReceiverRequirements
+from nominal_refactor_advisor.class_references import ClassReferenceRole
+from nominal_refactor_advisor.declaration_dependencies import (
+    ModuleLexicalDependencyProjection,
+)
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.refactors.class_overlap import (
+    ClassReferenceSites,
+    OverlapClass,
+    obsolete_import_edits,
+    require_static_c3,
+    required_name_imports,
+)
 from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
 from nominal_refactor_advisor.refactors.function_projection_targets import (
     ResolvedFunctionProjectionTarget,
@@ -53,6 +72,35 @@ from nominal_refactor_advisor.refactors.dataclass_projection import (
 )
 from nominal_refactor_advisor.refactors.authority_extraction import (
     SourceDerivedAuthorityProjectionOperation,
+)
+from nominal_refactor_advisor.refactors.class_creation import MroWalk
+from nominal_refactor_advisor.refactors.restated_overrides import (
+    MemberDeletionCreationProof,
+    NamespaceReaders,
+    RestatedOverrideDeletion,
+)
+from nominal_refactor_advisor.refactors.sibling_override_steps import (
+    AbstractHookDeclaration,
+    HookDeclaration,
+    MethodKind,
+    NotImplementedHookDeclaration,
+    SiblingOverrideStepHoist,
+    _calls_super_member,
+    _contains_node_type,
+    _decorator_terminal_name,
+    _forwarded_hook_call,
+    _leading_docstring_stmt,
+    _method_header_signature,
+    _parameter_signature_key,
+    _render_expr_source,
+    _statement_source_block,
+    _ABSTRACT_DECORATORS,
+)
+from nominal_refactor_advisor.refactors.type_test_dispatch import (
+    FunctionNode,
+    _always_terminates,
+    _class_append_edits,
+    _names_stored_in,
 )
 from nominal_refactor_advisor.codemod import NominalConstructorCall
 from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
@@ -71,8 +119,10 @@ from nominal_refactor_advisor.codemod_runtime import (
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.codemod_source_edits import (
+    Include,
     NominalSourceEdit,
     SourceLineSpan,
+    SourceNodeSpan,
     SourceSpanReplacement,
     SourceTargetEditor,
     SourceTextGeometry,
@@ -730,15 +780,39 @@ class RepeatedBuilderSourceDerivation(ABC):
                 + OwnerCandidate.ranked_text(owners)
             )
         if owners:
+            participant_method_names = frozenset(
+                site.participant.node.name for site in call_sites
+            )
+            if len(participant_method_names) == 1 and all(
+                candidate.method.name in participant_method_names
+                for candidate in candidates
+            ):
+                sibling_template = SiblingReceiptTemplateDerivation.from_call_sites(
+                    context,
+                    authority,
+                    call_sites,
+                )
+                if sibling_template is not None:
+                    return sibling_template
             raise ValueError(
                 "Existing consumer-family constructor authorities lack one "
                 "complete exact parameter substitution: "
                 + OwnerCandidate.ranked_text(owners)
             )
-        return RepeatedBuilderAuthorityDerivation.from_authority(
-            context,
-            authority,
-        )
+        try:
+            return RepeatedBuilderAuthorityDerivation.from_authority(
+                context,
+                authority,
+            )
+        except ValueError as authority_error:
+            sibling_template = SiblingReceiptTemplateDerivation.from_call_sites(
+                context,
+                authority,
+                call_sites,
+            )
+            if sibling_template is not None:
+                return sibling_template
+            raise authority_error
 
     @staticmethod
     def anchored_call_sites(
@@ -750,23 +824,41 @@ class RepeatedBuilderSourceDerivation(ABC):
             context,
             projection_reference,
         )
-        call_sites = RepeatedBuilderAuthorityDerivation.constructor_call_sites(
+        file_paths = tuple(
+            dict.fromkeys((authority.file_path, participant.source_path))
+        )
+        call_sites = RepeatedBuilderAuthorityDerivation.constructor_call_sites_in_files(
             context,
             authority,
+            file_paths,
         )
         anchor_sites = tuple(
             call_site
             for call_site in call_sites
             if call_site.participant.target.target_id == participant.target.target_id
         )
-        if len(anchor_sites) != 1:
+        if not anchor_sites:
             raise ValueError(
                 "Repeated-builder participant must contain one nominal constructor "
-                f"call; found {len(anchor_sites)}"
+                "call; found 0"
             )
-        anchor_key = anchor_sites[0].mapping_key
-        return tuple(
-            call_site for call_site in call_sites if call_site.mapping_key == anchor_key
+        anchor_keys = frozenset(site.mapping_key for site in anchor_sites)
+        if len(anchor_keys) == 1:
+            anchor_key = next(iter(anchor_keys))
+            return tuple(
+                call_site for call_site in call_sites if call_site.mapping_key == anchor_key
+            )
+        anchor_schemas = frozenset(site.field_names for site in anchor_sites)
+        if len(anchor_schemas) == 1 and next(iter(anchor_schemas)):
+            anchor_schema = next(iter(anchor_schemas))
+            return tuple(
+                call_site
+                for call_site in call_sites
+                if call_site.field_names == anchor_schema
+            )
+        raise ValueError(
+            "Repeated-builder participant must contain one nominal constructor "
+            f"call; found {len(anchor_sites)}"
         )
 
     @property
@@ -782,6 +874,17 @@ class RepeatedBuilderSourceDerivation(ABC):
     @abstractmethod
     def authority_target(self, context: CodemodSelectorContext) -> AstTargetDigest:
         raise NotImplementedError
+
+    @abstractmethod
+    def required_source_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        raise NotImplementedError
+
+
+class CallReplacementBuilderDerivation(RepeatedBuilderSourceDerivation, ABC):
+    """Repeated-builder derivation that rewrites each matched constructor call in place."""
 
     @property
     @abstractmethod
@@ -846,7 +949,7 @@ class RepeatedBuilderSourceDerivation(ABC):
 
 @dataclass(frozen=True)
 class InheritedConsumerBuilderAuthorityDescent(
-    RepeatedBuilderSourceDerivation,
+    CallReplacementBuilderDerivation,
     ConstructorKwargCollapseConcept,
 ):
     """Route duplicated construction through one existing inherited method."""
@@ -1154,6 +1257,36 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
             )
             == 1
         )
+        if not candidates:
+            schema_candidates: list[AstTargetDigest] = []
+            for target in participants:
+                for node in FunctionDefinition.within(
+                    (context.ast_target_nodes_by_id.get(target.target_id),)
+                ):
+                    resolver = context.class_reference_resolver_for_source_path(
+                        target.file_path
+                    )
+                    matched_calls = tuple(
+                        call
+                        for call in walk_function_body_nodes(node.body)
+                        if isinstance(call, ast.Call)
+                        and resolver.symbol_for_reference(call.func)
+                        == constructor_symbol
+                    )
+                    if not matched_calls:
+                        continue
+                    schemas = {
+                        CallKeywords.of(call.keywords).names
+                        for call in matched_calls
+                        if not call.args and not CallKeywords.of(call.keywords).splats
+                    }
+                    if len(schemas) == 1 and len(matched_calls) == sum(
+                        1
+                        for call in matched_calls
+                        if not call.args and not CallKeywords.of(call.keywords).splats
+                    ):
+                        schema_candidates.append(target)
+            candidates = tuple(schema_candidates)
         if not candidates:
             raise ValueError(
                 "Repeated-builder evidence has no participant with one nominal "
@@ -1813,7 +1946,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
 
 @dataclass(frozen=True)
 class RepeatedBuilderAuthorityDerivation(
-    RepeatedBuilderSourceDerivation,
+    CallReplacementBuilderDerivation,
     RepeatedBuilderAuthorityMethodDeriver,
 ):
     """Current-source proof for one batched constructor-authority extraction."""
@@ -1937,34 +2070,49 @@ class RepeatedBuilderAuthorityDerivation(
         context: CodemodSelectorContext,
         authority: DataclassPayloadAuthorityTarget,
     ) -> tuple[RepeatedBuilderCallSite, ...]:
+        return cls.constructor_call_sites_in_files(
+            context,
+            authority,
+            (authority.file_path,),
+        )
+
+    @classmethod
+    def constructor_call_sites_in_files(
+        cls,
+        context: CodemodSelectorContext,
+        authority: DataclassPayloadAuthorityTarget,
+        file_paths: Sequence[str],
+    ) -> tuple[RepeatedBuilderCallSite, ...]:
         authority_symbol = authority.symbol(context)
         if authority_symbol is None:
             raise ValueError(
                 "Repeated-builder authority extraction requires nominal class identity"
             )
-        resolver = context.class_reference_resolver_for_source_path(authority.file_path)
         call_sites: list[RepeatedBuilderCallSite] = []
-        for target in context.source_index.targets_by_file[authority.file_path]:
-            if not target.node_kind.is_function_like or target.qualname.startswith(
-                f"{authority.target.qualname}."
-            ):
-                continue
-            participant = ResolvedFunctionProjectionTarget.from_target(
-                context,
-                source_path=authority.file_path,
-                target=target,
-            )
-            if participant is None:
-                continue
-            call_sites.extend(
-                RepeatedBuilderCallSite(call=node, participant=participant)
-                for node in walk_function_body_nodes(participant.node.body)
-                if isinstance(node, ast.Call)
-                and resolver.symbol_for_reference(node.func) == authority_symbol
-                and not node.args
-                and bool(node.keywords)
-                and not CallKeywords.of(node.keywords).splats
-            )
+        for file_path in dict.fromkeys(file_paths):
+            resolver = context.class_reference_resolver_for_source_path(file_path)
+            for target in context.source_index.targets_by_file[file_path]:
+                if not target.node_kind.is_function_like or (
+                    file_path == authority.file_path
+                    and target.qualname.startswith(f"{authority.target.qualname}.")
+                ):
+                    continue
+                participant = ResolvedFunctionProjectionTarget.from_target(
+                    context,
+                    source_path=file_path,
+                    target=target,
+                )
+                if participant is None:
+                    continue
+                call_sites.extend(
+                    RepeatedBuilderCallSite(call=node, participant=participant)
+                    for node in walk_function_body_nodes(participant.node.body)
+                    if isinstance(node, ast.Call)
+                    and resolver.symbol_for_reference(node.func) == authority_symbol
+                    and not node.args
+                    and bool(node.keywords)
+                    and not CallKeywords.of(node.keywords).splats
+                )
         return tuple(call_sites)
 
     @classmethod
@@ -2040,6 +2188,1062 @@ class RepeatedBuilderAuthorityDerivation(
                 "Repeated-builder call no longer satisfies its derived authority"
             )
         return replacement
+
+
+_NON_CONCRETE_RECEIPT_BASES = frozenset(
+    (
+        "typing.Protocol",
+        "typing_extensions.Protocol",
+        "typing.TypedDict",
+        "typing_extensions.TypedDict",
+    )
+)
+
+
+def _collect_function_returns(body: Sequence[ast.stmt]) -> tuple[ast.Return, ...]:
+    """Every `return` statement belonging to this function (skipping nested defs/classes)."""
+
+    found: list[ast.Return] = []
+
+    def walk(node: ast.AST) -> None:
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+        ):
+            return
+        if isinstance(node, ast.Return):
+            found.append(node)
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    for stmt in body:
+        walk(stmt)
+    return tuple(found)
+
+
+def _all_method_param_names(method: FunctionNode) -> frozenset[str]:
+    args = method.args
+    return frozenset(
+        (
+            *(arg.arg for arg in args.posonlyargs),
+            *(arg.arg for arg in args.args),
+            *(arg.arg for arg in args.kwonlyargs),
+            *(arg.arg for arg in variadic_parameters(args)),
+        )
+    )
+
+
+@dataclass(frozen=True)
+class _SiblingReceiptMethod:
+    owner: OverlapClass
+    method: FunctionNode
+    participant: ResolvedFunctionProjectionTarget
+    returns: tuple[ast.Return, ...]
+    calls: tuple[ast.Call, ...]
+    scope: ClassBodyModuleScope
+    class_bound_names: frozenset[str]
+    source: str
+
+
+@dataclass(frozen=True)
+class _SiblingReceiptSlotPlan:
+    kw_names: tuple[str, ...]
+    invariant_exprs: Mapping[str, ast.expr]
+    varying_names: tuple[str, ...]
+    varying_vars: tuple[str, ...]
+
+    def template_ctor_call(self, constructor_name: str) -> ast.Call:
+        keywords: list[ast.keyword] = []
+        var_by_name = dict(zip(self.varying_names, self.varying_vars, strict=True))
+        for kw_name in self.kw_names:
+            if kw_name in self.invariant_exprs:
+                value = copy.deepcopy(self.invariant_exprs[kw_name])
+            else:
+                value = ast.Name(id=var_by_name[kw_name], ctx=ast.Load())
+            keywords.append(ast.keyword(arg=kw_name, value=value))
+        return ast.Call(
+            func=ast.Name(id=constructor_name, ctx=ast.Load()),
+            args=[],
+            keywords=keywords,
+        )
+
+    def render_template_body(
+        self,
+        hoist_source: str,
+        constructor_name: str,
+        hook_call: str,
+        inner_indent: str,
+    ) -> str:
+        var_by_name = dict(zip(self.varying_names, self.varying_vars, strict=True))
+        ctor_args: list[str] = []
+        for kw_name in self.kw_names:
+            if kw_name in self.invariant_exprs:
+                val_src = _render_expr_source(hoist_source, self.invariant_exprs[kw_name])
+            else:
+                val_src = var_by_name[kw_name]
+            ctor_args.append(f"{kw_name}={val_src}")
+        ctor_call_src = f"{constructor_name}({', '.join(ctor_args)})"
+        if not self.varying_vars:
+            return f"{inner_indent}{hook_call}\n{inner_indent}return {ctor_call_src}\n"
+        lhs = (
+            self.varying_vars[0]
+            if len(self.varying_vars) == 1
+            else ", ".join(self.varying_vars)
+        )
+        return (
+            f"{inner_indent}{lhs} = {hook_call}\n"
+            f"{inner_indent}return {ctor_call_src}\n"
+        )
+
+    def render_hook_method(
+        self,
+        sibling: _SiblingReceiptMethod,
+        hook_name: str,
+        method_kind: MethodKind,
+        indent: str,
+    ) -> str:
+        source = sibling.source
+        source_lines = source.splitlines(keepends=True)
+        geometry = SourceTextGeometry(source)
+        method_start, method_end = geometry.node_span_offsets(
+            SourceNodeSpan(sibling.method, Include)
+        )
+        first_body = sibling.method.body[0]
+        body_start_raw, _ = geometry.required_node_offsets(first_body)
+        body_line_start = source.rfind("\n", method_start, body_start_raw) + 1
+        raw_body = source[body_line_start:method_end]
+
+        replacements: list[tuple[int, int, str]] = []
+        for ret, call in zip(sibling.returns, sibling.calls, strict=True):
+            kw_map = {kw.name: kw.value for kw in CallKeywords.of(call.keywords).named}
+            if not self.varying_names:
+                r_start, r_end = geometry.required_node_offsets(ret)
+                replacements.append((r_start - body_line_start, r_end - body_line_start, "return"))
+            elif len(self.varying_names) == 1:
+                (ret_value,) = optional_values(ret)
+                v_start, v_end = geometry.required_node_offsets(ret_value)
+                expr_src = _render_expr_source(source, kw_map[self.varying_names[0]])
+                replacements.append((v_start - body_line_start, v_end - body_line_start, expr_src))
+            else:
+                (ret_value,) = optional_values(ret)
+                v_start, v_end = geometry.required_node_offsets(ret_value)
+                parts = [
+                    _render_expr_source(source, kw_map[name])
+                    for name in self.varying_names
+                ]
+                replacements.append(
+                    (
+                        v_start - body_line_start,
+                        v_end - body_line_start,
+                        f"({', '.join(parts)})",
+                    )
+                )
+        spliced_body = raw_body
+        for rel_start, rel_end, text in sorted(replacements, reverse=True):
+            spliced_body = f"{spliced_body[:rel_start]}{text}{spliced_body[rel_end:]}"
+        dedented_body = textwrap.dedent(spliced_body)
+        inner_indent = f"{indent}    "
+        reindented_body = "".join(
+            f"{inner_indent}{line}" if line.strip() else line
+            for line in dedented_body.splitlines(keepends=True)
+        )
+        if not reindented_body.endswith("\n"):
+            reindented_body = f"{reindented_body}\n"
+
+        pieces: list[str] = [
+            f"{indent}@{dec}\n"
+            for dec in method_kind.sibling_hook_decorators(sibling.method)
+        ]
+        header = _method_header_signature(
+            sibling.method,
+            hook_name,
+            source_lines,
+            preserve_return_annotation=False,
+        )
+        for line in header.splitlines():
+            pieces.append(f"{indent}{line}\n" if line.strip() else "\n")
+        pieces.append(reindented_body)
+        return "".join(pieces)
+
+
+class DeclaringReceiptHookTarget(ABC):
+    """How the base hook declaration on `declaring` is rendered."""
+
+    @abstractmethod
+    def render(
+        self,
+        slot_plan: _SiblingReceiptSlotPlan,
+        template_method: FunctionNode,
+        template_lines: Sequence[str],
+        hook_name: str,
+        method_kind: MethodKind,
+        indent: str,
+    ) -> str:
+        raise NotImplementedError
+
+    def obsolete_declaring_decorators(
+        self, declaring_method: FunctionNode
+    ) -> tuple[ast.expr, ...]:
+        del declaring_method
+        return ()
+
+
+@dataclass(frozen=True)
+class DeclaredReceiptHookTarget(DeclaringReceiptHookTarget):
+    """Renders an `@abstractmethod` or `raise NotImplementedError` hook on `declaring`."""
+
+    hook_declaration: HookDeclaration
+
+    def render(
+        self,
+        slot_plan: _SiblingReceiptSlotPlan,
+        template_method: FunctionNode,
+        template_lines: Sequence[str],
+        hook_name: str,
+        method_kind: MethodKind,
+        indent: str,
+    ) -> str:
+        del slot_plan
+        return self.hook_declaration.render(
+            template_method,
+            hook_name,
+            indent,
+            method_kind,
+            template_lines,
+            preserve_return_annotation=False,
+        )
+
+    def obsolete_declaring_decorators(
+        self, declaring_method: FunctionNode
+    ) -> tuple[ast.expr, ...]:
+        return self.hook_declaration.obsolete_declaring_decorators(declaring_method)
+
+
+@dataclass(frozen=True)
+class ConcreteReceiptHookTarget(DeclaringReceiptHookTarget):
+    """Preserves a concrete base method's own body as the default hook on `declaring`."""
+
+    declaring_sibling: _SiblingReceiptMethod
+
+    def render(
+        self,
+        slot_plan: _SiblingReceiptSlotPlan,
+        template_method: FunctionNode,
+        template_lines: Sequence[str],
+        hook_name: str,
+        method_kind: MethodKind,
+        indent: str,
+    ) -> str:
+        del template_method, template_lines
+        return slot_plan.render_hook_method(
+            self.declaring_sibling, hook_name, method_kind, indent
+        )
+
+
+class DeclaringReceiptPlacement(ABC):
+    """Whether `declaring` already declares `member_name` (replace) or receives it (append)."""
+
+    @property
+    @abstractmethod
+    def signature_method(self) -> FunctionNode:
+        raise NotImplementedError
+
+    @abstractmethod
+    def signature_lines(self, declaring_source: str) -> list[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def declaring_edits(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        declaring: OverlapClass,
+        member_name: str,
+        hook_name: str,
+        method_kind: MethodKind,
+        hook_target: DeclaringReceiptHookTarget,
+        slot_plan: _SiblingReceiptSlotPlan,
+        hoist_source: str,
+        constructor_name: str,
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ReplacingDeclaringReceiptMethod(DeclaringReceiptPlacement):
+    """Replaces an existing base method declaration with the hoisted template + hook."""
+
+    declaring_method: FunctionNode
+
+    @property
+    def signature_method(self) -> FunctionNode:
+        return self.declaring_method
+
+    def signature_lines(self, declaring_source: str) -> list[str]:
+        return declaring_source.splitlines(keepends=True)
+
+    def declaring_edits(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        declaring: OverlapClass,
+        member_name: str,
+        hook_name: str,
+        method_kind: MethodKind,
+        hook_target: DeclaringReceiptHookTarget,
+        slot_plan: _SiblingReceiptSlotPlan,
+        hoist_source: str,
+        constructor_name: str,
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        declaring_source = snapshot.sources_by_file_path[declaring.file_path]
+        declaring_lines = declaring_source.splitlines(keepends=True)
+        body = ClassBodySourceAuthority(declaring.node, declaring_source)
+        indent = body.indentation
+        inner_indent = f"{indent}    "
+        start, end = body.geometry.node_span_offsets(
+            SourceNodeSpan(self.declaring_method, Include)
+        )
+        pieces: list[str] = [
+            f"{indent}@{dec}\n"
+            for dec in method_kind.template_decorators(self.declaring_method)
+        ]
+        header = _method_header_signature(
+            self.declaring_method, member_name, declaring_lines
+        )
+        for line in header.splitlines():
+            pieces.append(f"{indent}{line}\n" if line.strip() else "\n")
+        docstring = _leading_docstring_stmt(self.declaring_method)
+        if docstring is not None:
+            pieces.append(
+                _statement_source_block(declaring_lines, docstring, inner_indent)
+            )
+        hook_call = _forwarded_hook_call(self.declaring_method, hook_name)
+        pieces.append(
+            slot_plan.render_template_body(
+                hoist_source, constructor_name, hook_call, inner_indent
+            )
+        )
+        pieces.append("\n")
+        pieces.append(
+            hook_target.render(
+                slot_plan,
+                self.declaring_method,
+                declaring_lines,
+                hook_name,
+                method_kind,
+                indent,
+            )
+        )
+        replacement = SourceTextSpanReplacement.from_offsets(
+            start_offset=start,
+            end_offset=end,
+            replacement_source="".join(pieces),
+        )
+        edits: list[NominalSourceEdit] = list(
+            body.geometry.physical_edits(
+                file_path=declaring.file_path,
+                replacements=(replacement,),
+                rationale=rationale,
+            )
+        )
+        dropped_abstract = hook_target.obsolete_declaring_decorators(
+            self.declaring_method
+        )
+        if dropped_abstract:
+            edits.extend(
+                obsolete_import_edits(
+                    snapshot, declaring.file_path, dropped_abstract, rationale
+                )
+            )
+        return tuple(edits)
+
+
+@dataclass(frozen=True)
+class AppendingDeclaringReceiptMethod(DeclaringReceiptPlacement):
+    """Appends the hoisted template + hook onto a base class that did not declare it yet."""
+
+    exemplar_method: FunctionNode
+    exemplar_source: str
+
+    @property
+    def signature_method(self) -> FunctionNode:
+        return self.exemplar_method
+
+    def signature_lines(self, declaring_source: str) -> list[str]:
+        del declaring_source
+        return self.exemplar_source.splitlines(keepends=True)
+
+    def declaring_edits(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        declaring: OverlapClass,
+        member_name: str,
+        hook_name: str,
+        method_kind: MethodKind,
+        hook_target: DeclaringReceiptHookTarget,
+        slot_plan: _SiblingReceiptSlotPlan,
+        hoist_source: str,
+        constructor_name: str,
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        declaring_source = snapshot.sources_by_file_path[declaring.file_path]
+        exemplar_lines = self.exemplar_source.splitlines(keepends=True)
+        body = ClassBodySourceAuthority(declaring.node, declaring_source)
+        pieces: list[str] = [
+            f"@{dec}\n"
+            for dec in method_kind.template_decorators(self.exemplar_method)
+        ]
+        header = _method_header_signature(
+            self.exemplar_method,
+            member_name,
+            exemplar_lines,
+            preserve_return_annotation=False,
+        )
+        for line in header.splitlines():
+            pieces.append(f"{line}\n" if line.strip() else "\n")
+        hook_call = _forwarded_hook_call(self.exemplar_method, hook_name)
+        pieces.append(
+            slot_plan.render_template_body(
+                hoist_source, constructor_name, hook_call, "    "
+            )
+        )
+        pieces.append("\n")
+        pieces.append(
+            hook_target.render(
+                slot_plan,
+                self.exemplar_method,
+                exemplar_lines,
+                hook_name,
+                method_kind,
+                "",
+            )
+        )
+        return tuple(
+            _class_append_edits(
+                declaring.file_path,
+                body.geometry,
+                declaring.node,
+                "".join(pieces).rstrip("\n"),
+                member_names=(member_name, hook_name),
+                rationale=rationale,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class SiblingReceiptTemplateDerivation(
+    RepeatedBuilderSourceDerivation,
+    ConstructorKwargCollapseConcept,
+):
+    """Lift repeated sibling receipt-constructor returns into one base template method."""
+
+    authority: DataclassPayloadAuthorityTarget
+    call_sites: tuple[RepeatedBuilderCallSite, ...]
+    declaring: OverlapClass
+    placement: DeclaringReceiptPlacement
+    hook_target: DeclaringReceiptHookTarget
+    member_name: str
+    hook_name: str
+    method_kind: MethodKind
+    siblings: tuple[_SiblingReceiptMethod, ...]
+    slot_plan: _SiblingReceiptSlotPlan
+    hoist_source_owner: OverlapClass
+
+    @classmethod
+    def _load_receipt_sibling(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        owner: OverlapClass,
+        member_name: str,
+        authority_symbol: str,
+        expected_kw_names: frozenset[str],
+        *,
+        expected_sig: tuple[object, ...] | None,
+        expected_kind: MethodKind | None,
+        expected_is_async: bool | None,
+    ) -> tuple[_SiblingReceiptMethod, MethodKind] | None:
+        try:
+            method, kind = SiblingOverrideStepHoist._require_single_method(
+                owner, member_name, allow_abstract=False
+            )
+        except ValueError:
+            return None
+        if not kind.supports_sibling_receipt_template():
+            return None
+        if expected_kind is not None and kind != expected_kind:
+            return None
+        if expected_is_async is not None and (
+            isinstance(method, ast.AsyncFunctionDef) != expected_is_async
+        ):
+            return None
+        if expected_sig is not None and _parameter_signature_key(method) != expected_sig:
+            return None
+        positional = (*method.args.posonlyargs, *method.args.args)
+        if not positional:
+            return None
+        if _calls_super_member(method, member_name):
+            return None
+        stmts = tuple(statements_without_docstring(method.body))
+        if not stmts:
+            return None
+        if _contains_node_type(stmts, (ast.Yield, ast.YieldFrom)):
+            return None
+        if not _always_terminates(stmts):
+            return None
+        returns = _collect_function_returns(stmts)
+        if not returns:
+            return None
+        resolver = snapshot.class_reference_resolver_for_source_path(owner.file_path)
+        calls: list[ast.Call] = []
+        for ret in returns:
+            if not isinstance(ret.value, ast.Call):
+                return None
+            call = ret.value
+            if call.args or CallKeywords.of(call.keywords).splats:
+                return None
+            if resolver.symbol_for_reference(call.func) != authority_symbol:
+                return None
+            if frozenset(CallKeywords.of(call.keywords).names) != expected_kw_names:
+                return None
+            calls.append(call)
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=owner.file_path,
+            qualname=f"{owner.qualname}.{member_name}",
+        ).target_ids(snapshot)
+        if len(target_ids) != 1:
+            return None
+        participant = ResolvedFunctionProjectionTarget.from_target(
+            snapshot,
+            source_path=owner.file_path,
+            target=snapshot.source_index.target_by_id[target_ids[0]],
+        )
+        if participant is None:
+            return None
+        parsed = snapshot.parsed_module_for_source_path(owner.file_path)
+        scope = ClassBodyModuleScope.for_lines(parsed, (owner.node.lineno,))[
+            owner.node.lineno
+        ]
+        class_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(owner.node.body)
+        return (
+            _SiblingReceiptMethod(
+                owner=owner,
+                method=method,
+                participant=participant,
+                returns=returns,
+                calls=tuple(calls),
+                scope=scope,
+                class_bound_names=class_bound,
+                source=snapshot.sources_by_file_path[owner.file_path],
+            ),
+            kind,
+        )
+
+    @classmethod
+    def _build_slot_plan(
+        cls,
+        participating: Sequence[_SiblingReceiptMethod],
+        kw_names: tuple[str, ...],
+        param_names: frozenset[str],
+        constructor_name: str,
+    ) -> _SiblingReceiptSlotPlan | None:
+        all_stored: set[str] = set()
+        for sibling in participating:
+            all_stored.update(_names_stored_in(sibling.method.body))
+        first_sibling = participating[0]
+        all_calls_with_owner = [
+            (sibling, call)
+            for sibling in participating
+            for call in sibling.calls
+        ]
+        first_kw_map = {
+            kw.name: kw.value
+            for kw in CallKeywords.of(first_sibling.calls[0].keywords).named
+        }
+        invariant_exprs: dict[str, ast.expr] = {}
+        varying_names: list[str] = []
+        for kw_name in kw_names:
+            first_expr = first_kw_map[kw_name]
+            first_dump = ast.dump(first_expr, include_attributes=False)
+            is_invariant = True
+            if reads_class_cell_or_private_name(first_expr) or _contains_node_type(
+                (ast.Expr(value=first_expr),),
+                (ast.NamedExpr, ast.Yield, ast.YieldFrom, ast.Await),
+            ):
+                is_invariant = False
+            if is_invariant:
+                for _sib, call in all_calls_with_owner[1:]:
+                    kw_map = {
+                        kw.name: kw.value for kw in CallKeywords.of(call.keywords).named
+                    }
+                    if ast.dump(kw_map[kw_name], include_attributes=False) != first_dump:
+                        is_invariant = False
+                        break
+            if is_invariant:
+                free_names = sorted(
+                    {
+                        ref.id
+                        for ref in ModuleLexicalDependencyProjection.from_module(
+                            ast.Module(body=[ast.Expr(value=first_expr)], type_ignores=[])
+                        ).external_name_references
+                    }
+                )
+                for name in free_names:
+                    if name in param_names:
+                        if name in all_stored:
+                            is_invariant = False
+                            break
+                        continue
+                    first_witness = first_sibling.scope.witness_for(name)
+                    if first_sibling.scope.deferred_for(name) is not None:
+                        is_invariant = False
+                        break
+                    for sibling in participating:
+                        if name in sibling.class_bound_names:
+                            is_invariant = False
+                            break
+                        if sibling.scope.deferred_for(name) is not None:
+                            is_invariant = False
+                            break
+                        if sibling.scope.witness_for(name) != first_witness:
+                            is_invariant = False
+                            break
+                    if not is_invariant:
+                        break
+            if is_invariant:
+                invariant_exprs[kw_name] = first_expr
+            else:
+                varying_names.append(kw_name)
+
+        used_names = set(param_names) | {constructor_name}
+        varying_vars: list[str] = []
+        for kw_name in varying_names:
+            candidate = kw_name if kw_name not in used_names else f"_{kw_name}"
+            suffix = 2
+            while candidate in used_names:
+                candidate = f"_{kw_name}_{suffix}"
+                suffix += 1
+            used_names.add(candidate)
+            varying_vars.append(candidate)
+        return _SiblingReceiptSlotPlan(
+            kw_names=kw_names,
+            invariant_exprs=invariant_exprs,
+            varying_names=tuple(varying_names),
+            varying_vars=tuple(varying_vars),
+        )
+
+    @classmethod
+    def from_call_sites(
+        cls,
+        context: CodemodSelectorContext,
+        authority: DataclassPayloadAuthorityTarget,
+        call_sites: tuple[RepeatedBuilderCallSite, ...],
+    ) -> SiblingReceiptTemplateDerivation | None:
+        if not call_sites:
+            return None
+        authority_symbol = authority.symbol(context)
+        if authority_symbol is None:
+            return None
+        snapshot = context.execution_snapshot()
+        verdicts = snapshot.class_overlap_verdicts
+        index = verdicts.class_index
+        classes = index.classes_by_symbol
+
+        member_names: set[str] = set()
+        owner_symbols: list[str] = []
+        for site in call_sites:
+            owner_sym = site.owner_class_symbol(context)
+            if owner_sym is None or owner_sym not in classes:
+                return None
+            member_names.add(site.participant.node.name)
+            owner_symbols.append(owner_sym)
+        distinct_owners = tuple(dict.fromkeys(owner_symbols))
+        if len(member_names) != 1 or len(distinct_owners) < 2:
+            return None
+        (member_name,) = member_names
+        if member_name.startswith("__") and member_name.endswith("__"):
+            return None
+        kw_names = call_sites[0].field_names
+        if not kw_names:
+            return None
+        expected_kw_names = frozenset(kw_names)
+
+        # Find the lowest common scanned ancestor of all participating sibling classes.
+        common_ancestors: set[str] | None = None
+        for sym in distinct_owners:
+            lineage = {
+                anc
+                for anc in (sym, *index.ancestor_symbols(sym))
+                if anc in classes
+            }
+            common_ancestors = (
+                lineage if common_ancestors is None else (common_ancestors & lineage)
+            )
+        if not common_ancestors:
+            return None
+        declaring_candidates = [
+            sym
+            for sym in common_ancestors
+            if member_name in classes[sym].member_binding_names
+        ]
+        if declaring_candidates:
+            declaring_symbol = max(
+                declaring_candidates,
+                key=lambda sym: (len(index.ancestor_symbols(sym)), sym),
+            )
+        else:
+            declaring_symbol = max(
+                common_ancestors,
+                key=lambda sym: (len(index.ancestor_symbols(sym)), sym),
+            )
+            if any(
+                anc in classes and member_name in classes[anc].member_binding_names
+                for anc in index.ancestor_symbols(declaring_symbol)
+            ):
+                return None
+
+        declaring = OverlapClass.for_symbol(snapshot, declaring_symbol)
+        try:
+            declaring_ancestry = require_static_c3(snapshot, declaring.facts)
+        except ValueError:
+            return None
+        if frozenset(declaring_ancestry) & _NON_CONCRETE_RECEIPT_BASES:
+            return None
+
+        declaring_method: FunctionNode | None = None
+        declaring_kind: MethodKind | None = None
+        expected_sig: tuple[object, ...] | None = None
+        expected_is_async: bool | None = None
+        if member_name in declaring.facts.member_binding_names:
+            try:
+                declaring_method, declaring_kind = (
+                    SiblingOverrideStepHoist._require_single_method(
+                        declaring, member_name, allow_abstract=True
+                    )
+                )
+            except ValueError:
+                return None
+            if not declaring_kind.supports_sibling_receipt_template():
+                return None
+            if _calls_super_member(declaring_method, member_name):
+                return None
+            expected_sig = _parameter_signature_key(declaring_method)
+            expected_is_async = isinstance(declaring_method, ast.AsyncFunctionDef)
+
+        descendant_symbols = tuple(
+            sorted(
+                index.descendant_symbols(declaring_symbol),
+                key=lambda sym: (len(index.ancestor_symbols(sym)), sym),
+            )
+        )
+        overriding_symbols = tuple(
+            sym
+            for sym in descendant_symbols
+            if sym in classes and member_name in classes[sym].member_binding_names
+        )
+        overriding_set = frozenset(overriding_symbols)
+        if not all(
+            sym == declaring_symbol or sym in overriding_set for sym in distinct_owners
+        ):
+            return None
+
+        siblings: list[_SiblingReceiptMethod] = []
+        resolved_kind = declaring_kind
+        for sym in overriding_symbols:
+            child = OverlapClass.for_symbol(snapshot, sym)
+            loaded = cls._load_receipt_sibling(
+                snapshot,
+                child,
+                member_name,
+                authority_symbol,
+                expected_kw_names,
+                expected_sig=expected_sig,
+                expected_kind=resolved_kind,
+                expected_is_async=expected_is_async,
+            )
+            if loaded is None:
+                return None
+            sibling_method, child_kind = loaded
+            if expected_sig is None:
+                expected_sig = _parameter_signature_key(sibling_method.method)
+                expected_is_async = isinstance(
+                    sibling_method.method, ast.AsyncFunctionDef
+                )
+                resolved_kind = child_kind
+            siblings.append(sibling_method)
+        if resolved_kind is None:
+            return None
+
+        declaring_sibling: _SiblingReceiptMethod | None = None
+        if declaring_method is not None and not any(
+            _decorator_terminal_name(dec) in _ABSTRACT_DECORATORS
+            for dec in declaring_method.decorator_list
+        ):
+            loaded_decl = cls._load_receipt_sibling(
+                snapshot,
+                declaring,
+                member_name,
+                authority_symbol,
+                expected_kw_names,
+                expected_sig=expected_sig,
+                expected_kind=resolved_kind,
+                expected_is_async=expected_is_async,
+            )
+            if loaded_decl is not None:
+                declaring_sibling = loaded_decl[0]
+
+        participating: list[_SiblingReceiptMethod] = (
+            [declaring_sibling, *siblings] if declaring_sibling is not None else list(siblings)
+        )
+        if len(participating) < 2 or not siblings:
+            return None
+
+        # Verify every non-overriding descendant and direct caller is preserved.
+        for desc_sym in descendant_symbols:
+            desc_facts = classes.get(desc_sym)
+            if desc_facts is None:
+                continue
+            try:
+                order = require_static_c3(snapshot, desc_facts)
+            except ValueError:
+                return None
+            if desc_sym in overriding_set:
+                continue
+            if SiblingOverrideStepHoist._remains_abstract(verdicts, order, member_name):
+                continue
+            if declaring_sibling is None:
+                return None
+
+        if declaring_method is not None and declaring_sibling is None:
+            is_abstract_decl = bool(declaring.facts.abstract_method_names) or any(
+                _decorator_terminal_name(dec) in _ABSTRACT_DECORATORS
+                for dec in declaring_method.decorator_list
+            )
+            if not is_abstract_decl:
+                allowed_roles = frozenset((ClassReferenceRole.TYPE_TEST,))
+                for site in ClassReferenceSites(
+                    snapshot, frozenset((declaring.symbol,))
+                ).sites:
+                    if site.is_base or site.is_annotation or site.role in allowed_roles:
+                        continue
+                    return None
+
+        # Pick a collision-free hook name across the entire hierarchy.
+        family_symbols = (
+            declaring_symbol,
+            *index.ancestor_symbols(declaring_symbol),
+            *descendant_symbols,
+        )
+        bound_in_family: set[str] = set()
+        for sym in family_symbols:
+            decl = classes.get(sym)
+            if decl is not None:
+                bound_in_family.update(decl.member_binding_names)
+        hook_name: str | None = None
+        for candidate_hook in (f"_{member_name}_step", f"_{member_name}_parts"):
+            if candidate_hook not in bound_in_family:
+                hook_name = candidate_hook
+                break
+        if hook_name is None:
+            return None
+
+        # Prove renaming `member_name` -> `hook_name` on siblings & declaring is invisible to
+        # class creation and class-namespace readers.
+        names_changed = frozenset((member_name, hook_name))
+        namespace_readers = NamespaceReaders(snapshot)
+        try:
+            for sib in siblings:
+                child = sib.owner
+                child_ancestry = require_static_c3(snapshot, child.facts)
+                child_order = verdicts.linearized(child.symbol)
+                child_proof = MemberDeletionCreationProof(
+                    snapshot,
+                    child.facts,
+                    child_ancestry,
+                    f"`{child.qualname}.{member_name}`",
+                    names_changed,
+                    frozenset(),
+                    MroWalk(child_order, child_order, child.symbol, names_changed),
+                )
+                RestatedOverrideDeletion.require_once_per_class(
+                    child_proof, child, sib.method
+                )
+                RestatedOverrideDeletion.require_plain_decorators(child_proof, child)
+                child_proof.require_unchanged()
+                namespace_readers.require_unread(child.facts, names_changed)
+
+            declaring_order = verdicts.linearized(declaring.symbol)
+            declaring_proof = MemberDeletionCreationProof(
+                snapshot,
+                declaring.facts,
+                declaring_ancestry,
+                f"`{declaring.qualname}.{member_name}`",
+                names_changed,
+                frozenset(),
+                MroWalk(
+                    declaring_order, declaring_order, declaring.symbol, names_changed
+                ),
+            )
+            RestatedOverrideDeletion.require_plain_decorators(declaring_proof, declaring)
+            declaring_proof.require_unchanged()
+            namespace_readers.require_unread(declaring.facts, names_changed)
+        except ValueError:
+            return None
+
+        param_names = _all_method_param_names(participating[0].method)
+        slot_plan = cls._build_slot_plan(
+            participating, kw_names, param_names, authority.name
+        )
+        if slot_plan is None:
+            return None
+
+        hoist_source_owner = participating[0].owner
+        try:
+            required_name_imports(
+                snapshot,
+                (ast.Return(value=slot_plan.template_ctor_call(authority.name)),),
+                hoist_source_owner,
+                declaring,
+                rationale="Import symbols needed by hoisted sibling receipt template.",
+            )
+        except ValueError:
+            return None
+
+        hook_target: DeclaringReceiptHookTarget
+        if declaring_sibling is not None:
+            hook_target = ConcreteReceiptHookTarget(declaring_sibling=declaring_sibling)
+        elif declaring_method is not None:
+            abstract_dec = next(
+                (
+                    ast.unparse(dec)
+                    for dec in declaring_method.decorator_list
+                    if _decorator_terminal_name(dec) in _ABSTRACT_DECORATORS
+                ),
+                None,
+            )
+            hook_decl: HookDeclaration = (
+                AbstractHookDeclaration(abstract_dec)
+                if abstract_dec is not None
+                else NotImplementedHookDeclaration()
+            )
+            hook_target = DeclaredReceiptHookTarget(hook_declaration=hook_decl)
+        else:
+            hook_target = DeclaredReceiptHookTarget(
+                hook_declaration=NotImplementedHookDeclaration()
+            )
+
+        placement: DeclaringReceiptPlacement = (
+            ReplacingDeclaringReceiptMethod(declaring_method=declaring_method)
+            if declaring_method is not None
+            else AppendingDeclaringReceiptMethod(
+                exemplar_method=participating[0].method,
+                exemplar_source=participating[0].source,
+            )
+        )
+        all_sites = tuple(
+            RepeatedBuilderCallSite(call=call, participant=sib.participant)
+            for sib in participating
+            for call in sib.calls
+        )
+        return cls(
+            authority=authority,
+            call_sites=all_sites,
+            declaring=declaring,
+            placement=placement,
+            hook_target=hook_target,
+            member_name=member_name,
+            hook_name=hook_name,
+            method_kind=resolved_kind,
+            siblings=tuple(siblings),
+            slot_plan=slot_plan,
+            hoist_source_owner=hoist_source_owner,
+        )
+
+    @property
+    def executable_declaration_type(self) -> type[RefactorConcept]:
+        return type(self)
+
+    @property
+    def authority_kind(self) -> SemanticAuthorityKind:
+        return SemanticAuthorityKind.CLASS_FAMILY
+
+    def authority_target(self, context: CodemodSelectorContext) -> AstTargetDigest:
+        target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.CLASS,),
+            file_paths=(self.declaring.file_path,),
+            qualnames=(self.declaring.qualname,),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            raise ValueError(
+                f"Declaring base `{self.declaring.qualname}` must resolve to one exact class"
+            )
+        return context.source_index.target_by_id[target_ids[0]]
+
+    def required_source_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        snapshot = context.execution_snapshot()
+        rationale = (
+            f"Hoist repeated `{self.authority.name}` construction into template method "
+            f"`{self.declaring.qualname}.{self.member_name}` calling `{self.hook_name}`."
+        )
+        hoist_source = snapshot.sources_by_file_path[self.hoist_source_owner.file_path]
+        edits: list[NominalSourceEdit] = list(
+            self.placement.declaring_edits(
+                snapshot,
+                self.declaring,
+                self.member_name,
+                self.hook_name,
+                self.method_kind,
+                self.hook_target,
+                self.slot_plan,
+                hoist_source,
+                self.authority.name,
+                rationale,
+            )
+        )
+        edits.extend(
+            required_name_imports(
+                snapshot,
+                (ast.Return(value=self.slot_plan.template_ctor_call(self.authority.name)),),
+                self.hoist_source_owner,
+                self.declaring,
+                rationale,
+            )
+        )
+        for sibling in self.siblings:
+            body = ClassBodySourceAuthority(sibling.owner.node, sibling.source)
+            indent = body.indentation
+            start, end = body.geometry.node_span_offsets(
+                SourceNodeSpan(sibling.method, Include)
+            )
+            rendered = self.slot_plan.render_hook_method(
+                sibling, self.hook_name, self.method_kind, indent
+            )
+            edits.extend(
+                body.geometry.physical_edits(
+                    file_path=sibling.owner.file_path,
+                    replacements=(
+                        SourceTextSpanReplacement.from_offsets(
+                            start_offset=start,
+                            end_offset=end,
+                            replacement_source=rendered,
+                        ),
+                    ),
+                    rationale=rationale,
+                )
+            )
+            if sibling.owner.file_path != self.declaring.file_path:
+                edits.extend(
+                    obsolete_import_edits(
+                        snapshot,
+                        sibling.owner.file_path,
+                        tuple(ast.Expr(value=call) for call in sibling.calls),
+                        rationale,
+                    )
+                )
+        return tuple(edits)
 
 
 @dataclass(frozen=True, kw_only=True)

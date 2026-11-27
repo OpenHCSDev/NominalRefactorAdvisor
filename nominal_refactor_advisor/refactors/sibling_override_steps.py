@@ -665,10 +665,17 @@ class MethodKind(ABC):
         """Whether this method kind is a cached property."""
         return False
 
+    def supports_sibling_receipt_template(self) -> bool:
+        """Whether this method kind can host a hoisted sibling receipt template."""
+        return False
+
 
 @dataclass(frozen=True)
 class PlainMethodKind(MethodKind):
     """Plain instance method with no descriptor decorator."""
+
+    def supports_sibling_receipt_template(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True)
@@ -677,6 +684,9 @@ class ClassMethodKind(MethodKind):
 
     def hook_decorators(self, abstract_decorators: tuple[str, ...]) -> tuple[str, ...]:
         return ("classmethod", *abstract_decorators)
+
+    def supports_sibling_receipt_template(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True)
