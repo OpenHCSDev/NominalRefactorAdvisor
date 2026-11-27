@@ -781,3 +781,36 @@ def test_sibling_test_prefilter_checks_ancestor_identity_reads_and_enum_test_gro
     assert finding.summary.startswith(
         "`Mode` has members that every spelling names together: `Mode.FAST`, `Mode.QUICK`."
     )
+
+
+def test_empty_default_member_of_unconstructed_polymorphic_state_family_is_kept(
+    tmp_path: Path,
+):
+    """Reproduces Toad's `ActivePresence(ApplicationPresence)` and `CleanDemand(PublicationDemand)`:
+    when a concrete base holds default behavior, is never directly instantiated, and has
+    overriding sibling subclasses, its empty default/terminal subclass is the clean state
+    member, not a false distinction."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/presence.py": (
+                "class ApplicationPresence:\n"
+                "    def activate(self) -> str:\n"
+                "        return 'stay'\n\n\n"
+                "class ActivePresence(ApplicationPresence):\n"
+                "    pass\n\n\n"
+                "class InactivePresence(ApplicationPresence):\n"
+                "    def activate(self) -> str:\n"
+                "        return 'wake'\n\n\n"
+                "ACTIVE_PRESENCE = ActivePresence()\n"
+                "INACTIVE_PRESENCE = InactivePresence()\n"
+            ),
+        },
+    )
+    assert _findings(NameOnlySubclassDetector, tmp_path) == []
+    operation = RedirectEmptySubclassOperation(target=_target(tmp_path, "ActivePresence"))
+    with pytest.raises(ValueError, match="default empty member of unconstructed polymorphic family"):
+        operation.source_edits(_snapshot(tmp_path))
+

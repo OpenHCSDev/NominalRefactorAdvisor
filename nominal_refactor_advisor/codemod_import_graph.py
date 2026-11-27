@@ -273,15 +273,57 @@ class SourceModuleImportGraph:
         importing_file_path: str,
         imported_file_path: str,
         imported_name: str,
+        bound_name: str | None = None,
     ) -> str:
-        """Return one canonical acyclic import or fail closed."""
+        """Return one canonical acyclic import (preserving alias when `bound_name` differs) or fail closed."""
 
         module_reference = self.required_import_module_reference(
             importing_file_path=importing_file_path,
             imported_file_path=imported_file_path,
             imported_name=imported_name,
         )
+        if bound_name is not None and bound_name != imported_name:
+            if not python_module_name_is_importable(bound_name):
+                raise ValueError(f"Invalid import alias {bound_name!r}")
+            return f"from {module_reference} import {imported_name} as {bound_name}\n"
         return f"from {module_reference} import {imported_name}\n"
+
+    def required_module_import_source(
+        self,
+        *,
+        importing_file_path: str,
+        imported_file_path: str,
+        bound_name: str,
+    ) -> str:
+        """Return one canonical acyclic import of the scanned module at `imported_file_path`
+        bound to `bound_name` (e.g. `from pkg import mod as alias` or `import pkg as alias`)."""
+
+        if self.import_would_create_cycle(
+            importing_file_path=importing_file_path,
+            imported_file_path=imported_file_path,
+        ):
+            raise ValueError(
+                f"Importing module {imported_file_path!r} as {bound_name!r} into "
+                f"{importing_file_path!r} would create a module cycle"
+            )
+        module_name = self.module_name_for_file_path(imported_file_path)
+        if (
+            module_name is None
+            or not python_module_name_is_importable(module_name)
+            or not python_module_name_is_importable(bound_name)
+        ):
+            raise ValueError(
+                f"No canonical module import exists for {imported_file_path!r} as "
+                f"{bound_name!r} into {importing_file_path!r}"
+            )
+        if "." in module_name:
+            parent_module, leaf_module = module_name.rsplit(".", 1)
+            if bound_name == leaf_module:
+                return f"from {parent_module} import {leaf_module}\n"
+            return f"from {parent_module} import {leaf_module} as {bound_name}\n"
+        if bound_name == module_name:
+            return f"import {module_name}\n"
+        return f"import {module_name} as {bound_name}\n"
 
     def required_reexport_source(
         self,

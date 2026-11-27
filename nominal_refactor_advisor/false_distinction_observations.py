@@ -1446,8 +1446,42 @@ class EmptySubclassIndex:
         match indexed.resolved_base_symbols:
             case ():
                 yield indexed.declared_base_names[0]
-            case (base,) if not self.abstract(base):
+            case (base,) if (
+                not self.abstract(base)
+                and not self.is_unconstructed_polymorphic_base(
+                    self.class_index, base, symbol, self.kinds_by_name
+                )
+            ):
                 yield base
+
+    @staticmethod
+    def is_unconstructed_polymorphic_base(
+        class_index: CompactClassFamilyIndex,
+        base: str,
+        symbol: str,
+        kinds_by_name: Mapping[str, frozenset[NameUseKind]],
+    ) -> bool:
+        """Whether `base` is an unconstructed family base with at least one
+        non-empty sibling/descendant outside `symbol`'s own subtree (making `symbol`
+        the explicit default/terminal state member rather than a false distinction)."""
+
+        if base not in class_index.classes_by_symbol:
+            return False
+        base_name = base.rpartition(".")[2]
+        if kinds_by_name.get(base_name, frozenset()) & NameUseKind.only_builds():
+            return False
+        excluded = frozenset((symbol, *class_index.descendant_symbols(symbol)))
+        for descendant in class_index.descendant_symbols(base):
+            if descendant in excluded:
+                continue
+            other = class_index.classes_by_symbol.get(descendant)
+            if other is not None and (
+                bool(other.body_declarations)
+                or other.direct_base_count > 1
+                or bool(other.class_keyword_names)
+            ):
+                return True
+        return False
 
     def only_built(self, symbol: str, name: str) -> bool:
         """Unique in the scan, built by every spelling, and with a closed, unregistered lineage."""

@@ -36,7 +36,10 @@ from nominal_refactor_advisor.ast_field_decoders import (
     variadic_parameters,
 )
 from nominal_refactor_advisor.ast_tools import AstParentIndex, ParsedModule
-from nominal_refactor_advisor.class_index import CompactIndexedClass
+from nominal_refactor_advisor.class_index import (
+    CompactIndexedClass,
+    ModuleNominalBindingWitness,
+)
 from nominal_refactor_advisor.class_mro import ClassMroAuthority, DeclarationMroType
 from nominal_refactor_advisor.codemod_declaration_source import (
     ClassHeaderSpanSourceAuthority,
@@ -93,6 +96,7 @@ from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrewarmTypeCheckerMixin,
 )
+from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -4843,6 +4847,42 @@ def _body_bound_names(body: Sequence[ast.stmt]) -> frozenset[str]:
     return frozenset(bound)
 
 
+def _import_source_for_binding(
+    snapshot: CodemodSourceSnapshot,
+    source_module: ParsedModule,
+    destination_file_path: str,
+    name: str,
+    expected: ModuleNominalBindingWitness,
+    scanned_module_names: frozenset[str],
+) -> str | None:
+    """Resolve the acyclic import statement that binds `name` to `expected` in
+    `destination_file_path`, preserving module imports and `as` aliases."""
+
+    import_graph = snapshot.module_import_graph
+    targets = snapshot.source_index.targets_matching_repository_symbol(
+        expected.qualified_name
+    )
+    if len(targets) == 1:
+        target = targets[0]
+        if target.node_kind is AstTargetNodeKind.MODULE:
+            return import_graph.required_module_import_source(
+                importing_file_path=destination_file_path,
+                imported_file_path=target.file_path,
+                bound_name=name,
+            )
+        if "." in target.qualname:
+            return None
+        return import_graph.required_import_source(
+            importing_file_path=destination_file_path,
+            imported_file_path=target.file_path,
+            imported_name=target.qualname,
+            bound_name=name,
+        )
+    return _external_import_source_for_name(
+        source_module.module, name, scanned_module_names
+    )
+
+
 def _cross_module_imports_for_body(
     snapshot: CodemodSourceSnapshot,
     source_module: ParsedModule,
@@ -4896,20 +4936,14 @@ def _cross_module_imports_for_body(
                     NeededInput.SOURCE_CHANGE,
                 )
             continue
-        targets = snapshot.source_index.targets_matching_repository_symbol(
-            expected.qualified_name
+        import_source = _import_source_for_binding(
+            snapshot,
+            source_module,
+            destination.file_path,
+            name,
+            expected,
+            scanned_module_names,
         )
-        import_source: str | None = None
-        if len(targets) == 1:
-            import_source = import_graph.required_import_source(
-                importing_file_path=destination.file_path,
-                imported_file_path=targets[0].file_path,
-                imported_name=name,
-            )
-        else:
-            import_source = _external_import_source_for_name(
-                source_module.module, name, scanned_module_names
-            )
         if import_source is None:
             raise NeedsInput(
                 f"`{expected.qualified_name}` has no single scanned declaration to import",
@@ -5204,23 +5238,17 @@ class ResolvedMethodAnnotations:
                         continue
                     if dest.file_path == source_module.file_path:
                         return None
-                    targets = snapshot.source_index.targets_matching_repository_symbol(
-                        expected.qualified_name
-                    )
-                    import_source: str | None = None
-                    if len(targets) == 1:
-                        try:
-                            import_source = import_graph.required_import_source(
-                                importing_file_path=dest.file_path,
-                                imported_file_path=targets[0].file_path,
-                                imported_name=name,
-                            )
-                        except ValueError:
-                            return None
-                    else:
-                        import_source = _external_import_source_for_name(
-                            source_module.module, name, scanned_module_names
+                    try:
+                        import_source = _import_source_for_binding(
+                            snapshot,
+                            source_module,
+                            dest.file_path,
+                            name,
+                            expected,
+                            scanned_module_names,
                         )
+                    except ValueError:
+                        return None
                     if import_source is None:
                         return None
                     key = (dest.file_path, import_source)

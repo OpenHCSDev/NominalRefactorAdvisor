@@ -56,6 +56,7 @@ from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.enum_semantics import PythonEnumBaseKind
 from nominal_refactor_advisor.false_distinction_observations import (
     EmptySubclass,
+    EmptySubclassIndex,
     EnumClassUse,
     EnumMemberIndex,
     EnumMemberUse,
@@ -237,6 +238,24 @@ class RedirectEmptySubclassOperation(RepositorySourceReprovedOperation):
         index = snapshot.compact_class_index
         symbol = index.symbol_for(file_path=target.file_path, qualname=target.qualname)
         if symbol is not None:
+            indexed = index.classes_by_symbol.get(symbol)
+            if indexed is not None and len(indexed.resolved_base_symbols) == 1:
+                base_symbol = indexed.resolved_base_symbols[0]
+                base_name = base_symbol.rpartition(".")[2]
+                base_uses = frozenset(
+                    use.kind
+                    for module in snapshot.parsed_modules
+                    for use in NameUse.in_module(module)
+                    if use.name == base_name
+                )
+                if EmptySubclassIndex.is_unconstructed_polymorphic_base(
+                    index, base_symbol, symbol, {base_name: base_uses}
+                ):
+                    raise ValueError(
+                        f"`{subclass.name}` is the default empty member of unconstructed "
+                        f"polymorphic family `{base_name}`; redirecting it would force "
+                        f"direct `{base_name}()` instantiation beside overriding siblings"
+                    )
             StoredRecords.of(snapshot, target.file_path).require_unstored(
                 frozenset((symbol, *index.ancestor_symbols(symbol))), f"`{subclass.name}`"
             )

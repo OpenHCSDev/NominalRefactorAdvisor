@@ -30,7 +30,10 @@ from nominal_refactor_advisor.codemod_import_scopes import (
     ModuleImportScope,
     TypeCheckingGuardProjection,
 )
-from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_imports import (
+    ModuleImportMutation,
+    node_contains_comment,
+)
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit, SourceSpanEdit
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
@@ -328,6 +331,12 @@ class GuardedImport(HiddenImport):
         if self.guard.orelse:
             raise NeedsInput(
                 "the guard's `else` binds names at runtime",
+                NeededInput.SOURCE_CHANGE,
+            )
+        if node_contains_comment(self.module.source, self.guard):
+            raise NeedsInput(
+                "the `if TYPE_CHECKING:` guard carries a comment; remove or move the comment "
+                "before promoting so the guard is not left behind as `pass`",
                 NeededInput.SOURCE_CHANGE,
             )
 
