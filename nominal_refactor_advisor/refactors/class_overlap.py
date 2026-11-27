@@ -35,6 +35,7 @@ from nominal_refactor_advisor.refactors.class_creation import (
     ClassCreationProof,
     MroWalk,
     declared_names,
+    installed_class_node,
 )
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
@@ -61,6 +62,7 @@ from nominal_refactor_advisor.class_mro import (
     NativeMroBase,
     namespace_read_native,
     native_declared_names,
+    native_root_type,
 )
 from nominal_refactor_advisor.field_order_reads import DeclaringClass
 from nominal_refactor_advisor.class_overlap import (
@@ -717,22 +719,156 @@ class RestatedDeclarations:
         indentation = rendered[start][: len(rendered[start]) - len(rendered[start].lstrip())]
         return "".join((*rendered[:start], *(() if rest else (f"{indentation}...\n",)), *rendered[end:]))
 
+    _NO_SET_NAME_BASES: ClassVar[frozenset[str]] = frozenset(
+        (
+            "typing.NamedTuple",
+            "builtins.object",
+            "builtins.tuple",
+            "builtins.int",
+            "builtins.float",
+            "builtins.str",
+            "builtins.bytes",
+            "builtins.frozenset",
+            "builtins.bool",
+        )
+    )
+
+    @staticmethod
+    def _class_ast_node(snapshot: CodemodSourceSnapshot, indexed: CompactIndexedClass) -> ast.ClassDef:
+        if snapshot.class_overlap_verdicts.class_index.class_for(indexed.symbol) is None:
+            return installed_class_node(indexed)
+        return ResolvedClassTarget.from_rewrite_target(
+            snapshot,
+            SourceRewriteTarget(file_path=indexed.file_path, qualname=indexed.qualname),
+        ).node
+
+    @staticmethod
+    def _own_returns(function: ast.FunctionDef) -> list[ast.Return]:
+        """Collect `ast.Return` nodes belonging to `function`'s own scope (skipping nested defs/classes/lambdas)."""
+        returns: list[ast.Return] = []
+        pending: list[ast.AST] = list(function.body)
+        while pending:
+            current = pending.pop()
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            if isinstance(current, ast.Return):
+                returns.append(current)
+            pending.extend(ast.iter_child_nodes(current))
+        return returns
+
+    @classmethod
+    def _is_self_constructing_classmethod(
+        cls, snapshot: CodemodSourceSnapshot, owner: CompactIndexedClass, method_name: str
+    ) -> bool:
+        """Whether `owner.method_name` is a `@classmethod` whose every return in its own
+        scope constructs and returns `cls(...)` without rebinding `cls`."""
+        class_def = cls._class_ast_node(snapshot, owner)
+        method = next(
+            (
+                stmt
+                for stmt in class_def.body
+                if isinstance(stmt, ast.FunctionDef) and stmt.name == method_name
+            ),
+            None,
+        )
+        if method is None:
+            return False
+        if not any(
+            isinstance(dec, ast.Name) and dec.id == "classmethod"
+            for dec in method.decorator_list
+        ):
+            return False
+        params = (*method.args.posonlyargs, *method.args.args)
+        if not params:
+            return False
+        cls_param = params[0].arg
+        # Refuse if `cls_param` is rebound anywhere in the method body.
+        for node in ast.walk(method):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id == cls_param:
+                return False
+        returns = cls._own_returns(method)
+        if not returns:
+            return False
+        return all(
+            isinstance(ret.value, ast.Call)
+            and isinstance(ret.value.func, ast.Name)
+            and ret.value.func.id == cls_param
+            for ret in returns
+        )
+
+    @classmethod
+    def _constructed_class_symbol(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        resolver,
+        callee: ast.AST,
+    ) -> str | None:
+        """Resolve the class symbol whose instance `callee(...)` constructs: either a direct
+        scanned/installed class call or a `@classmethod` constructor returning `cls(...)`."""
+        verdicts = snapshot.class_overlap_verdicts
+        direct = resolver.symbol_for_node(callee) or resolver.imported_name_for_node(callee)
+        if direct is not None and (
+            verdicts.ancestor(direct) is not None or native_root_type(direct) is not None
+        ):
+            return direct
+        if isinstance(callee, ast.Attribute):
+            owner_symbol = resolver.symbol_for_node(callee.value) or resolver.imported_name_for_node(callee.value)
+            if owner_symbol is not None:
+                owner = verdicts.ancestor(owner_symbol)
+                if owner is not None and cls._is_self_constructing_classmethod(snapshot, owner, callee.attr):
+                    return owner.symbol
+        return None
+
+    @classmethod
+    def _require_class_has_no_set_name(cls, snapshot: CodemodSourceSnapshot, symbol: str) -> None:
+        """Prove `symbol` and every ancestor in its closed MRO declare no `__set_name__`."""
+        verdicts = snapshot.class_overlap_verdicts
+        pending = [symbol]
+        seen: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            if current in cls._NO_SET_NAME_BASES:
+                continue
+            native = native_root_type(current)
+            if native is not None:
+                if hasattr(native, "__set_name__"):
+                    raise NeedsInput(
+                        f"`{symbol}` learns its owner class through `__set_name__`", NeededInput.PROOF
+                    )
+                continue
+            indexed = verdicts.ancestor(current)
+            if indexed is None or not indexed.base_references_are_complete:
+                raise NeedsInput(f"`{symbol}` has an open MRO", NeededInput.PROOF)
+            if not indexed.class_decorators_are_promotion_safe:
+                raise NeedsInput(f"`{symbol}` has a class decorator NRA cannot prove free of `__set_name__`", NeededInput.PROOF)
+            if any(
+                declaration.name == "__set_name__"
+                for declaration in indexed.body_declarations
+            ):
+                raise NeedsInput(
+                    f"`{symbol}` learns its owner class through `__set_name__`", NeededInput.PROOF
+                )
+            for ref in indexed.base_references:
+                pending.append(ref.qualified_name)
+
     def require_no_owner_bound_values(self, snapshot: CodemodSourceSnapshot) -> None:
         """A value built by a class with `__set_name__` learns the class it sits in.
 
         Moving it changes which class that hook receives, so a moved value that
-        calls anything is admitted only when the callee is a class whose whole
-        C3 order is indexed and none of those classes declares the hook. The one
-        other callee admitted is `dataclasses.field`: the dataclass decorator
-        consumes its `Field`, whose own `__set_name__` only forwards to its
-        `default`, and a default that calls anything is a call this walk checks.
+        calls anything is admitted only when the callee constructs a class (directly
+        or via a `@classmethod` returning `cls(...)`) whose whole ancestor graph is
+        closed (scanned, installed, or known builtin/NamedTuple base) and declares no
+        `__set_name__`. `dataclasses.field` is also admitted: the dataclass decorator
+        consumes its `Field`, whose own `__set_name__` only forwards to its `default`,
+        and a default that calls anything is a call this walk checks.
         """
 
-        class_index = snapshot.class_overlap_verdicts.class_index
         resolver = snapshot.class_reference_resolver_for_source_path(
             self.restating.file_path
         ).reference_resolution
-        mro_authority = class_index.mro_authority
         for statement in self.statements:
             value = getattr(statement, "value", None)
             for call in () if value is None else ast.walk(value):
@@ -745,23 +881,13 @@ class RestatedDeclarations:
                     resolver.imported_name_for_node(callee)
                 ):
                     continue
-                symbol = resolver.symbol_for_node(callee)
-                if symbol is None or class_index.class_for(symbol) is None:
+                symbol = self._constructed_class_symbol(snapshot, resolver, callee)
+                if symbol is None:
                     raise NeedsInput(
                         f"`{ast.unparse(call.func)}` builds a moved value; "
                         "its callee is no indexed class", NeededInput.PROOF
                     )
-                mro_type = mro_authority.resolve(symbol).mro_type
-                if mro_type is None:
-                    raise NeedsInput(f"`{symbol}` has an open MRO", NeededInput.PROOF)
-                if any(
-                    declaration.name == "__set_name__"
-                    for owner in mro_type.declarations
-                    for declaration in owner.body_declarations
-                ):
-                    raise NeedsInput(
-                        f"`{symbol}` learns its owner class through `__set_name__`", NeededInput.PROOF
-                    )
+                self._require_class_has_no_set_name(snapshot, symbol)
 
 
 @dataclass(frozen=True)
@@ -1584,10 +1710,14 @@ class ComposedAncestry:
             tuple((owner.qualname, owner.node) for owner in self.owners),
             MroWalk(self.before, self.after, self.composer.symbol, self.deleted),
         )
-        abstract_owners = tuple(
-            owner
-            for owner in self.owners
-            if NativeMroBase.ABSTRACT_ROOT.value in self.c3.linearized(owner.symbol)
+        abstract_owners = (
+            self.owners
+            if proof.collects_mro_abstract_methods()
+            else tuple(
+                owner
+                for owner in self.owners
+                if NativeMroBase.ABSTRACT_ROOT.value in self.c3.linearized(owner.symbol)
+            )
         )
         kept = frozenset(
             name for owner in abstract_owners for name in self.names(owner.symbol, composed=False)

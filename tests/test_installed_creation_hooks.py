@@ -17,6 +17,7 @@ from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_pyt
 from nominal_refactor_advisor.class_index import InstalledClassDeclarations
 from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceSnapshot
 from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._class_overlap import DuplicateClassDetector
 from nominal_refactor_advisor.detectors._restated_bases import RestatedBaseDetector
 from nominal_refactor_advisor.detectors._restated_overrides import RestatedOverrideDetector
 from nominal_refactor_advisor.installed_source import InstalledModule
@@ -647,3 +648,130 @@ def test_member_deletion_proves_textual_pump_meta_dispatch_scope_and_actions_and
     compute_eval, _ = _evaluation(RestatedOverrideDetector(), scan, "LeafPane")
     assert "dir()" in compute_eval.rejection_reason
     assert NeededInput.PROOF in compute_eval.needs
+
+
+def test_abstract_hooks_meta_composes_plain_abstract_contract_while_abcmeta_refuses(
+    tmp_path: Path,
+) -> None:
+    """AbstractHooksMeta walks vars(base) across cls.__mro__, so moving an @abstractmethod
+    onto a plain-type composed base preserves __abstractmethods__; ABCMeta only reads
+    base.__abstractmethods__ and must still refuse."""
+
+    scan = tmp_path / "scan"
+    hooks_source = (
+        "from abc import abstractmethod\n"
+        "from metaclass_registry.abstract_hooks import AbstractHooksMeta\n\n\n"
+        "class HooksBase(metaclass=AbstractHooksMeta):\n"
+        "    pass\n\n\n"
+        "class SubmitsContract:\n"
+        "    @abstractmethod\n"
+        "    def submit(self) -> None:\n"
+        "        ...\n\n\n"
+        "class HooksPane(HooksBase):\n"
+        "    @abstractmethod\n"
+        "    def submit(self) -> None:\n"
+        "        ...\n"
+    )
+    hooks_main = (
+        "from app.panes import HooksPane\n"
+        "print(sorted(HooksPane.__abstractmethods__))\n"
+    )
+    _write(scan, {"app/__init__.py": "", "app/panes.py": hooks_source, "main.py": hooks_main})
+    expected = subprocess.check_output([sys.executable, "main.py"], cwd=scan, text=True)
+
+    hooks_eval, snapshot = _evaluation(DuplicateClassDetector(), scan, "SubmitsContract")
+    assert hooks_eval.rejection_reason == ""
+    _apply(hooks_eval, snapshot)
+    assert "class HooksPane(SubmitsContract, HooksBase):" in (scan / "app/panes.py").read_text()
+    assert subprocess.check_output([sys.executable, "main.py"], cwd=scan, text=True) == expected
+
+    # ABCMeta only reads base.__abstractmethods__ and must still refuse a plain-type abstract base.
+    abc_source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class SubmitsContract:\n"
+        "    @abstractmethod\n"
+        "    def submit(self) -> None:\n"
+        "        ...\n\n\n"
+        "class AbcPane(ABC):\n"
+        "    pane_only = 1\n"
+        "    @abstractmethod\n"
+        "    def submit(self) -> None:\n"
+        "        ...\n"
+    )
+    _write(scan, {"app/panes.py": abc_source})
+    abc_eval, _ = _evaluation(DuplicateClassDetector(), scan, "SubmitsContract")
+    assert "would take abstract ['submit']" in abc_eval.rejection_reason
+    assert NeededInput.PROOF in abc_eval.needs
+
+
+def test_moved_class_value_proves_installed_namedtuple_classmethod_and_refuses_set_name(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """RestatedDeclarations.require_no_owner_bound_values admits installed NamedTuple
+    @classmethod constructors returning cls(...) and refuses classes declaring __set_name__."""
+
+    site = tmp_path / "site"
+    scan = tmp_path / "scan"
+    monkeypatch.syspath_prepend(str(site))
+
+    installed_source = (
+        "from typing import NamedTuple\n\n\n"
+        "class Scalar(NamedTuple):\n"
+        "    value: float\n\n"
+        "    @classmethod\n"
+        "    def from_number(cls, value: float) -> 'Scalar':\n"
+        "        return cls(float(value))\n\n\n"
+        "class OwnerBound:\n"
+        "    def __init__(self, value: int) -> None:\n"
+        "        self.value = value\n\n"
+        "    def __set_name__(self, owner: type, name: str) -> None:\n"
+        "        self.owner = owner\n\n"
+        "    @classmethod\n"
+        "    def from_number(cls, value: int) -> 'OwnerBound':\n"
+        "        return cls(value)\n"
+    )
+    app_source = (
+        "from unit_toolkit.units import Scalar\n\n\n"
+        "class FixedSize:\n"
+        "    width = Scalar.from_number(1)\n"
+        "    height = Scalar.from_number(2)\n\n\n"
+        "class SizedWidget:\n"
+        "    width = Scalar.from_number(1)\n"
+        "    height = Scalar.from_number(2)\n"
+        "    label = 'ok'\n"
+    )
+    main_source = (
+        "from app.widgets import FixedSize, SizedWidget\n"
+        "print(FixedSize.width, FixedSize.height, SizedWidget.width, SizedWidget.height, SizedWidget.label)\n"
+    )
+    _write(site, {"unit_toolkit/__init__.py": "", "unit_toolkit/units.py": installed_source})
+    _write(scan, {"app/__init__.py": "", "app/widgets.py": app_source, "main.py": main_source})
+    expected = _run(site, scan)
+
+    try:
+        scalar_eval, snapshot = _evaluation(DuplicateClassDetector(), scan, "FixedSize")
+        assert scalar_eval.rejection_reason == ""
+        _apply(scalar_eval, snapshot)
+        assert "class SizedWidget(FixedSize):" in (scan / "app/widgets.py").read_text()
+        assert _run(site, scan) == expected
+
+        # OwnerBound declares __set_name__: moving its @classmethod call must be refused.
+        bound_source = (
+            "from unit_toolkit.units import OwnerBound\n\n\n"
+            "class FixedSize:\n"
+            "    width = OwnerBound.from_number(1)\n"
+            "    height = OwnerBound.from_number(2)\n\n\n"
+            "class SizedWidget:\n"
+            "    width = OwnerBound.from_number(1)\n"
+            "    height = OwnerBound.from_number(2)\n"
+            "    label = 'ok'\n"
+        )
+        _write(scan, {"app/widgets.py": bound_source})
+        bound_eval, _ = _evaluation(DuplicateClassDetector(), scan, "FixedSize")
+        assert "__set_name__" in bound_eval.rejection_reason
+        assert NeededInput.PROOF in bound_eval.needs
+    finally:
+        for cached in CACHES:
+            cached.cache_clear()
+        for name in [n for n in sys.modules if n == "unit_toolkit" or n.startswith("unit_toolkit.")]:
+            del sys.modules[name]
