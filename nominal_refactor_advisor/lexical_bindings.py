@@ -8,7 +8,7 @@ from abc import (
     ABC,
     abstractmethod,
 )
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -757,23 +757,6 @@ class ImportSeparatingScopeBindingCollector(ScopeBindingCollector):
         self.imports.append(node)
 
 
-class _CountedNames(set[str]):
-    """The names a scope binds, each with how many bindings it has."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.counts: Counter[str] = Counter()
-
-    def add(self, name: str) -> None:
-        self.counts[name] += 1
-        super().add(name)
-
-    def update(self, *groups: Iterable[str]) -> None:
-        for group in groups:
-            for name in group:
-                self.add(name)
-
-
 class _ComprehensionContainingScopeBindingCollector(ScopeBindingCollector):
     """Only walrus targets escape a comprehension; headers retain normal ownership."""
 
@@ -833,6 +816,7 @@ class LexicalScopeBindingAuthority:
         name = read.id
         path = (*ancestors, read)
         crossed_function = False
+        deferred = False
         for depth in range(len(ancestors) - 1, -1, -1):
             scope, child = path[depth], path[depth + 1]
             match scope:
@@ -845,14 +829,18 @@ class LexicalScopeBindingAuthority:
                     for statement in body:
                         collector.visit(statement)
                     if name in cls.argument_names(scope):
-                        loops = tuple(
-                            node
-                            for node in path[depth + 1 :]
-                            if isinstance(node, ast.For | ast.AsyncFor | ast.While)
-                        )
-                        rebound = any(
-                            cls.reaches(binding, read, loops)
-                            for binding in collector.binding_nodes.get(name, ())
+                        bindings = collector.binding_nodes.get(name, ())
+                        rebound = (
+                            bool(bindings)
+                            if deferred
+                            else any(
+                                cls.reaches(
+                                    binding,
+                                    read,
+                                    cls._reaching_containers(path, depth),
+                                )
+                                for binding in bindings
+                            )
                         ) or any(
                             isinstance(node, ast.Nonlocal) and name in node.names
                             for statement in body
@@ -865,6 +853,7 @@ class LexicalScopeBindingAuthority:
                         | collector.nonlocal_names
                     ):
                         return None
+                    deferred = True
                 case ast.ListComp() | ast.SetComp() | ast.DictComp() | ast.GeneratorExp():
                     if child is scope.generators[0].iter:
                         continue
@@ -873,12 +862,38 @@ class LexicalScopeBindingAuthority:
                         generator.target for generator in scope.generators
                     ):
                         return None
+                    if isinstance(scope, ast.GeneratorExp):
+                        deferred = True
                 case ast.ClassDef(body=body) if not crossed_function and any(
                     child is statement for statement in body
                 ):
                     if name in cls.bound_names(body):
                         return None
         return None
+
+    @staticmethod
+    def _reaching_containers(
+        path: Sequence[ast.AST], scope_depth: int
+    ) -> tuple[ast.AST, ...]:
+        """Enclosing loops, eager comprehensions, and ternary tests that can run
+        a later binding before the read at `path[-1]`."""
+
+        containers: list[ast.AST] = []
+        for index in range(scope_depth + 1, len(path) - 1):
+            node = path[index]
+            if isinstance(
+                node,
+                ast.For
+                | ast.AsyncFor
+                | ast.While
+                | ast.ListComp
+                | ast.SetComp
+                | ast.DictComp,
+            ):
+                containers.append(node)
+            elif isinstance(node, ast.IfExp) and path[index + 1] is node.body:
+                containers.append(node.test)
+        return tuple(containers)
 
     @staticmethod
     def reaches(binding: ast.AST, read: ast.Name, loops: Sequence[ast.AST]) -> bool:
@@ -892,18 +907,22 @@ class LexicalScopeBindingAuthority:
 
     @classmethod
     def bound_once(cls, read: ast.Name, ancestors: Sequence[ast.AST]) -> bool:
-        """Whether a read of a name reaches a scope that binds it exactly once, so
-        every value it holds there comes from that one binding: a function (its
-        parameter or one binding in its own scope, none declaring it `global` or
-        `nonlocal`, no nested scope declaring it `nonlocal`) or a comprehension
-        (one target). A name bound in an enclosing function, a class body or the
-        module can be rebound by code running between, so it is never bound once.
+        """Whether every value a read of a name can hold there comes from one
+        reaching binding in its defining scope: a function (its parameter or one
+        binding in its own scope that can run before `read`, none declaring it
+        `global` or `nonlocal`, no nested scope declaring it `nonlocal`) or a
+        comprehension (one target). A later binding strictly after `read` outside
+        any enclosing loop, eager comprehension, or `IfExp.test` cannot reach
+        `read`, unless `read` runs lazily inside a generator expression. A name
+        bound in an enclosing function, a class body or the module can be rebound
+        by code running between, so it is never bound once.
 
         `ancestors` run from the module down to the read's parent, as for
         `bound_parameter`."""
 
         name = read.id
         path = (*ancestors, read)
+        deferred = False
         for depth in range(len(ancestors) - 1, -1, -1):
             scope, child = path[depth], path[depth + 1]
             match scope:
@@ -911,8 +930,7 @@ class LexicalScopeBindingAuthority:
                     body = scope.body if isinstance(scope.body, list) else [scope.body]
                     if not any(child is statement for statement in body):
                         continue
-                    counted = _CountedNames()
-                    collector = ScopeBindingCollector(bound_names=counted)
+                    collector = ScopeBindingCollector()
                     for statement in body:
                         collector.visit(statement)
                     if name in collector.global_names | collector.nonlocal_names or any(
@@ -921,16 +939,28 @@ class LexicalScopeBindingAuthority:
                         for node in ast.walk(statement)
                     ):
                         return False
-                    return counted.counts[name] + (name in cls.argument_names(scope)) == 1
+                    bindings = collector.binding_nodes.get(name, ())
+                    is_parameter = name in cls.argument_names(scope)
+                    if deferred:
+                        return len(bindings) + is_parameter == 1
+                    containers = cls._reaching_containers(path, depth)
+                    reaching = is_parameter + sum(
+                        1
+                        for binding in bindings
+                        if cls.reaches(binding, read, containers)
+                    )
+                    return reaching == 1
                 case ast.ListComp() | ast.SetComp() | ast.DictComp() | ast.GeneratorExp():
                     if child is scope.generators[0].iter:
                         continue
-                    counted = _CountedNames()
-                    collector = ScopeBindingCollector(bound_names=counted)
+                    collector = ScopeBindingCollector()
                     for generator in scope.generators:
                         collector.visit(generator.target)
-                    if counted.counts[name]:
-                        return counted.counts[name] == 1
+                    target_bindings = collector.binding_nodes.get(name, ())
+                    if target_bindings:
+                        return len(target_bindings) == 1
+                    if isinstance(scope, ast.GeneratorExp):
+                        deferred = True
                 case ast.ClassDef():
                     return False
         return False

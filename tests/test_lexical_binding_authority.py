@@ -264,3 +264,147 @@ def test_recorded_binding_plan_runs_through_cli_and_preserves_imports(
     assert "class PythonModulePathIdentity" in (
         package / "python_module_identity.py"
     ).read_text(encoding="utf-8")
+
+
+def _find_read_with_ancestors(
+    source: str, marker_call: str = "read"
+) -> tuple[ast.Name, tuple[ast.AST, ...]]:
+    tree = ast.parse(source)
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == marker_call
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+        ):
+            target = node.args[0]
+            chain: list[ast.AST] = []
+            cur = parents.get(target)
+            while cur is not None:
+                chain.append(cur)
+                cur = parents.get(cur)
+            return target, tuple(reversed(chain))
+    raise AssertionError(f"missing {marker_call}(...) in test source")
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (
+            "def f(a):\n    x = a\n    read(x)\n    x = other()\n",
+            True,
+        ),
+        (
+            "def f(x):\n    read(x)\n    x = other()\n",
+            True,
+        ),
+        (
+            "def f(first, second):\n"
+            "    for entry in first:\n        read(entry)\n"
+            "    for entry in second:\n        pass\n",
+            True,
+        ),
+        (
+            "def f(a, c, d):\n"
+            "    if c:\n        x = a\n        read(x)\n"
+            "    if d:\n        x = other()\n",
+            True,
+        ),
+        (
+            "def f(first, second):\n"
+            "    for entry in first:\n        pass\n"
+            "    for entry in second:\n        read(entry)\n",
+            False,
+        ),
+        (
+            "def f(a, c):\n"
+            "    if c:\n        x = a\n"
+            "    else:\n        x = other()\n        read(x)\n",
+            False,
+        ),
+        (
+            "def f(a, c):\n"
+            "    if c:\n        x = a\n"
+            "    else:\n        x = other()\n"
+            "    read(x)\n",
+            False,
+        ),
+        (
+            "def f(a, items):\n"
+            "    x = a\n"
+            "    for _ in items:\n        read(x)\n        x = other()\n",
+            False,
+        ),
+        (
+            "def f(a, items):\n"
+            "    x = a\n"
+            "    return [(read(x), (x := other())) for _ in items]\n",
+            False,
+        ),
+        (
+            "def f(a, items):\n"
+            "    x = a\n"
+            "    gen = (read(x) for _ in items)\n"
+            "    x = other()\n"
+            "    return list(gen)\n",
+            False,
+        ),
+        (
+            "def f(a):\n"
+            "    x = a\n"
+            "    return read(x) if (x := other()) else None\n",
+            False,
+        ),
+    ),
+)
+def test_bound_once_uses_reaching_bindings_and_guards_deferred_and_nonlinear_scopes(
+    source: str, expected: bool
+) -> None:
+    target, ancestors = _find_read_with_ancestors(source)
+    assert LEXICAL_SCOPE_BINDING_AUTHORITY.bound_once(target, ancestors) is expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_found"),
+    (
+        (
+            "def f(x: int):\n    read(x)\n    x = 2\n",
+            True,
+        ),
+        (
+            "def f(x: int, items):\n"
+            "    gen = (read(x) for _ in items)\n"
+            "    x = 2\n"
+            "    return list(gen)\n",
+            False,
+        ),
+        (
+            "def f(x: int):\n"
+            "    def inner():\n        return read(x)\n"
+            "    x = 2\n"
+            "    return inner()\n",
+            False,
+        ),
+        (
+            "def f(x: int):\n"
+            "    return read(x) if (x := 2) else 0\n",
+            False,
+        ),
+        (
+            "def f(x: int, items):\n"
+            "    return [(read(x), (x := 2)) for _ in items]\n",
+            False,
+        ),
+    ),
+)
+def test_bound_parameter_guards_deferred_closures_genexp_and_nonlinear_walrus(
+    source: str, expected_found: bool
+) -> None:
+    target, ancestors = _find_read_with_ancestors(source)
+    found = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_parameter(target, ancestors)
+    assert (found is not None) is expected_found
