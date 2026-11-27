@@ -302,3 +302,108 @@ def test_threaded_absence_refuses_unsound_callers_and_escaped_parameter(
         assert ev.recipe is None
         assert NeededInput.OWNER_PICK not in ev.needs, (sym, ev.reason)
         assert expected_substr in ev.reason, (sym, ev.reason)
+
+
+def test_threaded_absence_compound_boolop_returns_ifs_ifexp_and_comprehension(
+    tmp_path: Path,
+) -> None:
+    """Compound `BoolOp` shapes (`return param is None or ...`, `return bool(param is not None and ...)`,
+    `if param is None or ...: return ...`, `if param is not None and ...: ... else: ...`,
+    `A if param is None or ... else B`, and comprehension filter) all push cleanly with runtime parity."""
+
+    source = (
+        "from __future__ import annotations\n\n\n"
+        "def _matches(target: str | None, items: tuple[str, ...]) -> bool:\n"
+        "    return target is None or target in items\n\n\n"
+        "def _has_prefix(prefix: str | None, text: str) -> bool:\n"
+        "    return bool(prefix is not None and text.startswith(prefix))\n\n\n"
+        "def _advance(current: str | None, blocked: frozenset[str]) -> str:\n"
+        "    if current is None or current in blocked:\n"
+        "        return 'stop'\n"
+        "    return f'go:{current}'\n\n\n"
+        "def _pick_mode(tag: str | None, strict: bool) -> str:\n"
+        "    if tag is not None and (strict or len(tag) > 2):\n"
+        "        return f'tagged:{tag}'\n"
+        "    else:\n"
+        "        return 'plain'\n\n\n"
+        "def _label(opt: str | None) -> str:\n"
+        "    return 'fast' if opt is None or opt == 'auto' else f'custom:{opt}'\n\n\n"
+        "def _filter_items(cut: int | None, values: tuple[int, ...]) -> tuple[int, ...]:\n"
+        "    return tuple(v for v in values if cut is None or v <= cut)\n\n\n"
+        "def run_suite() -> tuple[object, ...]:\n"
+        "    return (\n"
+        "        _matches(None, ('a',)),\n"
+        "        _matches('a', ('a',)),\n"
+        "        _matches('b', ('a',)),\n"
+        "        _has_prefix(None, 'abc'),\n"
+        "        _has_prefix('ab', 'abc'),\n"
+        "        _has_prefix('zz', 'abc'),\n"
+        "        _advance(None, frozenset({'x'})),\n"
+        "        _advance('x', frozenset({'x'})),\n"
+        "        _advance('y', frozenset({'x'})),\n"
+        "        _pick_mode(None, True),\n"
+        "        _pick_mode('a', False),\n"
+        "        _pick_mode('a', True),\n"
+        "        _pick_mode('long', False),\n"
+        "        _label(None),\n"
+        "        _label('auto'),\n"
+        "        _label('gpu'),\n"
+        "        _filter_items(None, (1, 5, 9)),\n"
+        "        _filter_items(5, (1, 5, 9)),\n"
+        "    )\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/compound.py": source})
+
+    ns_before: dict[str, object] = {}
+    exec(compile(source, "compound.py", "exec"), ns_before)
+    expected = ns_before["run_suite"]()  # type: ignore[operator]
+
+    _, snap, findings = _scan(tmp_path)
+    by_sym = {f.evidence[0].symbol: f for f in findings}
+    assert set(by_sym) == {
+        "_matches",
+        "_has_prefix",
+        "_advance",
+        "_pick_mode",
+        "_label",
+        "_filter_items",
+    }
+
+    pick_specs = (
+        ("_matches", "MatchTarget", "Nominal match target.", None),
+        ("_has_prefix", "PrefixFilter", "Nominal prefix filter.", None),
+        ("_advance", "StepCursor", "Nominal step cursor.", None),
+        ("_pick_mode", "ModeTag", "Nominal mode tag.", None),
+        ("_label", "LabelOption", "Nominal label option.", None),
+        ("_filter_items", "ItemCutoff", "Nominal item cutoff.", "allows_item"),
+    )
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        tuple(
+            OwnerPick(
+                finding=by_sym[sym].stable_id,
+                owner=sym,
+                because=f"{sym} owns its absence family",
+                name=fam,
+                judgement=doc,
+                hoisted_name=hoist,
+            )
+            for sym, fam, doc, hoist in pick_specs
+        ),
+    )
+    picked, report = picks.applied(findings)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 6
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    rewritten = (tmp_path / "pkg/compound.py").read_text(encoding="utf-8")
+    ns_after: dict[str, object] = {}
+    exec(compile(rewritten, "compound.py", "exec"), ns_after)
+    assert ns_after["run_suite"]() == expected  # type: ignore[operator]
+
+    _, _, after_findings = _scan(tmp_path)
+    assert after_findings == []
