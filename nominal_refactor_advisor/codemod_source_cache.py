@@ -132,6 +132,14 @@ class CodemodSourceContext(IndexedSourceAuthority):
         return tuple(sorted(source_paths))
 
 
+    def covers_identity(
+        self,
+        identity: AnalysisCacheIdentity,
+    ) -> bool:
+        """Whether this source context retains sources when ``identity`` names source files."""
+        return not identity.source_files or bool(self.sources_by_file_path)
+
+
 @dataclass(frozen=True)
 class CodemodSourceContextCacheSchema:
     """Nominal schema identity for persisted codemod source context."""
@@ -166,6 +174,7 @@ class CodemodSourceContextCacheEntry:
             self.identity == identity
             and self.schema == codemod_source_context_cache_schema
             and isinstance(self.context, CodemodSourceContext)
+            and self.context.covers_identity(identity)
         ):
             return self.context
         return None
@@ -212,6 +221,10 @@ class CodemodSourceContextCache:
     ) -> None:
         if identity is None:
             return
+        if not context.covers_identity(identity):
+            raise ValueError(
+                "Refusing to cache an empty codemod source context for a non-empty scan identity"
+            )
         storage = self.storage()
         if storage is None:
             return

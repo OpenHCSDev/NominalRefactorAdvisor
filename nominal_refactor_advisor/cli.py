@@ -1121,6 +1121,7 @@ class JsonSummaryPreparseCachePolicy:
         """Whether this JSON payload can be built without retained modules."""
         return (
             self.json_enabled
+            and not self.structural_overlap_enabled
             and self.payload_profile.sections.compact_analysis_compatible
             and not self.parsed_modules_required
         )
@@ -4100,27 +4101,24 @@ class IdentifiedOutcome(ScanAnalysisOutcome):
         )
         return cache.load_execution_plan(identity).cached_or_build_plan(root, identity, self, cache)
 
-    def source_snapshot(
-        self,
-        eligibility: SourceSnapshotCacheEligibility,
-        analysis_cache_dir: Path | None,
-    ) -> CodemodSourceSnapshot:
-        if eligibility.can_use_cached_source_context:
-            CodemodSourceContextCache(analysis_cache_dir).store(
-                self.cache_identity,
-                CodemodSourceContext.from_modules(self.modules, self.findings),
-            )
-        return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
-
 
 @dataclass(frozen=True)
 class ReportedScanStatusOutcome(ScanAnalysisOutcome):
-    """An outcome that states its detector coverage in the payload."""
+    """An outcome that states its detector coverage in the payload without retaining ASTs."""
 
     scan_status: JsonScanStatus
 
     def reporting(self, builder: JsonPayloadBuilder) -> JsonPayloadBuilder:
         return replace(builder, scan_status=self.scan_status)
+
+    def source_snapshot(
+        self,
+        eligibility: SourceSnapshotCacheEligibility,
+        analysis_cache_dir: Path | None,
+    ) -> CodemodSourceSnapshot:
+        raise RuntimeError(
+            f"{type(self).__name__} retains no parsed modules for a source snapshot"
+        )
 
 
 @dataclass(frozen=True)
@@ -4161,6 +4159,18 @@ class CompactGlobalScan(
 @dataclass(frozen=True)
 class FullScan(CacheStatusOutcome, IdentifiedOutcome):
     """Every detector over parsed modules, stored under the request identity."""
+
+    def source_snapshot(
+        self,
+        eligibility: SourceSnapshotCacheEligibility,
+        analysis_cache_dir: Path | None,
+    ) -> CodemodSourceSnapshot:
+        if eligibility.can_use_cached_source_context:
+            CodemodSourceContextCache(analysis_cache_dir).store(
+                self.cache_identity,
+                CodemodSourceContext.from_modules(self.modules, self.findings),
+            )
+        return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
 
 
 @dataclass(frozen=True)
