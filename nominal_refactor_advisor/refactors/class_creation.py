@@ -546,6 +546,200 @@ class ClassCreationProof:
             )
         )
 
+    def is_subclass_of(self, symbol: str, target_symbol: str) -> bool:
+        """Whether `symbol` is `target_symbol` or descends from it along known bases.
+        Refuses (via `NeedsInput`) if any reachable ancestor has incomplete base references."""
+
+        if symbol == target_symbol:
+            return True
+        if native_root_type(symbol) is not None:
+            return False
+        pending = [symbol]
+        visited: set[str] = set()
+        while pending:
+            current_sym = pending.pop()
+            if current_sym in visited:
+                continue
+            visited.add(current_sym)
+            if current_sym == target_symbol:
+                return True
+            if native_root_type(current_sym) is not None:
+                continue
+            indexed = self.walked(current_sym)
+            if not indexed.base_references_are_complete:
+                raise NeedsInput(
+                    f"`{indexed.qualname}` has unresolved bases, so NRA cannot prove "
+                    f"whether it subclasses `{target_symbol}`",
+                    NeededInput.PROOF,
+                )
+            for reference in indexed.base_references:
+                base_sym = reference.qualified_name
+                if base_sym == target_symbol:
+                    return True
+                if native_root_type(base_sym) is None and base_sym not in visited:
+                    pending.append(base_sym)
+        return False
+
+    def require_subclass_walk_kept(
+        self,
+        filter_symbol: str,
+        read_attrs: frozenset[str],
+        node: ast.AST,
+        reads: CreationReads,
+    ) -> None:
+        """A walk over `cls.__mro__` that enters its body only when
+        `issubclass(ancestor, filter_symbol)` sees the exact same classes in the
+        exact same order when filtering `before` and `after` yields the same tuple
+        and none of the attributes read off `ancestor` is a moved name."""
+
+        moved_read = sorted(read_attrs & self.moved)
+        if moved_read:
+            reads.refuse(node, f"reads moved attribute(s) {moved_read} off MRO subclasses")
+        before = tuple(s for s in self.walk.before if self.is_subclass_of(s, filter_symbol))
+        after = tuple(s for s in self.walk.after if self.is_subclass_of(s, filter_symbol))
+        if before != after:
+            reads.refuse(
+                node,
+                f"visits `{filter_symbol}` subclasses {list(before)}, and {list(after)} once composed,",
+            )
+
+    def _statement_is_plain_callable(
+        self, indexed: CompactIndexedClass, statement: ast.stmt
+    ) -> bool:
+        """Whether `statement` binds a plain Python function or modelled decorator
+        from `FUNCTION_DECORATORS`, which cannot be an instance of a user-defined
+        non-builtin class."""
+
+        if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+            return False
+        return all(
+            self.resolved(indexed, decorator, decorator.lineno) in FUNCTION_DECORATORS
+            for decorator in statement.decorator_list
+        )
+
+    def _type_filtered_bindings(
+        self, order: tuple[str, ...], composed: bool, filter_symbol: str
+    ) -> tuple[tuple[str, str], ...]:
+        """`(symbol, name)` pairs along `order` whose bound value could be an instance
+        of `filter_symbol` (non-builtin classes cannot match plain functions/descriptors
+        or primitive literals)."""
+
+        is_builtin_filter = filter_symbol.startswith("builtins.")
+        matches: list[tuple[str, str]] = []
+        for symbol in order:
+            if native_root_type(symbol) is not None:
+                continue
+            indexed = self.walked(symbol)
+            for name, statement in self.own_bindings(symbol, composed):
+                if not is_builtin_filter:
+                    if self._statement_is_plain_callable(indexed, statement):
+                        continue
+                    match statement:
+                        case ast.Assign(value=ast.Constant()) | ast.AnnAssign(value=ast.Constant()):
+                            continue
+                matches.append((symbol, name))
+        return tuple(matches)
+
+    def require_type_filtered_dict_walk_kept(
+        self, filter_symbol: str, node: ast.AST, reads: CreationReads
+    ) -> None:
+        """A reversed MRO walk updating a dict with `{k: v for k, v in base.__dict__.items() if isinstance(v, T)}`
+        produces the exact same dict in the exact same order when the sequence of
+        `(symbol, name)` bindings that could match `T` is identical before and after."""
+
+        before = self._type_filtered_bindings(tuple(reversed(self.walk.before)), False, filter_symbol)
+        after = self._type_filtered_bindings(tuple(reversed(self.walk.after)), True, filter_symbol)
+        if before != after:
+            reads.refuse(
+                node,
+                f"collects `{filter_symbol}` bindings {list(before)}, and {list(after)} once composed,",
+            )
+
+    def _class_dir_keys(self, symbol: str, composed: bool) -> frozenset[str]:
+        """The keys `type.__dir__` collects from `symbol.__dict__`."""
+
+        indexed = self.walked(symbol)
+        class_def = self.class_node(indexed)
+        keys: set[str] = {"__module__", "__doc__", "__firstlineno__", "__static_attributes__"}
+        for name, _ in self.own_bindings(symbol, composed):
+            keys.add(name)
+        has_annotation = any(
+            isinstance(statement, ast.AnnAssign)
+            and not (
+                composed
+                and symbol == self.walk.composer
+                and declared_names(statement).issubset(self.walk.deleted)
+            )
+            for statement in self.runtime_body(indexed, class_def.body)
+        )
+        if "__slots__" not in keys:
+            keys.update(("__dict__", "__weakref__"))
+        if has_annotation:
+            keys.update(("__annotations__", "__annotate_func__"))
+        if any(isinstance(base, ast.Subscript) for base in class_def.bases):
+            keys.add("__orig_bases__")
+        return frozenset(keys)
+
+    def require_dir_kept(self, node: ast.AST, reads: CreationReads) -> None:
+        """`dir(cls)` returns the sorted union of `c.__dict__.keys()` along `cls.__mro__`
+        when no metaclass overrides `__dir__`. Keeping all old MRO classes and matching
+        `composer`'s pre-move keys against `composer`'s post-move keys plus every plain
+        gained base's keys proves `dir(cls)` is identical before and after."""
+
+        for symbol in self.metaclasses():
+            for indexed in self.metaclass_ancestry(symbol):
+                if self.method(indexed, "__dir__"):
+                    reads.refuse(node, f"lists attributes through `{indexed.qualname}`'s own `__dir__`")
+        before_set = frozenset(self.walk.before)
+        after_set = frozenset(self.walk.after)
+        if not before_set.issubset(after_set):
+            reads.refuse(node, "drops classes from the MRO that `dir()` reads")
+        gained = tuple(symbol for symbol in self.walk.after if symbol not in before_set)
+        for symbol in gained:
+            indexed = self.walked(symbol)
+            class_def = self.class_node(indexed)
+            if class_def.decorator_list or class_def.keywords:
+                reads.refuse(
+                    node, f"gained base `{indexed.qualname}` has decorators or class keywords affecting `dir()`"
+                )
+            if not indexed.base_references_are_complete or any(
+                native_root_type(ref.qualified_name) is None for ref in indexed.base_references
+            ):
+                reads.refuse(node, f"gained base `{indexed.qualname}` has non-native bases affecting `dir()`")
+            for name, statement in self.own_bindings(symbol, composed=True):
+                if name in self.moved or self._statement_is_plain_callable(indexed, statement):
+                    continue
+                match statement:
+                    case ast.Assign(value=ast.Constant()) | ast.AnnAssign(value=ast.Constant()):
+                        continue
+                reads.refuse(node, f"gained base `{indexed.qualname}` binds non-trivial `{name}` affecting `dir()`")
+        composer_before = self._class_dir_keys(self.walk.composer, composed=False)
+        composer_after = self._class_dir_keys(self.walk.composer, composed=True)
+        gained_keys = frozenset().union(*(self._class_dir_keys(symbol, composed=True) for symbol in gained))
+        diff = composer_before ^ (composer_after | gained_keys)
+        if not diff:
+            return
+        unchanged = tuple(symbol for symbol in self.walk.before if symbol != self.walk.composer)
+        unresolved: list[str] = []
+        for key in sorted(diff):
+            if key in ("__dict__", "__weakref__"):
+                if any(
+                    native_root_type(symbol) is None
+                    and "__slots__" not in {name for name, _ in self.own_bindings(symbol, composed=False)}
+                    for symbol in unchanged
+                ):
+                    continue
+            elif any(
+                key in vars(native)
+                if (native := native_root_type(symbol)) is not None
+                else any(bound == key for bound, _ in self.own_bindings(symbol, composed=False))
+                for symbol in unchanged
+            ):
+                continue
+            unresolved.append(key)
+        if unresolved:
+            reads.refuse(node, f"`dir()` changes attribute set by {unresolved}")
+
     def require_selection_kept(self, name: str, node: ast.AST, reads: CreationReads) -> None:
         """A walk keeping the classes whose own body binds `name` selects the same
         classes in the same order when the move neither gives `name` to a class
@@ -968,11 +1162,49 @@ class CreationReads:
         return None
 
     def constant_key(self, node: ast.AST | None) -> bool:
-        return (
+        if (
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
             and node.value not in self.proof.moved
-        )
+        ):
+            return True
+        if isinstance(node, ast.Name):
+            return self.constant_loop_key(node)
+        return False
+
+    def constant_loop_key(self, node: ast.Name) -> bool:
+        """Whether `node` is a comprehension or `for`-loop variable ranging strictly
+        over literal string keys none of which is moved."""
+
+        current = self.parents.get(node)
+        while current is not None:
+            if isinstance(current, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                for generator in reversed(current.generators):
+                    if isinstance(generator.target, ast.Name) and generator.target.id == node.id:
+                        return self._literal_unmoved_strings(generator.iter)
+            elif isinstance(current, ast.For):
+                if isinstance(current.target, ast.Name) and current.target.id == node.id:
+                    rebound = any(
+                        isinstance(other, ast.Name)
+                        and other.id == node.id
+                        and isinstance(other.ctx, (ast.Store, ast.Del))
+                        and other is not current.target
+                        for other in ast.walk(current)
+                    )
+                    return not rebound and self._literal_unmoved_strings(current.iter)
+            current = self.parents.get(current)
+        return False
+
+    def _literal_unmoved_strings(self, expr: ast.expr) -> bool:
+        match expr:
+            case ast.Tuple(elts=elts) | ast.List(elts=elts) | ast.Set(elts=elts) if elts:
+                return all(
+                    isinstance(elt, ast.Constant)
+                    and isinstance(elt.value, str)
+                    and elt.value not in self.proof.moved
+                    for elt in elts
+                )
+        return False
 
     def require_namespace(self, node: ast.Name, parent: ast.AST | None) -> None:
         match parent:
@@ -1083,7 +1315,16 @@ class CreationReads:
         match parent:
             case ast.Attribute(attr=attr, ctx=ast.Store()):
                 return
-            case ast.Attribute(attr="__mro__") if self.first_found_walk(parent) or self.binding_walk(parent):
+            case ast.Attribute(attr="__mro__") if (
+                self.first_found_walk(parent)
+                or self.binding_walk(parent)
+                or self.subclass_filtered_walk(parent)
+                or self.reversed_type_filtered_dict_walk(parent)
+            ):
+                return
+            case ast.Attribute(attr="__dict__", ctx=ast.Load()):
+                # `cls.__dict__` is the new class's own namespace, identical to `vars(cls)`.
+                self.require_namespace(parent, self.parents.get(parent))
                 return
             case ast.Attribute(attr=attr) if attr in INTROSPECTION:
                 self.refuse(parent, "introspects the new class")
@@ -1187,7 +1428,9 @@ class CreationReads:
         return True
 
     def binding_walk(self, attribute: ast.Attribute) -> bool:
-        """`(c for c in cls.__mro__ if "<name>" in vars(c))`, as any comprehension:
+        """`(c for c in cls.__mro__ if "<name>" in vars(c))`, or
+        `for c in cls.__mro__ [if ... else ...]: if name in c.__dict__: ...`
+        where `name` is a constant string (or constant-passed parameter):
         the classes whose own body binds the name, in C3 order."""
 
         generator = self.parents.get(attribute)
@@ -1199,9 +1442,12 @@ class CreationReads:
                     iter=walked,
                     ifs=[
                         ast.Compare(
-                            left=ast.Constant(value=str() as name),
+                            left=key_expr,
                             ops=[ast.In()],
-                            comparators=[ast.Call(func=ast.Name(id="vars"), args=[ast.Name(id=owner)], keywords=[])],
+                            comparators=[
+                                ast.Call(func=ast.Name(id="vars"), args=[ast.Name(id=owner)], keywords=[])
+                                | ast.Attribute(value=ast.Name(id=owner), attr="__dict__")
+                            ],
                         )
                     ],
                     is_async=0,
@@ -1209,9 +1455,239 @@ class CreationReads:
                 ast.GeneratorExp(elt=ast.Name(id=kept), generators=[_])
                 | ast.ListComp(elt=ast.Name(id=kept), generators=[_])
                 | ast.SetComp(elt=ast.Name(id=kept), generators=[_]),
-            ) if walked is attribute and owner == visited and kept == visited:
+            ) if walked is attribute and owner == visited and kept == visited and (name := self.text(key_expr)) is not None:
                 self.proof.require_selection_kept(name, attribute, self)
                 return True
+        walk = generator
+        if isinstance(walk, ast.IfExp) and walk.body is attribute:
+            walk = self.parents.get(walk)
+        match walk:
+            case ast.For(
+                target=ast.Name(id=visited),
+                body=[
+                    ast.If(
+                        test=ast.Compare(
+                            left=key_expr,
+                            ops=[ast.In()],
+                            comparators=[
+                                ast.Attribute(value=ast.Name(id=owner), attr="__dict__")
+                                | ast.Call(func=ast.Name(id="vars"), args=[ast.Name(id=owner)], keywords=[])
+                            ],
+                        ),
+                        body=if_body,
+                        orelse=[],
+                    )
+                ],
+                orelse=[],
+            ) if owner == visited and (name := self.text(key_expr)) is not None:
+                if (leaked := self._leaked_loop_read(walk, (visited,))) is not None:
+                    self.refuse(leaked, "reads what the binding walk of the MRO left behind")
+                for stmt in if_body:
+                    for node in ast.walk(stmt):
+                        if isinstance(node, ast.Name) and node.id == visited:
+                            node_parent = self.parents.get(node)
+                            match node_parent:
+                                case ast.Attribute(value=v, attr="__dict__") if v is node:
+                                    sub = self.parents.get(node_parent)
+                                    match sub:
+                                        case ast.Subscript(value=d, slice=slice_expr) if (
+                                            d is node_parent and self.text(slice_expr) == name
+                                        ):
+                                            continue
+                                        case _:
+                                            return False
+                                case ast.Attribute(value=v, attr=attr) if v is node and attr in INTROSPECTION:
+                                    return False
+                                case ast.Call(func=ast.Name() as fn, args=[v], keywords=[]) if v is node and self.is_builtin(fn, "builtins.vars"):
+                                    return False
+                self.proof.require_selection_kept(name, attribute, self)
+                return True
+        return False
+
+    def subclass_filtered_walk(self, attribute: ast.Attribute) -> bool:
+        """`for ancestor in cls.__mro__: if issubclass(ancestor, Filter): ...`
+        or `(base for base in cls.__mro__ if issubclass(base, Filter))`:
+        only classes descending from `Filter` are kept or enter the loop body."""
+
+        walk = self.parents.get(attribute)
+        match walk:
+            case ast.Call(func=ast.Name() as rev_fn, args=[arg], keywords=[]) if (
+                arg is attribute and self.is_builtin(rev_fn, "builtins.reversed")
+            ):
+                walk = self.parents.get(walk)
+        if isinstance(walk, ast.comprehension):
+            comprehension = self.parents.get(walk)
+            match walk, comprehension:
+                case (
+                    ast.comprehension(
+                        target=ast.Name(id=visited),
+                        ifs=[
+                            ast.Call(
+                                func=ast.Name() as check_fn,
+                                args=[ast.Name(id=tested), filter_expr],
+                                keywords=[],
+                            )
+                        ],
+                        is_async=0,
+                    ),
+                    ast.GeneratorExp(elt=ast.Name(id=kept), generators=[_])
+                    | ast.ListComp(elt=ast.Name(id=kept), generators=[_])
+                    | ast.SetComp(elt=ast.Name(id=kept), generators=[_]),
+                ) if tested == visited == kept and self.is_builtin(check_fn, "builtins.issubclass"):
+                    owner = self.code.owner
+                    if owner is None:
+                        return False
+                    filter_symbol = self.proof.resolved(owner, filter_expr, self.proof.module_end(owner))
+                    if filter_symbol is None:
+                        return False
+                    self.proof.require_subclass_walk_kept(filter_symbol, frozenset(), attribute, self)
+                    return True
+            return False
+        match walk:
+            case ast.For(
+                target=ast.Name(id=visited),
+                body=[
+                    ast.If(
+                        test=ast.Call(
+                            func=ast.Name() as check_fn,
+                            args=[ast.Name(id=tested), filter_expr],
+                            keywords=[],
+                        ),
+                        body=if_body,
+                        orelse=[],
+                    )
+                ],
+                orelse=[],
+            ) if tested == visited and self.is_builtin(check_fn, "builtins.issubclass"):
+                pass
+            case _:
+                return False
+        assert isinstance(walk, ast.For)
+        owner = self.code.owner
+        if owner is None:
+            return False
+        filter_symbol = self.proof.resolved(owner, filter_expr, self.proof.module_end(owner))
+        if filter_symbol is None:
+            return False
+        if (leaked := self._leaked_loop_read(walk, (visited,))) is not None:
+            self.refuse(leaked, "reads what the subclass-filtered MRO walk left behind")
+        read_attrs: set[str] = set()
+        for stmt in if_body:
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Name) and node.id == visited:
+                    node_parent = self.parents.get(node)
+                    match node_parent:
+                        case ast.Attribute(value=v, attr=attr) if v is node and attr in INTROSPECTION:
+                            return False
+                        case ast.Attribute(value=v, attr=attr) if v is node:
+                            read_attrs.add(attr)
+                        case ast.Call(func=ast.Name() as fn, args=[v], keywords=[]) if v is node and self.is_builtin(fn, "builtins.vars"):
+                            return False
+        self.proof.require_subclass_walk_kept(filter_symbol, frozenset(read_attrs), attribute, self)
+        return True
+
+    def reversed_type_filtered_dict_walk(self, attribute: ast.Attribute) -> bool:
+        """`for base in reversed(cls.__mro__): d.update({k: v for k, v in base.__dict__.items() if isinstance(v, T)})`."""
+
+        rev_call = self.parents.get(attribute)
+        match rev_call:
+            case ast.Call(func=ast.Name() as rev_fn, args=[arg], keywords=[]) if (
+                arg is attribute and self.is_builtin(rev_fn, "builtins.reversed")
+            ):
+                pass
+            case _:
+                return False
+        walk = self.parents.get(rev_call)
+        match walk:
+            case ast.For(
+                target=ast.Name(id=visited),
+                iter=walked,
+                body=[
+                    ast.Expr(
+                        value=ast.Call(
+                            func=ast.Attribute(attr="update"),
+                            args=[
+                                ast.DictComp(
+                                    key=ast.Name(id=k_out),
+                                    value=ast.Name(id=v_out),
+                                    generators=[
+                                        ast.comprehension(
+                                            target=ast.Tuple(elts=[ast.Name(id=k_in), ast.Name(id=v_in)]),
+                                            iter=ast.Call(
+                                                func=ast.Attribute(
+                                                    value=ast.Attribute(value=ast.Name(id=owner_name), attr="__dict__")
+                                                    | ast.Call(func=ast.Name(id="vars"), args=[ast.Name(id=owner_name)], keywords=[]),
+                                                    attr="items",
+                                                ),
+                                                args=[],
+                                                keywords=[],
+                                            ),
+                                            ifs=[
+                                                ast.Call(
+                                                    func=ast.Name() as inst_fn,
+                                                    args=[ast.Name(id=v_test), filter_expr],
+                                                    keywords=[],
+                                                )
+                                            ],
+                                            is_async=0,
+                                        )
+                                    ],
+                                )
+                            ],
+                            keywords=[],
+                        )
+                    )
+                ],
+                orelse=[],
+            ) if (
+                walked is rev_call
+                and owner_name == visited
+                and k_out == k_in
+                and v_out == v_in == v_test
+                and self.is_builtin(inst_fn, "builtins.isinstance")
+            ):
+                pass
+            case _:
+                return False
+        assert isinstance(walk, ast.For)
+        owner = self.code.owner
+        if owner is None:
+            return False
+        filter_symbol = self.proof.resolved(owner, filter_expr, self.proof.module_end(owner))
+        if filter_symbol is None:
+            return False
+        if (leaked := self._leaked_loop_read(walk, (visited,))) is not None:
+            self.refuse(leaked, "reads what the reversed MRO walk left behind")
+        self.proof.require_type_filtered_dict_walk_kept(filter_symbol, attribute, self)
+        return True
+
+    def _leaked_loop_read(self, walk: ast.For, names: tuple[str, ...]) -> ast.Name | None:
+        """A `Load` of any loop variable in `names` outside `walk` that is not
+        shadowed by an enclosing comprehension or another `for` loop's body."""
+
+        walked_nodes = frozenset(ast.walk(walk))
+        for node in ast.walk(self.code.node):
+            match node:
+                case ast.Name(id=name, ctx=ast.Load()) if name in names and node not in walked_nodes:
+                    if not self.comprehension_binds(node) and not self._enclosing_for_body_binds(node, walk):
+                        return node
+        return None
+
+    def _enclosing_for_body_binds(self, node: ast.Name, ignored_walk: ast.For) -> bool:
+        """Whether `node` sits inside the body of a different `for` loop whose
+        target binds `node.id` (so `node` reads that loop's target, not `ignored_walk`)."""
+
+        child: ast.AST = node
+        current = self.parents.get(node)
+        while current is not None:
+            if isinstance(current, ast.For) and current is not ignored_walk:
+                if child in current.body and any(
+                    isinstance(bound, ast.Name) and bound.id == node.id
+                    for bound in ast.walk(current.target)
+                ):
+                    return True
+            child = current
+            current = self.parents.get(current)
         return False
 
     def comprehension_binds(self, node: ast.Name) -> bool:
@@ -1280,6 +1756,15 @@ class CreationReads:
 
         if self.stored_by_reference(call, node):
             return
+        match call:
+            case ast.Call(args=[arg], keywords=[]) if (
+                role is NEW_CLASS
+                and arg is node
+                and self.code.owner is not None
+                and self.is_builtin(call.func, "builtins.dir")
+            ):
+                self.proof.require_dir_kept(call, self)
+                return
         target = self.callee(call.func)
         if target is True:
             return
