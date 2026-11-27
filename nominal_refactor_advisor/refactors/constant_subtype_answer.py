@@ -74,6 +74,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     FunctionEnclosure,
     FunctionNode,
     InstanceDispatchKind,
+    LoopBoolReturnDispatchSite,
     OrElseGuardedStatementDispatchSite,
     OuterReceiverAlias,
     PrefixGuardedAndReturningDispatchSite,
@@ -95,6 +96,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _expr_occurs_in_nodes,
     _has_any_return,
     _has_break_or_continue,
+    _has_loop_break_or_yield,
     _has_non_continue_loop_escape,
     _has_value_return,
     _is_dispatchable_match_subject,
@@ -105,12 +107,15 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _outer_receiver_aliases,
     _render_method,
     _rewrite_loop_continues_to_returns,
+    _rewrite_returns_to_true,
     _rewrite_subject_to_receiver,
     _statement_list_children,
     _strip_trailing_bare_return,
     _strip_trailing_continue,
     _trivial_pure_return,
+    _uniform_pure_return_expr,
     _upgrade_dispatch_site_to_assigning,
+    _with_loop_fallback_return,
 )
 from nominal_refactor_advisor.relocation_observations import (
     ClassBodyReading,
@@ -882,6 +887,32 @@ def _extract_compound_answer_if(
                     is_whole_function=is_whole,
                     test_nodes=(first.test_node,),
                     replaced_nodes=(stmt,),
+                ),
+                (first.tested_value,),
+            )
+        if (
+            not _has_break_or_continue(stmt.body)
+            and not _has_loop_break_or_yield(stmt.body)
+            and (uniform_return := _uniform_pure_return_expr(stmt.body)) is not None
+        ):
+            true_body = _rewrite_returns_to_true(stmt.body)
+            cond_body = _with_loop_fallback_return(
+                (ast.If(test=rest_expr, body=list(true_body), orelse=[]),),
+                ast.Constant(value=False),
+            )
+            false_body = (ast.Return(value=ast.Constant(value=False)),)
+            arm_body = false_body if first.negated else cond_body
+            default_body = cond_body if first.negated else false_body
+            return AnswerBranchSite(
+                LoopBoolReturnDispatchSite(
+                    subject=first.subject,
+                    kind=kind,
+                    arms=(_dummy_arm(arm_body),),
+                    default_body=default_body,
+                    is_whole_function=False,
+                    test_nodes=(first.test_node,),
+                    replaced_nodes=(stmt,),
+                    return_expr=uniform_return,
                 ),
                 (first.tested_value,),
             )

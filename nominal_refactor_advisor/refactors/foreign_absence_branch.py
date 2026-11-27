@@ -1657,6 +1657,14 @@ def _extract_absence_ternary_site(
     )
 
 
+def _is_trivial_short_circuit_expr(expr: ast.expr, subject: ast.expr) -> bool:
+    """Whether `expr` is a literal or non-subject local name safe at a short-circuiting `IfExp`."""
+
+    if _is_trivial_constant_expr(expr):
+        return True
+    return isinstance(expr, ast.Name) and ast.dump(expr) != ast.dump(subject)
+
+
 def _extract_prefix_guarded_absence_ternary_site(
     node: ast.IfExp,
     target_lines: frozenset[int],
@@ -1677,7 +1685,9 @@ def _extract_prefix_guarded_absence_ternary_site(
         return None
     op, guard_expr, remaining_test, probes = split
     inner_ifexp = ast.IfExp(test=remaining_test, body=node.body, orelse=node.orelse)
-    if isinstance(op, ast.Or) and _is_trivial_constant_expr(node.body):
+    if isinstance(op, ast.Or) and _is_trivial_short_circuit_expr(
+        node.body, probes[0].subject
+    ):
         return PrefixGuardedOrTernaryAbsenceBranchSite(
             subject=probes[0].subject,
             probe_nodes=tuple(probe.node for probe in probes),
@@ -1687,7 +1697,9 @@ def _extract_prefix_guarded_absence_ternary_site(
             guard_expr=guard_expr,
             short_circuit_expr=node.body,
         )
-    if isinstance(op, ast.And) and _is_trivial_constant_expr(node.orelse):
+    if isinstance(op, ast.And) and _is_trivial_short_circuit_expr(
+        node.orelse, probes[0].subject
+    ):
         return PrefixGuardedAndTernaryAbsenceBranchSite(
             subject=probes[0].subject,
             probe_nodes=tuple(probe.node for probe in probes),
@@ -2696,6 +2708,17 @@ class PushForeignAbsenceBranchOperation(RepositorySourceReprovedOperation):
         return proof.edits(snapshot, self.rationale_text(proof.rationale()))
 
 
+def _module_imports_ast(module: ast.Module) -> bool:
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            if any(alias.name in ("ast", "_ast") for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module in ("ast", "_ast"):
+                return True
+    return False
+
+
 class ForeignAbsenceProbeFindingRecipeSynthesizer(
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
     PrewarmTypeCheckerMixin,
@@ -2721,7 +2744,12 @@ class ForeignAbsenceProbeFindingRecipeSynthesizer(
         )
         owner_symbol = None if metrics is None else metrics.owner_symbol
         if owner_symbol is None:
-            if ast_evaluation.needs == (NeededInput.OPERATION,):
+            if ast_evaluation.needs == (NeededInput.OPERATION,) or not any(
+                _module_imports_ast(
+                    snapshot.parsed_module_for_source_path(ev.file_path).module
+                )
+                for ev in finding.evidence
+            ):
                 subject = (
                     metrics.subject_source
                     if metrics is not None and metrics.subject_source

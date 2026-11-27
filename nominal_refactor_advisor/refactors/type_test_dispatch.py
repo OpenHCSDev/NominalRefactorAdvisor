@@ -22,7 +22,7 @@ import re
 import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import ClassVar, cast
 
 from nominal_refactor_advisor.ast_field_decoders import (
@@ -929,8 +929,10 @@ class OrElseGuardedStatementDispatchSite(StatementDispatchSite):
 
 @dataclass(frozen=True)
 class LoopBoolReturnDispatchSite(StatementDispatchSite):
-    """Loop body type-test dispatch whose only early returns are `return True`,
-    replaced by `if x.method(...):\\n    return True`."""
+    """Type-test or answer dispatch whose every early return yields one pure expression,
+    replaced by `if x.method(...):\\n    return <expr>` (default `True`)."""
+
+    return_expr: ast.expr = field(default_factory=lambda: ast.Constant(value=True))
 
     @property
     def checks_local_store_escapes(self) -> bool:
@@ -949,7 +951,7 @@ class LoopBoolReturnDispatchSite(StatementDispatchSite):
         return True
 
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
-        return f"if {call_expr}:\n{line_indent}    return True"
+        return f"if {call_expr}:\n{line_indent}    return {ast.unparse(self.return_expr)}"
 
     def with_assigning_target(
         self,
@@ -1511,22 +1513,58 @@ def _expr_proved_non_none(
     return False
 
 
-def _all_returns_are_true(statements: Sequence[ast.stmt]) -> bool:
-    seen_return = False
+def _uniform_pure_return_expr(statements: Sequence[ast.stmt]) -> ast.expr | None:
+    """When every non-nested `return` in `statements` yields the same pure constant or
+    unreassigned local `Name`, return that expression; otherwise return `None`."""
+
+    stored = _names_stored_in(statements)
+    uniform: ast.expr | None = None
+    uniform_dump: str | None = None
     stack: list[ast.AST] = list(statements)
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
         if isinstance(node, ast.Return):
-            seen_return = True
+            values = optional_values(node)
+            if not values:
+                return None
+            val = values[0]
             if not (
-                isinstance(node.value, ast.Constant) and node.value.value is True
+                isinstance(val, ast.Constant)
+                or (isinstance(val, ast.Name) and val.id not in stored)
             ):
-                return False
+                return None
+            val_dump = ast.dump(val)
+            if uniform_dump is None:
+                uniform = val
+                uniform_dump = val_dump
+            elif val_dump != uniform_dump:
+                return None
             continue
         stack.extend(ast.iter_child_nodes(node))
-    return seen_return
+    return uniform
+
+
+class _ReturnToTrueRewriter(ast.NodeTransformer):
+    """Replace non-nested `return <expr>` statements with `return True`."""
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+        return node
+
+    def visit_Return(self, node: ast.Return) -> ast.Return:
+        return ast.copy_location(ast.Return(value=ast.Constant(value=True)), node)
+
+
+def _rewrite_returns_to_true(statements: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
+    rewriter = _ReturnToTrueRewriter()
+    return tuple(rewriter.visit(copy.deepcopy(stmt)) for stmt in statements)
 
 
 def _all_returns_proved_non_none(
@@ -1644,12 +1682,12 @@ def _build_loop_return_site(
     if any(_has_loop_break_or_yield(body) for body in all_bodies):
         return None
     flat_stmts = tuple(stmt for body in all_bodies for stmt in body)
-    if _all_returns_are_true(flat_stmts):
+    if (uniform_return := _uniform_pure_return_expr(flat_stmts)) is not None:
         false_expr = ast.Constant(value=False)
         rewritten_arms = tuple(
             TypeTestArm(
                 arm.tested_exprs,
-                _with_loop_fallback_return(arm.body, false_expr),
+                _with_loop_fallback_return(_rewrite_returns_to_true(arm.body), false_expr),
                 arm.exact,
                 alias=arm.alias,
             )
@@ -1659,10 +1697,13 @@ def _build_loop_return_site(
             subject=first_test.subject,
             kind=first_test.kind,
             arms=rewritten_arms,
-            default_body=_with_loop_fallback_return(default_body, false_expr),
+            default_body=_with_loop_fallback_return(
+                _rewrite_returns_to_true(default_body), false_expr
+            ),
             is_whole_function=False,
             test_nodes=test_nodes,
             replaced_nodes=replaced_nodes,
+            return_expr=uniform_return,
         )
     subject_dump = ast.dump(first_test.subject)
     tested_names = frozenset().union(
