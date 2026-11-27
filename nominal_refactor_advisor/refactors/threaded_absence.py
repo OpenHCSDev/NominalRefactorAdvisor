@@ -13,14 +13,16 @@ import ast
 import copy
 import keyword as keyword_module
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
     optional_values,
+    variadic_parameters,
 )
 from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_payload import (
     OptionalStringPayloadValueCodec,
@@ -1464,6 +1466,335 @@ def _module_top_level_bound_names(module: ast.Module) -> frozenset[str]:
     return frozenset(names)
 
 
+def _is_abstract_or_stub_body(function: FunctionNode) -> bool:
+    """Whether `function` is an abstract/stub declaration with no concrete execution path."""
+
+    body = list(function.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    if not body:
+        return True
+    if len(body) == 1:
+        stmt = body[0]
+        if isinstance(stmt, (ast.Pass, ast.Raise)):
+            return True
+        if (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant)
+            and stmt.value.value is Ellipsis
+        ):
+            return True
+    return False
+
+
+def _locate_class_method(
+    mod: ParsedModule,
+    class_symbol: str,
+    method_name: str,
+) -> tuple[ast.ClassDef, FunctionNode] | None:
+    for _cls_idx, cls_node in mod.syntax_index.indexed_nodes_of_type(ast.ClassDef):
+        if f"{mod.module_name}.{cls_node.name}" != class_symbol:
+            continue
+        for stmt in cls_node.body:
+            if (
+                isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and stmt.name == method_name
+            ):
+                return cls_node, stmt
+    return None
+
+
+def _is_passive_override(function: FunctionNode, param_name: str) -> bool:
+    """Whether `function` is a stub or never loads `param_name` (unused or `del`-only)."""
+
+    if _is_abstract_or_stub_body(function):
+        return True
+    for stmt in function.body:
+        for node in ast.walk(stmt):
+            if (
+                isinstance(node, ast.Name)
+                and node.id == param_name
+                and isinstance(node.ctx, ast.Load)
+            ):
+                return False
+    return True
+
+
+@dataclass(frozen=True)
+class _PassiveOverrideParamEdit:
+    """Parameter annotation/default rewrite for a passive (stub/unused/del-only) override."""
+
+    file_path: str
+    param_annotations: tuple[ast.expr, ...]
+    default_exprs: tuple[ast.expr, ...]
+
+    def needed_family_names(self, family_name: str) -> tuple[str, ...]:
+        names: list[str] = []
+        if self.param_annotations:
+            names.append(family_name)
+        if self.default_exprs:
+            names.append(f"Absent{family_name}")
+        return tuple(names)
+
+    def span_replacements(
+        self, geometry: SourceTextGeometry, family_name: str
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        reps: list[SourceTextSpanReplacement] = []
+        for ann in self.param_annotations:
+            a_start, a_end = geometry.required_node_offsets(ann)
+            reps.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=a_start,
+                    end_offset=a_end,
+                    replacement_source=family_name,
+                )
+            )
+        for default_expr in self.default_exprs:
+            d_start, d_end = geometry.required_node_offsets(default_expr)
+            reps.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=d_start,
+                    end_offset=d_end,
+                    replacement_source=f"Absent{family_name}()",
+                )
+            )
+        return tuple(reps)
+
+
+@dataclass(frozen=True)
+class _ResolvedThreadedHierarchy:
+    """Connected single-function or single-brancher overriding hierarchy for a threaded parameter."""
+
+    family_anchor_line: int
+    passive_overrides: tuple[_PassiveOverrideParamEdit, ...]
+    reaching_symbols: frozenset[str]
+    owner_qualnames_by_file: Mapping[str, frozenset[str]]
+
+
+class _OverrideParamPlacement(ABC):
+    """Expected positional or keyword-only placement of a parameter on hierarchy overrides."""
+
+    @abstractmethod
+    def require_positional(self, idx: int, func_name: str, param_name: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_keyword_only(self, func_name: str, param_name: str) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class _PositionalPlacement(_OverrideParamPlacement):
+    """Parameter must appear at positional index `index` on every override."""
+
+    index: int
+
+    def require_positional(self, idx: int, func_name: str, param_name: str) -> None:
+        if idx != self.index:
+            raise NeedsInput(
+                f"override `{func_name}` places `{param_name}` at a different parameter position",
+                NeededInput.PROOF,
+            )
+
+    def require_keyword_only(self, func_name: str, param_name: str) -> None:
+        raise NeedsInput(
+            f"override `{func_name}` makes `{param_name}` keyword-only",
+            NeededInput.PROOF,
+        )
+
+
+@dataclass(frozen=True)
+class _KeywordOnlyPlacement(_OverrideParamPlacement):
+    """Parameter must remain keyword-only on every override."""
+
+    def require_positional(self, idx: int, func_name: str, param_name: str) -> None:
+        del idx
+        raise NeedsInput(
+            f"override `{func_name}` places `{param_name}` at a different parameter position",
+            NeededInput.PROOF,
+        )
+
+    def require_keyword_only(self, func_name: str, param_name: str) -> None:
+        del func_name, param_name
+
+
+def _locate_passive_override_param(
+    function: FunctionNode,
+    param_name: str,
+    placement: _OverrideParamPlacement,
+    *,
+    skip_first_receiver: bool,
+) -> tuple[tuple[ast.expr, ...], tuple[ast.expr, ...]]:
+    """Verify `function` accepts `param_name` compatibly and return its annotation/default tuples."""
+
+    args = function.args
+    pos_args = list(args.posonlyargs) + list(args.args)
+    offset = 1 if skip_first_receiver and pos_args else 0
+    pos_params = pos_args[offset:]
+    pos_defaults_start = len(pos_params) - len(args.defaults)
+    for idx, arg in enumerate(pos_params):
+        if arg.arg != param_name:
+            continue
+        placement.require_positional(idx, function.name, param_name)
+        anns = declared_annotations(arg)
+        if anns and _strip_none_from_annotation(anns[0]) is None:
+            raise NeedsInput(
+                f"override `{function.name}` annotation `{ast.unparse(anns[0])}` on `{param_name}` is not `T | None`",
+                NeededInput.PROOF,
+            )
+        default_idx = idx - pos_defaults_start
+        if default_idx >= 0:
+            default_expr = args.defaults[default_idx]
+            if not _is_none_const(default_expr):
+                raise NeedsInput(
+                    f"override `{function.name}` parameter `{param_name}` has non-None default `{ast.unparse(default_expr)}`",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            return anns, (default_expr,)
+        return anns, ()
+
+    for idx, arg in enumerate(args.kwonlyargs):
+        if arg.arg != param_name:
+            continue
+        placement.require_keyword_only(function.name, param_name)
+        anns = declared_annotations(arg)
+        if anns and _strip_none_from_annotation(anns[0]) is None:
+            raise NeedsInput(
+                f"override `{function.name}` annotation `{ast.unparse(anns[0])}` on `{param_name}` is not `T | None`",
+                NeededInput.PROOF,
+            )
+        kw_default = args.kw_defaults[idx]
+        if kw_default is not None:
+            if not _is_none_const(kw_default):
+                raise NeedsInput(
+                    f"override `{function.name}` parameter `{param_name}` has non-None default `{ast.unparse(kw_default)}`",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            return anns, (kw_default,)
+        return anns, ()
+
+    if variadic_parameters(args):
+        return (), ()
+    raise NeedsInput(
+        f"override `{function.name}` does not accept parameter `{param_name}`",
+        NeededInput.PROOF,
+    )
+
+
+def _resolve_threaded_hierarchy(
+    snapshot: CodemodSourceSnapshot,
+    source_path: str,
+    enclosure: FunctionEnclosure,
+    function: FunctionNode,
+    param_name: str,
+    placement: _OverrideParamPlacement,
+) -> _ResolvedThreadedHierarchy:
+    """Resolve a standalone function or a single-brancher overriding hierarchy."""
+
+    owner_symbol = enclosure.declaring_class_symbol(snapshot)
+    if owner_symbol is None:
+        return _ResolvedThreadedHierarchy(
+            family_anchor_line=function.lineno,
+            passive_overrides=(),
+            reaching_symbols=frozenset(),
+            owner_qualnames_by_file={},
+        )
+
+    index = snapshot.compact_class_index
+    classes = index.classes_by_symbol
+    if owner_symbol not in classes:
+        raise NeedsInput(
+            f"`{owner_symbol}` is not in the scanned class index",
+            NeededInput.PROOF,
+        )
+
+    declared_syms: set[str] = {owner_symbol}
+    queue = [owner_symbol]
+    while queue:
+        sym = queue.pop()
+        for other_sym in (*index.ancestor_symbols(sym), *index.descendant_symbols(sym)):
+            if other_sym in declared_syms:
+                continue
+            decl = classes.get(other_sym)
+            if decl is not None and function.name in decl.member_binding_names:
+                declared_syms.add(other_sym)
+                queue.append(other_sym)
+
+    is_async = isinstance(function, ast.AsyncFunctionDef)
+    skip_first = enclosure.class_receiver_symbol(snapshot) is not None
+    passive_overrides: list[_PassiveOverrideParamEdit] = []
+    anchor_lines: list[int] = [function.lineno]
+    qualnames_by_file: dict[str, set[str]] = {
+        source_path: {classes[owner_symbol].qualname}
+    }
+
+    for sym in sorted(declared_syms):
+        if sym == owner_symbol:
+            continue
+        decl = classes[sym]
+        cmod = snapshot.parsed_module_for_source_path(decl.file_path)
+        found = _locate_class_method(cmod, sym, function.name)
+        if found is None:
+            raise NeedsInput(
+                f"`{decl.qualname}` also declares `{function.name}`; overriding hierarchy is not rewritten",
+                NeededInput.PROOF,
+            )
+        cls_node, other_fn = found
+        if isinstance(other_fn, ast.AsyncFunctionDef) != is_async:
+            raise NeedsInput(
+                f"`{decl.qualname}.{function.name}` mixes sync and async overrides",
+                NeededInput.PROOF,
+            )
+        other_is_static = any(
+            isinstance(dec, ast.Name) and dec.id == "staticmethod"
+            for dec in other_fn.decorator_list
+        )
+        if other_is_static == skip_first:
+            raise NeedsInput(
+                f"`{decl.qualname}.{function.name}` mixes staticmethod and bound-method overrides",
+                NeededInput.PROOF,
+            )
+        if not _is_passive_override(other_fn, param_name):
+            raise NeedsInput(
+                f"`{decl.qualname}` also uses `{param_name}` in `{function.name}`; "
+                "overriding hierarchy is not rewritten",
+                NeededInput.PROOF,
+            )
+        anns, defs = _locate_passive_override_param(
+            other_fn,
+            param_name,
+            placement,
+            skip_first_receiver=skip_first,
+        )
+        passive_overrides.append(
+            _PassiveOverrideParamEdit(
+                file_path=decl.file_path,
+                param_annotations=anns,
+                default_exprs=defs,
+            )
+        )
+        qualnames_by_file.setdefault(decl.file_path, set()).add(decl.qualname)
+        if decl.file_path == source_path:
+            anchor_lines.append(cls_node.lineno)
+
+    reaching_symbols = frozenset().union(
+        *(frozenset((sym, *index.descendant_symbols(sym))) for sym in declared_syms)
+    )
+    return _ResolvedThreadedHierarchy(
+        family_anchor_line=min(anchor_lines),
+        passive_overrides=tuple(passive_overrides),
+        reaching_symbols=reaching_symbols,
+        owner_qualnames_by_file={
+            fp: frozenset(names) for fp, names in qualnames_by_file.items()
+        },
+    )
+
+
 def _collect_closed_call_args(
     snapshot: CodemodSourceSnapshot,
     source_path: str,
@@ -1472,6 +1803,7 @@ def _collect_closed_call_args(
     param_name: str,
     call_pos: int | None,
     has_default: bool,
+    hierarchy: _ResolvedThreadedHierarchy,
 ) -> tuple[_RewrittenCallArg, ...]:
     """Prove every reference to `function` across the scanned repo is a direct call
     and collect every call site's argument expression for `param_name`."""
@@ -1532,23 +1864,7 @@ def _collect_closed_call_args(
 
     index = snapshot.compact_class_index
     classes = index.classes_by_symbol
-    if owner_symbol not in classes:
-        raise NeedsInput(
-            f"`{owner_symbol}` is not in the scanned class index",
-            NeededInput.PROOF,
-        )
-    family_others = (
-        *index.ancestor_symbols(owner_symbol),
-        *index.descendant_symbols(owner_symbol),
-    )
-    for other_sym in family_others:
-        decl = classes.get(other_sym)
-        if decl is not None and function.name in decl.member_binding_names:
-            raise NeedsInput(
-                f"`{decl.qualname}` also declares `{function.name}`; overriding hierarchy is not rewritten",
-                NeededInput.PROOF,
-            )
-    reaching_symbols = frozenset((owner_symbol, *index.descendant_symbols(owner_symbol)))
+    reaching_symbols = hierarchy.reaching_symbols
     owner_qualname = classes[owner_symbol].qualname
     reaching_files = frozenset(
         (
@@ -1581,6 +1897,9 @@ def _collect_closed_call_args(
                     reaching_class_ranges.append(
                         (cls_node.lineno, cls_node.end_lineno or cls_node.lineno)
                     )
+        local_owner_qualnames = hierarchy.owner_qualnames_by_file.get(
+            mod.file_path, frozenset()
+        )
 
         for node in attr_nodes:
             parent = node_index.parents.get(node)
@@ -1593,8 +1912,7 @@ def _collect_closed_call_args(
                     continue
             if (
                 isinstance(node.value, ast.Name)
-                and node.value.id == owner_qualname
-                and mod.file_path == source_path
+                and node.value.id in local_owner_qualnames
             ):
                 definite_hits.append((mod.file_path, node, parent_call))
                 continue
@@ -1679,6 +1997,7 @@ class ThreadedAbsenceProof:
     is_async: bool
     outer_receiver_aliases: tuple[OuterReceiverAlias, ...]
     call_args: tuple[_RewrittenCallArg, ...]
+    passive_overrides: tuple[_PassiveOverrideParamEdit, ...]
     insert_before_stmt: ast.stmt
 
     @classmethod
@@ -1803,7 +2122,23 @@ class ThreadedAbsenceProof:
                     NeededInput.OWNER_PICK,
                 )
 
-        insert_before = _top_level_enclosing_stmt(source_module.module, function.lineno)
+        placement: _OverrideParamPlacement = (
+            _KeywordOnlyPlacement()
+            if call_pos is None
+            else _PositionalPlacement(call_pos)
+        )
+        hierarchy = _resolve_threaded_hierarchy(
+            snapshot,
+            source_path,
+            enclosure,
+            function,
+            parameter_name,
+            placement,
+        )
+
+        insert_before = _top_level_enclosing_stmt(
+            source_module.module, hierarchy.family_anchor_line
+        )
         if insert_before is None:
             raise NeedsInput(
                 f"cannot locate top-level declaration enclosing `{function.name}`",
@@ -1818,24 +2153,33 @@ class ThreadedAbsenceProof:
             parameter_name,
             call_pos,
             default_expr is not None,
+            hierarchy,
         )
 
-        # Verify cross-module imports for any external caller are cycle-free and collision-free.
+        # Verify cross-module imports for external callers and passive overrides are cycle-free.
         import_graph = snapshot.module_import_graph
-        for item in call_args:
-            if item.file_path == source_path:
-                continue
-            caller_mod = snapshot.parsed_module_for_source_path(item.file_path)
-            caller_bound = _module_top_level_bound_names(caller_mod.module)
-            for sym_name in item.wrapping.needed_symbols(family_name):
-                if sym_name in caller_bound:
+        external_imports_needed: list[tuple[str, tuple[str, ...]]] = [
+            (item.file_path, item.wrapping.needed_symbols(family_name))
+            for item in call_args
+            if item.file_path != source_path
+        ]
+        external_imports_needed.extend(
+            (override.file_path, override.needed_family_names(family_name))
+            for override in hierarchy.passive_overrides
+            if override.file_path != source_path
+        )
+        for ext_file, sym_names in external_imports_needed:
+            ext_mod = snapshot.parsed_module_for_source_path(ext_file)
+            ext_bound = _module_top_level_bound_names(ext_mod.module)
+            for sym_name in sym_names:
+                if sym_name in ext_bound:
                     raise NeedsInput(
-                        f"`{sym_name}` is already bound in caller {item.file_path}",
+                        f"`{sym_name}` is already bound in {ext_file}",
                         NeededInput.OWNER_PICK,
                     )
                 try:
                     import_graph.required_import_source(
-                        importing_file_path=item.file_path,
+                        importing_file_path=ext_file,
                         imported_file_path=source_path,
                         imported_name=sym_name,
                     )
@@ -1862,6 +2206,7 @@ class ThreadedAbsenceProof:
             is_async=is_async,
             outer_receiver_aliases=outer_receiver_aliases,
             call_args=call_args,
+            passive_overrides=hierarchy.passive_overrides,
             insert_before_stmt=insert_before,
         )
 
@@ -2093,6 +2438,26 @@ class ThreadedAbsenceProof:
                             file_path=item.file_path,
                             import_source=import_graph.required_import_source(
                                 importing_file_path=item.file_path,
+                                imported_file_path=self.source_path,
+                                imported_name=sym_name,
+                            ),
+                            rationale=rationale,
+                        )
+
+        # Rewrite parameter annotations/defaults on passive overrides (stub/unused/del-only).
+        for override in self.passive_overrides:
+            ov_geom = SourceTextGeometry(snapshot.sources_by_file_path[override.file_path])
+            replacements_by_file.setdefault(override.file_path, []).extend(
+                override.span_replacements(ov_geom, self.family_name)
+            )
+            if override.file_path != self.source_path:
+                for sym_name in override.needed_family_names(self.family_name):
+                    key = (override.file_path, sym_name)
+                    if key not in needed_caller_imports:
+                        needed_caller_imports[key] = ModuleImportMutation.from_source(
+                            file_path=override.file_path,
+                            import_source=import_graph.required_import_source(
+                                importing_file_path=override.file_path,
                                 imported_file_path=self.source_path,
                                 imported_name=sym_name,
                             ),

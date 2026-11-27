@@ -275,7 +275,7 @@ def test_threaded_absence_refuses_unsound_callers_and_escaped_parameter(
                 "        return len(x)\n\n\n"
                 "class Child(Base):\n"
                 "    def _overridden(self, x: str | None) -> int:\n"
-                "        return 1\n\n\n"
+                "        return 1 if x is None else len(x) + 1\n\n\n"
                 "def use_them(args: tuple[str | None, ...]) -> None:\n"
                 "    _still_used(None)\n"
                 "    cb = _callback_fn\n"
@@ -296,7 +296,7 @@ def test_threaded_absence_refuses_unsound_callers_and_escaped_parameter(
         ("_callback_fn", "references `_callback_fn` as a value"),
         ("_splatted", "uses `*args` or `**kwargs`"),
         ("exported_fn", "listed in `__all__`"),
-        ("Base._overridden", "also declares `_overridden`"),
+        ("Base._overridden", "also uses `x` in `_overridden`"),
     ):
         ev = detector.evaluate_recipe_for_finding(by_sym[sym], snap)
         assert ev.recipe is None
@@ -404,6 +404,117 @@ def test_threaded_absence_compound_boolop_returns_ifs_ifexp_and_comprehension(
     ns_after: dict[str, object] = {}
     exec(compile(rewritten, "compound.py", "exec"), ns_after)
     assert ns_after["run_suite"]() == expected  # type: ignore[operator]
+
+    _, _, after_findings = _scan(tmp_path)
+    assert after_findings == []
+
+
+def test_threaded_absence_single_brancher_overriding_hierarchy_across_modules(
+    tmp_path: Path,
+) -> None:
+    """An overriding hierarchy where one concrete method branches on `param: T | None`
+    while every other override is an abstract stub, unused, or `del`-only rewrites
+    the parameter across the entire hierarchy (including cross-module subclasses)
+    and wraps all closed callers."""
+
+    _write(
+        tmp_path,
+        {
+            "hier/__init__.py": "",
+            "hier/core.py": (
+                "from __future__ import annotations\n"
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class BaseValidator(ABC):\n"
+                "    @abstractmethod\n"
+                "    def format_note(self, field_name: str | None) -> str:\n"
+                '        """Format a validation note."""\n\n\n'
+                "class DetailedValidator(BaseValidator):\n"
+                "    def format_note(self, field_name: str | None) -> str:\n"
+                "        if field_name is None:\n"
+                "            return 'missing'\n"
+                "        return f'field:{field_name}'\n\n\n"
+                "class SilentValidator(BaseValidator):\n"
+                "    def format_note(self, field_name: str | None) -> str:\n"
+                "        del field_name\n"
+                "        return 'ok'\n"
+            ),
+            "hier/ext.py": (
+                "from __future__ import annotations\n"
+                "from hier.core import BaseValidator, DetailedValidator, SilentValidator\n\n\n"
+                "class UnusedValidator(BaseValidator):\n"
+                "    def format_note(self, field_name: str | None) -> str:\n"
+                "        return 'unused'\n\n\n"
+                "def run_all() -> tuple[str, ...]:\n"
+                "    items: list[BaseValidator] = [\n"
+                "        DetailedValidator(),\n"
+                "        SilentValidator(),\n"
+                "        UnusedValidator(),\n"
+                "    ]\n"
+                "    return (\n"
+                "        *(v.format_note(None) for v in items),\n"
+                "        *(v.format_note('alpha') for v in items),\n"
+                "        DetailedValidator().format_note(None),\n"
+                "    )\n"
+            ),
+        },
+    )
+
+    _, snap, findings = _scan(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].evidence[0].symbol == "DetailedValidator.format_note"
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="DetailedValidator.format_note",
+                because="field name presence belongs on a nominal family",
+                name="FieldNameChoice",
+                judgement="Present or absent field name for validation.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(findings)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 1, plan.report
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after_core = (tmp_path / "hier/core.py").read_text()
+    after_ext = (tmp_path / "hier/ext.py").read_text()
+    assert "class FieldNameChoice(ABC):" in after_core
+    assert after_core.count("field_name: FieldNameChoice") == 3
+    assert "field_name: FieldNameChoice" in after_ext
+    assert "from hier.core import" in after_ext
+    assert "AbsentFieldNameChoice()" in after_ext
+    assert "HeldFieldNameChoice('alpha')" in after_ext
+
+    import importlib
+    import sys as _sys
+
+    for key in [k for k in _sys.modules if k == "hier" or k.startswith("hier.")]:
+        del _sys.modules[key]
+    _sys.path.insert(0, str(tmp_path))
+    try:
+        ext_mod = importlib.import_module("hier.ext")
+        assert ext_mod.run_all() == (
+            "missing",
+            "ok",
+            "unused",
+            "field:alpha",
+            "ok",
+            "unused",
+            "missing",
+        )
+    finally:
+        if _sys.path and _sys.path[0] == str(tmp_path):
+            _sys.path.pop(0)
+        for key in [k for k in _sys.modules if k == "hier" or k.startswith("hier.")]:
+            del _sys.modules[key]
 
     _, _, after_findings = _scan(tmp_path)
     assert after_findings == []
