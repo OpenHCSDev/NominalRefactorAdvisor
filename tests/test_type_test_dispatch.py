@@ -3217,8 +3217,7 @@ def unsafe_maybe_none_loop(items: list[Item]) -> str | None:
             return item.maybe_none()
     return "fallback"
 """
-    _write(tmp_path / "pkg/widened.py", src)
-    _write(tmp_path / "pkg/__init__.py", "")
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/widened.py": src})
 
     modules = parse_python_modules(tmp_path)
     with ScanCache.scope():
@@ -3263,34 +3262,51 @@ def unsafe_maybe_none_loop(items: list[Item]) -> str | None:
     ]
     assert len(target_findings) == 6
 
-    picks = (
-        OwnerPick(
-            owner="with_tail_tag",
-            name="tag_in_context",
-            judgement="Return the item tag inside the context.",
-        ),
-        OwnerPick(
-            owner="nested_fallback_tag",
-            name="nested_tag",
-            judgement="Return the item tag when enabled.",
-        ),
-        OwnerPick(
-            owner="same_line_inner_hit",
-            name="inner_hit_value",
-            judgement="Return the inner hit value when present.",
-        ),
-        OwnerPick(
-            owner="has_winner",
-            name="is_winner_item",
-            judgement="Whether this item satisfies the win condition.",
-        ),
-        OwnerPick(
-            owner="first_hit_tuple",
-            name="hit_tuple_or_none",
-            judgement="Return the matched tag tuple or None to continue.",
+    by_key = {
+        f.evidence[0].symbol: f for f in target_findings if f.evidence
+    }
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_key["with_tail_tag"].stable_id,
+                owner="with_tail_tag",
+                because="Item owns context-wrapped tag reading.",
+                name="tag_in_context",
+                judgement="Return the item tag inside the context.",
+            ),
+            OwnerPick(
+                finding=by_key["nested_fallback_tag"].stable_id,
+                owner="nested_fallback_tag",
+                because="Item owns nested fallback tag reading.",
+                name="nested_tag",
+                judgement="Return the item tag when enabled.",
+            ),
+            OwnerPick(
+                finding=by_key["same_line_inner_hit"].stable_id,
+                owner="same_line_inner_hit",
+                because="Inner owns reading its hit value.",
+                name="inner_hit_value",
+                judgement="Return the inner hit value when present.",
+            ),
+            OwnerPick(
+                finding=by_key["has_winner"].stable_id,
+                owner="has_winner",
+                because="Item owns the loop win predicate.",
+                name="is_winner_item",
+                judgement="Whether this item satisfies the win condition.",
+            ),
+            OwnerPick(
+                finding=by_key["first_hit_tuple"].stable_id,
+                owner="first_hit_tuple",
+                because="Item owns loop hit tuple extraction.",
+                name="hit_tuple_or_none",
+                judgement="Return the matched tag tuple or None to continue.",
+            ),
         ),
     )
-    picked, report = apply_owner_picks(target_findings, picks)
+    picked, report = picks.applied(tuple(target_findings))
     assert not report.unmatched
     plan = codemod_plan_from_findings(picked, selector_context=snap)
     assert plan.candidate_count == 6, plan.report
