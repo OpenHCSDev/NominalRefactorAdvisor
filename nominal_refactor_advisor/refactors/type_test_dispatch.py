@@ -3534,13 +3534,8 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
             stmt.lineno == test_line
             or any(case.pattern.lineno == test_line for case in stmt.cases)
         ):
-            extracted = _extract_match_site(
+            return _extract_match_site(
                 container, index, stmt, body, in_loop_body=in_loop_body
-            )
-            return (
-                extracted
-                if extracted is not None and extracted.has_single_evaluation_subject()
-                else None
             )
         if isinstance(stmt, ast.Return):
             match stmt:
