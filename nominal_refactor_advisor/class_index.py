@@ -380,6 +380,21 @@ class CompactDataclassFacet(ABC):
     ) -> CompactProductAuthorityResolution:
         raise NotImplementedError
 
+    def has_positional_init_field(self) -> bool:
+        """Whether this declaration contributes a semantic dataclass field that is
+        not proved keyword-only."""
+        return False
+
+    def reordered_own_fields(
+        self,
+        owner_fields: tuple[str, ...],
+        inherited: frozenset[str],
+    ) -> tuple[list[str], list[str]] | None:
+        """Return `(before, after)` when composing `owner_fields` reorders this
+        dataclass's own non-inherited fields, or `None` otherwise."""
+        del owner_fields, inherited
+        return None
+
 
 @dataclass(frozen=True)
 class CompactDataclassDeclaration(CompactDataclassFacet):
@@ -431,6 +446,35 @@ class CompactDataclassDeclaration(CompactDataclassFacet):
         indexed_class: CompactIndexedClass,
     ) -> CompactProductAuthorityResolution:
         return composer.resolve(class_symbol, indexed_class, self)
+
+    def has_positional_init_field(self) -> bool:
+        return any(
+            field.role.contributes_semantic_field and field.binding.allows_positional
+            for field in self.fields
+        )
+
+    def reordered_own_fields(
+        self,
+        owner_fields: tuple[str, ...],
+        inherited: frozenset[str],
+    ) -> tuple[list[str], list[str]] | None:
+        if not all(field.role.has_known_field_position for field in self.fields):
+            return None
+        own_names = tuple(
+            field.name
+            for field in self.fields
+            if field.role.contributes_semantic_field
+        )
+        moved = frozenset(owner_fields)
+        before = [name for name in own_names if name not in inherited]
+        after = [
+            name
+            for name in dict.fromkeys(
+                (*owner_fields, *(name for name in own_names if name not in moved))
+            )
+            if name not in inherited
+        ]
+        return (before, after) if before != after else None
 
 
 @dataclass(frozen=True)
@@ -1050,6 +1094,11 @@ class DataclassInitBinding(StrEnum):
     POSITIONAL = "positional"
     KEYWORD_ONLY = "keyword_only"
     UNKNOWN = "unknown"
+
+    @property
+    def allows_positional(self) -> bool:
+        """Whether this binding is not proved keyword-only."""
+        return self is not DataclassInitBinding.KEYWORD_ONLY
 
     @classmethod
     def of_keywords(

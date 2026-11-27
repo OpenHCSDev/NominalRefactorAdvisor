@@ -2391,3 +2391,135 @@ def test_shared_ancestor_overridden_by_receiver_is_not_flagged_as_conflicting_su
     assert ladder is not None
     assert ladder.move is ComposeExisting
     assert not [r for r in ladder.receipts if r.kind is OverlapReceiptKind.UNWANTED_SUPPLY]
+
+
+def test_non_kw_only_owner_that_reorders_fields_steps_down_to_extract_mixin_with_parity(
+    tmp_path: Path,
+) -> None:
+    """`EdgePayload`'s whole body is contained in `AnnotatedEdge`, so the pair
+    starts at `ComposeExisting`, but composing non-`kw_only` `EdgePayload` puts
+    `call, bindings` ahead of `authority`. The verdict refuses `ComposeExisting`
+    with `FIELD_ORDER_CHANGED` and offers `ExtractMixin`, which extracts a
+    `kw_only=True` mixin and composes both cleanly."""
+
+    source = (
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class EdgePayload:\n"
+        "    resolved_call: str\n"
+        "    field_bindings: tuple[str, ...]\n\n"
+        "    def summary(self) -> str:\n"
+        "        return f'{self.resolved_call}:{len(self.field_bindings)}'\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class AnnotatedEdge:\n"
+        "    product_authority: str\n"
+        "    resolved_call: str\n"
+        "    field_bindings: tuple[str, ...]\n\n"
+        "    def summary(self) -> str:\n"
+        "        return f'{self.resolved_call}:{len(self.field_bindings)}'\n\n\n"
+        "def make() -> tuple[EdgePayload, AnnotatedEdge]:\n"
+        "    return (\n"
+        "        EdgePayload(resolved_call='f', field_bindings=('a',)),\n"
+        "        AnnotatedEdge(product_authority='p', resolved_call='f', field_bindings=('a', 'b')),\n"
+        "    )\n"
+    )
+    probe = (
+        "from pkg.edges import make\n"
+        "ep, ae = make()\n"
+        "print(ep.summary(), ep.resolved_call, ep.field_bindings)\n"
+        "print(ae.summary(), ae.product_authority, ae.resolved_call, ae.field_bindings)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/edges.py": source})
+    before = _run(tmp_path, probe)
+
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    verdicts = CodemodSourceSnapshot.from_modules(modules).class_overlap_verdicts
+    ladder = verdicts.verdict(
+        verdicts.bodies.overlap("pkg.edges.EdgePayload", "pkg.edges.AnnotatedEdge"), NO_FLOOR
+    )
+    assert ladder is not None
+    assert ladder.move is ComposeExisting
+    assert {r.kind for r in ladder.refusals} == {OverlapReceiptKind.COMPOSED_FIELD_ORDER_CHANGED}
+    assert ladder.offered is not None and ladder.offered.move is ExtractMixin
+    assert any(o.permitted for o in ladder.offered.owner_candidates)
+
+    findings = analyze_modules(modules, DetectorConfig())
+    (mixin_finding,) = (
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+    )
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=mixin_finding.stable_id,
+                    owner="new_mixin:pkg.edges",
+                    because="new_class",
+                    name="BoundCallEdge",
+                    judgement="shared resolved call and field bindings",
+                ),
+            ),
+        ),
+    ).run()
+
+    assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked"]
+    rewritten = (tmp_path / "pkg/edges.py").read_text()
+    assert "@dataclass(frozen=True, kw_only=True)\nclass BoundCallEdge:\n" in rewritten
+    assert "class EdgePayload(BoundCallEdge):\n" in rewritten
+    assert "class AnnotatedEdge(BoundCallEdge):\n" in rewritten
+    assert _run(tmp_path, probe) == before
+
+
+def test_non_kw_only_owner_that_reorders_copied_fields_offers_hold_source(
+    tmp_path: Path,
+) -> None:
+    """When `Restating` copies `Owner`'s fields off an `Owner` value and
+    composing non-`kw_only` `Owner` would reorder `Restating`'s fields,
+    `ComposeExisting` steps down to `ExtractMixin` and exposes `HoldSourceOwner`."""
+
+    source = (
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Shape:\n"
+        "    key_expr: str\n"
+        "    key_field: str\n"
+        "    ctor_fields: tuple[str, ...]\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Candidate:\n"
+        "    register_name: str\n"
+        "    key_field: str\n"
+        "    key_expr: str\n"
+        "    ctor_fields: tuple[str, ...]\n\n\n"
+        "def lift(shape: Shape) -> Candidate:\n"
+        "    return Candidate(\n"
+        "        register_name='reg',\n"
+        "        key_field=shape.key_field,\n"
+        "        key_expr=shape.key_expr,\n"
+        "        ctor_fields=shape.ctor_fields,\n"
+        "    )\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/shapes.py": source})
+    verdicts = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path, use_parse_cache=False)
+    ).class_overlap_verdicts
+    ladder = verdicts.verdict(
+        verdicts.bodies.overlap("pkg.shapes.Shape", "pkg.shapes.Candidate"), NO_FLOOR
+    )
+    assert ladder is not None
+    assert ladder.move is ComposeExisting
+    assert {r.kind for r in ladder.refusals} == {OverlapReceiptKind.COMPOSED_FIELD_ORDER_CHANGED}
+    assert ladder.offered is not None and ladder.offered.move is ExtractMixin
+    assert any(
+        o.candidate_id == "hold_source:pkg.shapes.Candidate" and o.permitted
+        for o in ladder.offered.owner_candidates
+    )

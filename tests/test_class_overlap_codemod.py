@@ -885,6 +885,49 @@ def test_composition_refuses_a_field_order_it_would_change(tmp_path: Path) -> No
         _compose(tmp_path).source_edits(snapshot)
 
 
+def test_zero_field_non_kw_only_owner_composes_into_kw_only_dataclass(
+    tmp_path: Path,
+) -> None:
+    """A `@dataclass(frozen=True)` owner with zero fields adds no fields and
+    does not alter `__init__` or field order of a `@dataclass(frozen=True, kw_only=True)`
+    composer, so `ComposeExistingClassOperation` succeeds cleanly."""
+
+    source = (
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class WirePayloadBase:\n"
+        "    def payload_kind(self) -> str:\n"
+        "        return type(self).__name__\n\n"
+        "    def wire_version(self) -> int:\n"
+        "        return 1\n\n\n"
+        "@dataclass(frozen=True, kw_only=True)\n"
+        "class ProbeObservation:\n"
+        "    step: int\n"
+        "    tag: str\n\n"
+        "    def payload_kind(self) -> str:\n"
+        "        return type(self).__name__\n\n"
+        "    def wire_version(self) -> int:\n"
+        "        return 1\n"
+    )
+    probe = (
+        "from dataclasses import fields\n"
+        "from pkg.wire import ProbeObservation, WirePayloadBase\n"
+        "obs = ProbeObservation(step=3, tag='ok')\n"
+        "print(obs.step, obs.tag, obs.payload_kind(), obs.wire_version(), [f.name for f in fields(obs)])\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/wire.py": source})
+    before = _run(tmp_path, probe)
+    path = (tmp_path / "pkg/wire.py").as_posix()
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="ProbeObservation"),
+        owner=SourceRewriteTarget(file_path=path, qualname="WirePayloadBase"),
+    )
+    rewritten = _apply(tmp_path, operation)[path]
+    assert "class ProbeObservation(WirePayloadBase):" in rewritten
+    assert rewritten.count("def payload_kind") == 1
+    assert _run(tmp_path, probe) == before
+
+
 def _proof_files(**overrides: str) -> dict[str, str]:
     return {
         "pkg/__init__.py": "",
