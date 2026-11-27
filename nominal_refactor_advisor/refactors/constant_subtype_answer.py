@@ -2685,7 +2685,15 @@ class ConstantSubtypeAnswerFindingRecipeSynthesizer(
             return self.stopped_evaluation(error)
 
         pick = finding.metrics.picked_base
-        consumers: list[ConstantAnswerPushConsumer] = []
+        resolved_consumers: list[
+            tuple[
+                object,
+                SourceRewriteTarget,
+                ast.FunctionDef | ast.AsyncFunctionDef,
+                object,
+                bool,
+            ]
+        ] = []
         for consumer in metrics.consumer_locations:
             consumer_target = SourceRewriteTarget(
                 file_path=consumer.file_path, qualname=consumer.symbol
@@ -2708,10 +2716,18 @@ class ConstantSubtypeAnswerFindingRecipeSynthesizer(
                     )
                 )
             is_dunder = function.name.startswith("__") and function.name.endswith("__")
-            if raw_site.dispatch.is_whole_function and not is_dunder:
+            needs_pick = not (raw_site.dispatch.is_whole_function and not is_dunder)
+            resolved_consumers.append(
+                (consumer, consumer_target, function, raw_site, needs_pick)
+            )
+
+        embedded_count = sum(1 for _c, _t, _f, _s, needs_pick in resolved_consumers if needs_pick)
+        consumers: list[ConstantAnswerPushConsumer] = []
+        for consumer, consumer_target, function, _raw_site, needs_pick in resolved_consumers:
+            if not needs_pick:
                 method_name = function.name
                 docstring: str | None = ast.get_docstring(function)
-            elif pick is not None and len(metrics.consumer_locations) == 1:
+            elif pick is not None and embedded_count == 1:
                 method_name = pick.name
                 docstring = pick.judgement
             else:
@@ -2729,6 +2745,14 @@ class ConstantSubtypeAnswerFindingRecipeSynthesizer(
                     )
                 except ValueError as error:
                     return self.stopped_evaluation(error)
+                if embedded_count > 1:
+                    return self.stopped_evaluation(
+                        NeedsInput(
+                            f"multiple embedded branches ({embedded_count}) on `{metrics.member_name}` "
+                            f"can push onto `{base_indexed.qualname}` but need distinct method names",
+                            NeededInput.SOURCE_CHANGE,
+                        )
+                    )
                 return self.stopped_evaluation(
                     NeedsInput(
                         f"embedded branch on `{metrics.member_name}` in `{consumer.symbol}` "
