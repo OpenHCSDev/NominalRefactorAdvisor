@@ -1621,6 +1621,8 @@ class BlockOwnerQuestion:
     def _whole_block_restaters(self) -> tuple[str, ...]:
         """Other classes that declare the whole block identically themselves."""
 
+        if not self.block:
+            return ()
         whole = frozenset.intersection(*(self.own_holders_of(name) for name in self.block))
         return tuple(sorted(whole - {self.first.symbol, self.second.symbol}))
 

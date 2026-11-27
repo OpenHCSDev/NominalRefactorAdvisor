@@ -1422,31 +1422,59 @@ def required_name_imports(
     return tuple(imports)
 
 
-def _super_looked_up_names(node: ast.ClassDef) -> tuple[frozenset[str], bool]:
-    """Direct `super().<attr>` names in `node`, and whether any non-attribute `super()` use exists."""
+def _super_looked_up_names_in_statements(
+    statements: Sequence[ast.stmt],
+) -> tuple[frozenset[str], bool]:
+    """Direct `super().<attr>` names in `statements`, and whether any non-attribute `super()` use exists."""
 
     attrs: set[str] = set()
     dynamic = False
     attribute_super_ids: set[int] = set()
-    for item in ast.walk(node):
-        if (
-            isinstance(item, ast.Attribute)
-            and isinstance(item.value, ast.Call)
-            and isinstance(item.value.func, ast.Name)
-            and item.value.func.id == "super"
-        ):
-            attrs.add(item.attr)
-            attribute_super_ids.add(id(item.value))
-    for item in ast.walk(node):
-        if (
-            isinstance(item, ast.Call)
-            and isinstance(item.func, ast.Name)
-            and item.func.id == "super"
-            and id(item) not in attribute_super_ids
-        ):
-            dynamic = True
+    for statement in statements:
+        for item in ast.walk(statement):
+            match item:
+                case ast.Attribute(value=ast.Call(func=ast.Name(id="super")) as call):
+                    attrs.add(item.attr)
+                    attribute_super_ids.add(id(call))
+    for statement in statements:
+        for item in ast.walk(statement):
+            match item:
+                case ast.Call(func=ast.Name(id="super")) if id(item) not in attribute_super_ids:
+                    dynamic = True
+                    break
+        if dynamic:
             break
     return frozenset(attrs), dynamic
+
+
+def _super_looked_up_names(
+    node: ast.ClassDef, *, exclude_methods: frozenset[str] = frozenset()
+) -> tuple[frozenset[str], bool]:
+    """Direct `super().<attr>` names in `node`, skipping methods in `exclude_methods`."""
+
+    statements = tuple(
+        statement
+        for statement in node.body
+        if not (
+            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            and statement.name in exclude_methods
+        )
+    )
+    return _super_looked_up_names_in_statements(statements)
+
+
+def _super_looked_up_names_in_methods(
+    node: ast.ClassDef, method_names: frozenset[str]
+) -> tuple[frozenset[str], bool]:
+    """Direct `super().<attr>` names inside `node`'s direct methods in `method_names`."""
+
+    statements = tuple(
+        statement
+        for statement in node.body
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+        and statement.name in method_names
+    )
+    return _super_looked_up_names_in_statements(statements)
 
 
 def _has_super_call(node: ast.ClassDef) -> bool:
@@ -1941,8 +1969,14 @@ class ComposedAncestry:
             if a_tail == b_tail:
                 continue
             if class_index.class_for(cls_sym) is not None:
+                excluded = (
+                    self.deleted
+                    if cls_sym == self.composer.symbol
+                    else self.peer_deleted.get(cls_sym, frozenset())
+                )
                 attrs, dynamic = _super_looked_up_names(
-                    OverlapClass.for_symbol(self.snapshot, cls_sym).node
+                    OverlapClass.for_symbol(self.snapshot, cls_sym).node,
+                    exclude_methods=excluded,
                 )
                 check_names = all_names if dynamic else attrs
             elif any(item not in before_set for item in a_tail):
@@ -1979,31 +2013,65 @@ class ComposedAncestry:
                 )
 
         # 2. Newly inserted owners and gained ancestors calling `super()` into the composed tail.
+        composer_tail = (
+            before[before.index(self.composer.symbol) + 1 :]
+            if self.composer.symbol in before
+            else ()
+        )
         for index_after, ins in enumerate(after):
             if ins in before_set or class_index.class_for(ins) is None:
                 continue
-            attrs, dynamic = _super_looked_up_names(
-                OverlapClass.for_symbol(self.snapshot, ins).node
+            ins_node = OverlapClass.for_symbol(self.snapshot, ins).node
+            moved_methods = (
+                frozenset(
+                    statement.name
+                    for statement in ins_node.body
+                    if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and statement.name in self.deleted
+                )
+                if ins in owner_set and self.composer.symbol in before
+                else frozenset()
             )
-            check_names = all_names if dynamic else attrs
-            if not check_names:
-                continue
-            ins_tail = self.c3.linearized(ins)[1:]
             a_tail = after[index_after + 1 :]
-            for name in sorted(check_names):
-                was = next(
-                    (s for s in ins_tail if name in self.names(s, composed=False)), None
-                )
-                becomes = next(
-                    (s for s in a_tail if name in self.names(s, composed=True)), None
-                )
-                if was != becomes:
-                    raise NeedsInput(
-                        f"Composing makes `super().{name}` in `{ins.rpartition('.')[2]}` "
-                        f"(via `{subject_qualname}`) resolve to `{becomes or 'nothing'}` "
-                        f"instead of `{was or 'nothing'}`",
-                        NeededInput.PROOF,
+            attrs, dynamic = _super_looked_up_names(ins_node, exclude_methods=moved_methods)
+            check_names = all_names if dynamic else attrs
+            if check_names:
+                ins_tail = self.c3.linearized(ins)[1:]
+                for name in sorted(check_names):
+                    was = next(
+                        (s for s in ins_tail if name in self.names(s, composed=False)), None
                     )
+                    becomes = next(
+                        (s for s in a_tail if name in self.names(s, composed=True)), None
+                    )
+                    if was != becomes:
+                        raise NeedsInput(
+                            f"Composing makes `super().{name}` in `{ins.rpartition('.')[2]}` "
+                            f"(via `{subject_qualname}`) resolve to `{becomes or 'nothing'}` "
+                            f"instead of `{was or 'nothing'}`",
+                            NeededInput.PROOF,
+                        )
+            if moved_methods:
+                moved_attrs, moved_dynamic = _super_looked_up_names_in_methods(
+                    ins_node, moved_methods
+                )
+                moved_check_names = all_names if moved_dynamic else moved_attrs
+                for name in sorted(moved_check_names):
+                    was = next(
+                        (s for s in composer_tail if name in self.names(s, composed=False)),
+                        None,
+                    )
+                    becomes = next(
+                        (s for s in a_tail if name in self.names(s, composed=True)),
+                        None,
+                    )
+                    if was != becomes:
+                        raise NeedsInput(
+                            f"Composing makes `super().{name}` in `{ins.rpartition('.')[2]}` "
+                            f"(via `{subject_qualname}`) resolve to `{becomes or 'nothing'}` "
+                            f"instead of `{was or 'nothing'}`",
+                            NeededInput.PROOF,
+                        )
 
     def require_inert_gain(self, symbol: str) -> None:
         if NativeMroBase.for_qualified_name(symbol) is not None:

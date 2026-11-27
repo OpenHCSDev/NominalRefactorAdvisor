@@ -68,6 +68,24 @@ def _has_private_identifiers(nodes: tuple[ast.AST, ...]) -> bool:
     return any(name.startswith("__") and not name.endswith("__") for name in names)
 
 
+def _has_non_cooperative_super_reference(nodes: tuple[ast.AST, ...]) -> bool:
+    """True when `nodes` contains a `super` reference other than zero-arg `super().<attr>`."""
+
+    zero_arg_super_name_ids: set[int] = set()
+    for node in nodes:
+        match node:
+            case ast.Attribute(
+                value=ast.Call(func=ast.Name(id="super") as super_name, args=[], keywords=[])
+            ):
+                zero_arg_super_name_ids.add(id(super_name))
+    return any(
+        isinstance(node, ast.Name)
+        and node.id == "super"
+        and id(node) not in zero_arg_super_name_ids
+        for node in nodes
+    )
+
+
 class ClassScopeDependency(StrEnum):
     """Python syntax whose meaning can depend on its enclosing class owner."""
 
@@ -98,9 +116,19 @@ class ClassScopeDependency(StrEnum):
         return member
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> tuple[ClassScopeDependency, ...]:
+    def from_node(
+        cls, node: ast.AST, *, admit_zero_arg_super: bool = False
+    ) -> tuple[ClassScopeDependency, ...]:
         nodes = tuple(ast.walk(node))
-        return tuple(dependency for dependency in cls if dependency.predicate(nodes))
+        return tuple(
+            dependency
+            for dependency in cls
+            if (
+                _has_non_cooperative_super_reference(nodes)
+                if admit_zero_arg_super and dependency is cls.SUPER_REFERENCE
+                else dependency.predicate(nodes)
+            )
+        )
 
 
 class ModuleBindingResolutionPhase(StrEnum):

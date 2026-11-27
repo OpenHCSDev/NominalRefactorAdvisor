@@ -2523,3 +2523,99 @@ def test_non_kw_only_owner_that_reorders_copied_fields_offers_hold_source(
         o.candidate_id == "hold_source:pkg.shapes.Candidate" and o.permitted
         for o in ladder.offered.owner_candidates
     )
+
+
+def test_cooperative_super_owner_with_unwanted_ancestor_steps_down_to_extract_mixin_with_parity(
+    tmp_path: Path,
+) -> None:
+    """`KeymapNote(AutoHeight, Widget)` and `CommandTitle(EllipsisOverflow, Widget)`
+    share a cooperative `super().apply_native_layout` body, but composing `KeymapNote`
+    into `CommandTitle` would inject `AutoHeight.apply_native_layout` into its `super()`
+    chain. The verdict refuses `ComposeExisting` with `UNWANTED_SUPPLY` and offers
+    `ExtractMixin`, which extracts a standalone cooperative mixin `ThreeRowCap` cleanly
+    with exact runtime parity on both classes."""
+
+    source = (
+        "class Widget:\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        trace.append('Widget')\n\n\n"
+        "class Static(Widget):\n"
+        "    pass\n\n\n"
+        "class AutoHeight(Widget):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('AutoHeight')\n\n\n"
+        "class EllipsisOverflow(Widget):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('EllipsisOverflow')\n\n\n"
+        "class KeymapNote(AutoHeight, Static):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('max_height=3')\n\n\n"
+        "class CommandTitle(EllipsisOverflow, Static):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('max_height=3')\n\n"
+        "    def title(self) -> str:\n"
+        "        return 'cmd'\n"
+    )
+    probe = (
+        "from pkg.layout import KeymapNote, CommandTitle\n"
+        "t1, t2 = [], []\n"
+        "KeymapNote().apply_native_layout(t1)\n"
+        "CommandTitle().apply_native_layout(t2)\n"
+        "print(t1, t2)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/layout.py": source})
+    before = _run(tmp_path, probe)
+
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    verdicts = CodemodSourceSnapshot.from_modules(modules).class_overlap_verdicts
+    ladder = verdicts.verdict(
+        verdicts.bodies.overlap("pkg.layout.KeymapNote", "pkg.layout.CommandTitle"), NO_FLOOR
+    )
+    assert ladder is not None
+    assert ladder.move is ComposeExisting
+    assert {r.kind for r in ladder.refusals} == {OverlapReceiptKind.UNWANTED_SUPPLY}
+    assert any("AutoHeight.apply_native_layout" in r.detail for r in ladder.refusals)
+    assert ladder.offered is not None and ladder.offered.move is ExtractMixin
+    assert any(o.permitted for o in ladder.offered.owner_candidates)
+
+    findings = analyze_modules(modules, DetectorConfig())
+    (mixin_finding,) = (
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+        and "pkg.layout.CommandTitle" in (finding.metrics.owner_symbol, *finding.metrics.restating_symbols)
+    )
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=mixin_finding.stable_id,
+                    owner="new_mixin:pkg.layout",
+                    because="new_class",
+                    name="ThreeRowCap",
+                    judgement="shared max_height=3 layout cap",
+                ),
+            ),
+        ),
+    ).run()
+
+    assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked"]
+    rewritten = (tmp_path / "pkg/layout.py").read_text()
+    assert "class ThreeRowCap:\n" in rewritten
+    assert "class KeymapNote(ThreeRowCap, AutoHeight, Static):\n" in rewritten
+    assert "class CommandTitle(ThreeRowCap, EllipsisOverflow, Static):\n" in rewritten
+    assert rewritten.count("trace.append('max_height=3')") == 1
+    assert _run(tmp_path, probe) == before

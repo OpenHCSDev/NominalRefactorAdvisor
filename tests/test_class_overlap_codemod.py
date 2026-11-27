@@ -1604,7 +1604,9 @@ def test_compose_existing_refuses_prepending_owner_whose_ancestor_hijacks_super_
                 "    def live_lines(self) -> tuple[str, ...]:\n"
                 "        return ('live',)\n\n"
                 "    def lines(self) -> tuple[str, ...]:\n"
-                "        return (*super().lines(), *self.live_lines())\n"
+                "        return (*super().lines(), *self.live_lines())\n\n"
+                "    def base_lines(self) -> tuple[str, ...]:\n"
+                "        return super().lines()\n"
             ),
         },
     )
@@ -1735,4 +1737,99 @@ def test_compose_existing_refuses_when_gained_ancestor_is_identity_tested(
         owner=SourceRewriteTarget(file_path=path, qualname="Owner"),
     )
     with pytest.raises(CodemodOperationPreflightError):
+        operation.source_edits(snapshot)
+
+
+def test_compose_existing_allows_cooperative_super_mixin_preserving_chain(
+    tmp_path: Path,
+) -> None:
+    """Composing a cooperative `super()` mixin (`CenteredText`) onto `Flash`
+    deletes `Flash.apply_native_layout` and replaces it with the identically-bodied
+    `CenteredText.apply_native_layout`, whose `super().apply_native_layout()` still
+    resolves to `OneRow` for both `Flash` and its subclasses."""
+
+    source = (
+        "class Widget:\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        trace.append('Widget')\n\n\n"
+        "class OneRow(Widget):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('OneRow')\n\n\n"
+        "class CenteredText(Widget):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('CenteredText')\n\n\n"
+        "class Flash(OneRow, Widget):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('CenteredText')\n\n"
+        "    def label(self) -> str:\n"
+        "        return 'flash'\n\n\n"
+        "class SubFlash(Flash):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('SubFlash')\n"
+    )
+    probe = (
+        "from pkg.layout import Flash, SubFlash\n"
+        "t1, t2 = [], []\n"
+        "Flash().apply_native_layout(t1)\n"
+        "SubFlash().apply_native_layout(t2)\n"
+        "print(t1, t2)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/layout.py": source})
+    before = _run(tmp_path, probe)
+    path = (tmp_path / "pkg/layout.py").as_posix()
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Flash"),
+        owner=SourceRewriteTarget(file_path=path, qualname="CenteredText"),
+    )
+    rewritten = _apply(tmp_path, operation)[path]
+    assert "class Flash(CenteredText, OneRow):" in rewritten
+    assert rewritten.count("trace.append('CenteredText')") == 1
+    assert _run(tmp_path, probe) == before
+
+
+def test_compose_existing_refuses_cooperative_super_owner_with_unwanted_ancestor(
+    tmp_path: Path,
+) -> None:
+    """When an owner's cooperative `super()` method chains into an ancestor (`AutoHeight`)
+    that the composer (`CommandTitle`) does not inherit, `ComposeExistingClassOperation`
+    refuses because `super().apply_native_layout` would run `AutoHeight` instead of
+    `EllipsisOverflow`."""
+
+    source = (
+        "class Widget:\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        trace.append('Widget')\n\n\n"
+        "class Static(Widget):\n"
+        "    pass\n\n\n"
+        "class AutoHeight(Widget):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('AutoHeight')\n\n\n"
+        "class EllipsisOverflow(Widget):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('EllipsisOverflow')\n\n\n"
+        "class KeymapNote(AutoHeight, Static):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('max_height=3')\n\n\n"
+        "class CommandTitle(EllipsisOverflow, Static):\n"
+        "    def apply_native_layout(self, trace: list[str]) -> None:\n"
+        "        super().apply_native_layout(trace)\n"
+        "        trace.append('max_height=3')\n\n"
+        "    def title(self) -> str:\n"
+        "        return 'cmd'\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/layout.py": source})
+    path = (tmp_path / "pkg/layout.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="CommandTitle"),
+        owner=SourceRewriteTarget(file_path=path, qualname="KeymapNote"),
+    )
+    with pytest.raises(CodemodOperationPreflightError, match=r"AutoHeight"):
         operation.source_edits(snapshot)
