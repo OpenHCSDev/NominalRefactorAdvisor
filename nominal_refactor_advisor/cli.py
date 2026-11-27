@@ -3579,6 +3579,14 @@ class CodemodSynthesisExecutionCliCommand(
 ):
     """Shared execution surface for finding-backed synthesis commands."""
 
+    def picked_findings(self) -> tuple[RefactorFinding, ...]:
+        if self.args.codemod_owner_picks is None:
+            return self.findings
+        picked, _report = OwnerPicks.read(self.args.codemod_owner_picks).applied(
+            self.findings
+        )
+        return tuple(picked)
+
     def run(self) -> int:
         snapshot = self.required_source_snapshot()
         return self.synthesis_execution(snapshot).run()
@@ -3604,8 +3612,9 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> FindingRecipePlanSynthesisExecution:
+        findings = self.picked_findings()
         plan = snapshot.plan_from_findings(
-            self.findings,
+            findings,
             detector_ids=tuple(self.args.codemod_goal_detectors),
         )
         return FindingRecipePlanSynthesisExecution(
@@ -3614,7 +3623,7 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 CodemodPlanSequence.from_document(plan.document)
             ),
             plan_out=self.args.codemod_plan_out,
-            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=self.findings),
+            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=findings),
             plan=plan,
         )
 
@@ -3632,8 +3641,9 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> FindingRecipeClassPlanSynthesisExecution:
+        findings = self.picked_findings()
         report = codemod_class_plan_from_findings(
-            self.findings,
+            findings,
             root=self.roots[0],
             selector_context=snapshot,
             detector_ids=tuple(self.args.codemod_goal_detectors),
@@ -3644,7 +3654,7 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 CodemodPlanSequence.from_document(report.finding_plan.document)
             ),
             plan_out=self.args.codemod_plan_out,
-            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=self.findings),
+            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=findings),
             report=report,
         )
 

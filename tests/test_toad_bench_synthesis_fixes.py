@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import sys
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import (
     PythonSourcePathPolicy,
     parse_python_modules,
 )
+from nominal_refactor_advisor.cli import main as cli_main
 from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceSnapshot
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._relocations import ConstantSubtypeAnswerDetector
@@ -321,3 +324,144 @@ def test_constant_subtype_compound_and_uniform_early_return_without_tail_pushes(
     assert mod.maybe_reveal(mod.FragmentLocation(), True, 0, 20, "H") == "fallback"
     assert mod.maybe_reveal(mod.UnloadedFragment(), True, 5, 20, "H") == "fallback"
     assert mod.maybe_reveal(mod.FragmentLocation(), False, 5, 20, "H") == "fallback"
+
+
+def test_codemod_synthesize_plan_cli_applies_owner_picks(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """`--codemod-synthesize-plan --codemod-owner-picks` applies owner picks instead of
+    silently ignoring them while printing 'supply owner ... in --codemod-owner-picks'."""
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/metrics.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass\n"
+                "class RowMetrics:\n"
+                "    extent: int | None = None\n\n\n"
+                "def row_extent(table: dict[int, RowMetrics], width: int) -> int:\n"
+                "    entry = table.get(width)\n"
+                "    return width if entry is None or entry.extent is None else entry.extent\n"
+            ),
+        },
+    )
+    modules = _parse(tmp_path)
+    with ScanCache.scope():
+        (finding,) = ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+    picks_path = tmp_path / "picks.json"
+    picks_path.write_text(
+        json.dumps(
+            {
+                "picks": [
+                    {
+                        "finding": finding.stable_id,
+                        "owner": "row_extent",
+                        "because": "RowMetrics owns its effective extent.",
+                        "name": "extent_or",
+                        "judgement": "Return recorded extent or fallback width.",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nra",
+            "--no-cache",
+            "--codemod-synthesize-plan",
+            "--codemod-goal-detector",
+            "foreign_absence_probe",
+            "--codemod-owner-picks",
+            str(picks_path),
+            "--json",
+            str(tmp_path / "pkg"),
+        ],
+    )
+    rc = cli_main()
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["synthesis_report"]["candidate_count"] == 1
+    assert payload["expected_removed_finding_ids"] == [finding.stable_id]
+
+
+def test_constant_subtype_single_embedded_plus_whole_function_uses_owner_pick(
+    tmp_path: Path,
+) -> None:
+    """When one consumer is a whole-function dispatch and only one consumer is embedded
+    (Toad `SidebarModelState.shows_model`: `ChannelTreeSidebar.sync` + `.present`), a single
+    `OwnerPick` names the embedded consumer instead of being ignored because total consumers > 1."""
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/sidebar.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "class SidebarModelState:\n"
+                "    def shows_model(self) -> bool:\n"
+                "        return False\n\n\n"
+                "@dataclass\n"
+                "class Current(SidebarModelState):\n"
+                "    shown: str\n\n"
+                "    def shows_model(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class ChannelTreeSidebar:\n"
+                "    model_state: SidebarModelState\n\n"
+                "    def __init__(self, state: SidebarModelState) -> None:\n"
+                "        self.model_state = state\n"
+                "        self.events: list[str] = []\n\n"
+                "    def present(self) -> str | None:\n"
+                "        model = self.model_state.shown if self.model_state.shows_model() else None\n"
+                "        self.events.append(f'present:{model}')\n"
+                "        return model\n\n"
+                "    def sync(self, tag: str) -> None:\n"
+                "        if not self.model_state.shows_model():\n"
+                "            return\n"
+                "        self.events.append(f'sync:{self.model_state.shown}:{tag}')\n"
+            ),
+        },
+    )
+    modules = _parse(tmp_path)
+    snap = CodemodSourceSnapshot.from_modules(modules)
+    with ScanCache.scope():
+        (finding,) = ConstantSubtypeAnswerDetector().detect(modules, DetectorConfig())
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding.stable_id,
+                finding.metrics.consumer_symbol,
+                "SidebarModelState owns whether a model is shown.",
+                "shown_model",
+                "Return the shown model when present.",
+            ),
+        ),
+    )
+    (picked,), report = picks.applied((finding,))
+    assert not report.unmatched
+    evaluation = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(picked, snap)
+    assert evaluation.rejection_reason == ""
+    sim = CodemodPlanSequence.from_operations(
+        evaluation.required_recipe.operations
+    ).simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    with ScanCache.scope():
+        assert ConstantSubtypeAnswerDetector().detect(_parse(tmp_path), DetectorConfig()) == []
+    spec = importlib.util.spec_from_file_location("pkg_sidebar", tmp_path / "pkg/sidebar.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    empty = mod.ChannelTreeSidebar(mod.SidebarModelState())
+    assert empty.present() is None
+    empty.sync("a")
+    assert empty.events == ["present:None"]
+    cur = mod.ChannelTreeSidebar(mod.Current("m1"))
+    assert cur.present() == "m1"
+    cur.sync("a")
+    assert cur.events == ["present:m1", "sync:m1:a"]
