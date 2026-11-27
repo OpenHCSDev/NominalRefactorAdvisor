@@ -174,6 +174,339 @@ class _HeldTupleReturn(_ZeroOneReturnRewrite):
         return 1
 
 
+def _is_abstract_or_stub_body(function: FunctionNode) -> bool:
+    """Whether `function` is an abstract/stub declaration with no concrete return path."""
+
+    body = list(function.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    if not body:
+        return True
+    if len(body) == 1:
+        stmt = body[0]
+        if isinstance(stmt, (ast.Pass, ast.Raise)):
+            return True
+        if (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant)
+            and stmt.value.value is Ellipsis
+        ):
+            return True
+    return False
+
+
+def _collect_override_zero_one_returns(
+    function: FunctionNode,
+    qualname: str,
+) -> tuple[_ZeroOneReturnRewrite, ...]:
+    """Prove every `return` of one hierarchy override returns `()` or `(x,)` (or stub)."""
+
+    if _is_abstract_or_stub_body(function):
+        return ()
+    rewrites: list[_ZeroOneReturnRewrite] = []
+    for child in function_nodes(function):
+        match child:
+            case ast.Return(value=ast.Tuple(elts=elements) as tup) if (
+                len(elements) <= 1
+                and not any(isinstance(el, ast.Starred) for el in elements)
+            ):
+                if not elements:
+                    rewrites.append(_AbsentTupleReturn(node=tup))
+                else:
+                    rewrites.append(_HeldTupleReturn(node=tup, item_expr=elements[0]))
+            case ast.Return():
+                raise NeedsInput(
+                    f"override `{qualname}` at line {child.lineno} returns a non-0/1 value; "
+                    "overriding hierarchy is not pure 0/1",
+                    NeededInput.PROOF,
+                )
+    if not rewrites:
+        raise NeedsInput(
+            f"override `{qualname}` has no return statement; overriding hierarchy is not pure 0/1",
+            NeededInput.PROOF,
+        )
+    return tuple(rewrites)
+
+
+@dataclass(frozen=True)
+class _HierarchyOverrideMember:
+    """One function or method declaration participating in a 0/1-tuple family rewrite."""
+
+    file_path: str
+    class_symbol: str
+    function: FunctionNode
+    return_annotations: tuple[ast.expr, ...]
+    return_rewrites: tuple[_ZeroOneReturnRewrite, ...]
+
+    def needed_family_names(
+        self, family_name: str, absent_name: str, held_name: str
+    ) -> tuple[str, ...]:
+        names: list[str] = []
+        if self.return_annotations:
+            names.append(family_name)
+        arities = {rw.arity() for rw in self.return_rewrites}
+        if 0 in arities:
+            names.append(absent_name)
+        if 1 in arities:
+            names.append(held_name)
+        return tuple(names)
+
+    def span_replacements(
+        self,
+        geometry: SourceTextGeometry,
+        family_name: str,
+        absent_name: str,
+        held_name: str,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        reps: list[SourceTextSpanReplacement] = []
+        for ret_ann in self.return_annotations:
+            ret_start, ret_end = geometry.required_node_offsets(ret_ann)
+            reps.append(
+                SourceTextSpanReplacement(
+                    start_offset=ret_start,
+                    end_offset=ret_end,
+                    replacement_source=family_name,
+                )
+            )
+        for rw in self.return_rewrites:
+            t_start, t_end = geometry.required_node_offsets(rw.tuple_node)
+            reps.append(
+                SourceTextSpanReplacement(
+                    start_offset=t_start,
+                    end_offset=t_end,
+                    replacement_source=rw.replacement_text(
+                        geometry, absent_name, held_name
+                    ),
+                )
+            )
+        return tuple(reps)
+
+
+@dataclass(frozen=True)
+class _ResolvedZeroOneHierarchy:
+    """Connected single-function or overriding-method hierarchy proved pure 0/1."""
+
+    family_file_path: str
+    family_anchor_line: int
+    element_type: ast.expr
+    members: tuple[_HierarchyOverrideMember, ...]
+    reaching_symbols: frozenset[str]
+    owner_qualnames_by_file: Mapping[str, frozenset[str]]
+
+
+def _element_type_assignable(
+    snapshot: CodemodSourceSnapshot,
+    sub_mod: ParsedModule,
+    sub_elem: ast.expr,
+    sub_line: int,
+    root_mod: ParsedModule,
+    root_elem: ast.expr,
+    root_line: int,
+) -> bool:
+    """Whether `sub_elem` matches or is a scanned subclass of `root_elem`."""
+
+    if ast.unparse(sub_elem) == ast.unparse(root_elem):
+        return True
+    bindings = snapshot.module_binding_proof
+    sub_w = bindings.reference_or_builtin_witness_at(sub_mod, sub_elem, line=sub_line)
+    root_w = bindings.reference_or_builtin_witness_at(root_mod, root_elem, line=root_line)
+    if sub_w is None or root_w is None:
+        return False
+    if sub_w.qualified_name == root_w.qualified_name:
+        return True
+    index = snapshot.compact_class_index
+    return root_w.qualified_name in index.ancestor_symbols(sub_w.qualified_name)
+
+
+def _locate_class_method(
+    mod: ParsedModule,
+    class_symbol: str,
+    method_name: str,
+) -> tuple[ast.ClassDef, FunctionNode] | None:
+    for _cls_idx, cls_node in mod.syntax_index.indexed_nodes_of_type(ast.ClassDef):
+        if f"{mod.module_name}.{cls_node.name}" != class_symbol:
+            continue
+        for stmt in cls_node.body:
+            if (
+                isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and stmt.name == method_name
+            ):
+                return cls_node, stmt
+    return None
+
+
+def _resolve_zero_one_hierarchy(
+    snapshot: CodemodSourceSnapshot,
+    source_path: str,
+    enclosure: FunctionEnclosure,
+    function: FunctionNode,
+    primary_return_annotation: ast.expr,
+    primary_element_type: ast.expr,
+) -> _ResolvedZeroOneHierarchy:
+    """Resolve either a standalone function or an entire pure-0/1 overriding hierarchy."""
+
+    owner_symbol = enclosure.declaring_class_symbol(snapshot)
+    if owner_symbol is None:
+        rewrites = _collect_zero_one_returns(function)
+        return _ResolvedZeroOneHierarchy(
+            family_file_path=source_path,
+            family_anchor_line=function.lineno,
+            element_type=primary_element_type,
+            members=(
+                _HierarchyOverrideMember(
+                    file_path=source_path,
+                    class_symbol="",
+                    function=function,
+                    return_annotations=(primary_return_annotation,),
+                    return_rewrites=rewrites,
+                ),
+            ),
+            reaching_symbols=frozenset(),
+            owner_qualnames_by_file={},
+        )
+
+    index = snapshot.compact_class_index
+    classes = index.classes_by_symbol
+    if owner_symbol not in classes:
+        raise NeedsInput(
+            f"`{owner_symbol}` is not in the scanned class index",
+            NeededInput.PROOF,
+        )
+
+    declared_syms: set[str] = {owner_symbol}
+    queue = [owner_symbol]
+    while queue:
+        sym = queue.pop()
+        for other_sym in (*index.ancestor_symbols(sym), *index.descendant_symbols(sym)):
+            if other_sym in declared_syms:
+                continue
+            decl = classes.get(other_sym)
+            if decl is not None and function.name in decl.member_binding_names:
+                declared_syms.add(other_sym)
+                queue.append(other_sym)
+
+    sorted_syms = tuple(sorted(declared_syms))
+    roots = tuple(
+        sym
+        for sym in sorted_syms
+        if not any(anc in declared_syms for anc in index.ancestor_symbols(sym))
+    )
+    root_files = {classes[sym].file_path for sym in roots}
+    if len(root_files) != 1:
+        raise NeedsInput(
+            f"overriding hierarchy for `{function.name}` has root declarations across multiple modules; "
+            "cannot place a single family cleanly",
+            NeededInput.SOURCE_CHANGE,
+        )
+    family_file_path = next(iter(root_files))
+    family_mod = snapshot.parsed_module_for_source_path(family_file_path)
+    is_async = isinstance(function, ast.AsyncFunctionDef)
+
+    located: list[tuple[str, str, ast.ClassDef, FunctionNode]] = []
+    for sym in sorted_syms:
+        decl = classes[sym]
+        cmod = snapshot.parsed_module_for_source_path(decl.file_path)
+        found = _locate_class_method(cmod, sym, function.name)
+        if found is None:
+            raise NeedsInput(
+                f"could not locate `def {function.name}` on `{decl.qualname}`; overriding hierarchy is not rewritten",
+                NeededInput.PROOF,
+            )
+        cls_node, method_fn = found
+        if isinstance(method_fn, ast.AsyncFunctionDef) != is_async:
+            raise NeedsInput(
+                f"`{decl.qualname}.{function.name}` mixes sync and async overrides",
+                NeededInput.PROOF,
+            )
+        located.append((sym, decl.file_path, cls_node, method_fn))
+
+    # Determine family element type from the root declaration in `family_file_path`.
+    family_element_type: ast.expr | None = None
+    family_element_line: int = function.lineno
+    root_set = frozenset(roots)
+    for sym, _fp, _cls_node, method_fn in located:
+        if sym not in root_set:
+            continue
+        ret_anns = declared_annotations(method_fn)
+        if ret_anns:
+            family_element_type = _extract_zero_one_element_type(ret_anns[0])
+            family_element_line = method_fn.lineno
+            break
+    if family_element_type is None:
+        if family_file_path != source_path:
+            raise NeedsInput(
+                f"root declaration of `{function.name}` in `{family_file_path}` has no return annotation",
+                NeededInput.PROOF,
+            )
+        family_element_type = primary_element_type
+        family_element_line = function.lineno
+
+    members: list[_HierarchyOverrideMember] = []
+    root_anchor_lines: list[int] = []
+    qualnames_by_file: dict[str, set[str]] = {}
+    for sym, file_path, cls_node, method_fn in located:
+        decl = classes[sym]
+        if sym in root_set:
+            root_anchor_lines.append(cls_node.lineno)
+        qualnames_by_file.setdefault(file_path, set()).add(decl.qualname)
+        ret_anns = declared_annotations(method_fn)
+        if ret_anns:
+            member_elem = _extract_zero_one_element_type(ret_anns[0])
+            member_mod = snapshot.parsed_module_for_source_path(file_path)
+            if not _element_type_assignable(
+                snapshot,
+                member_mod,
+                member_elem,
+                method_fn.lineno,
+                family_mod,
+                family_element_type,
+                family_element_line,
+            ):
+                raise NeedsInput(
+                    f"override `{decl.qualname}.{function.name}` element type `{ast.unparse(member_elem)}` "
+                    f"is not compatible with `{ast.unparse(family_element_type)}`",
+                    NeededInput.PROOF,
+                )
+        member_rewrites = _collect_override_zero_one_returns(
+            method_fn, f"{decl.qualname}.{function.name}"
+        )
+        members.append(
+            _HierarchyOverrideMember(
+                file_path=file_path,
+                class_symbol=sym,
+                function=method_fn,
+                return_annotations=ret_anns,
+                return_rewrites=member_rewrites,
+            )
+        )
+
+    all_arities = {rw.arity() for m in members for rw in m.return_rewrites}
+    if all_arities != {0, 1}:
+        raise NeedsInput(
+            f"`{function.name}` hierarchy does not return both `()` and `(x,)`",
+            NeededInput.PROOF,
+        )
+
+    reaching_symbols = frozenset().union(
+        *(frozenset((sym, *index.descendant_symbols(sym))) for sym in declared_syms)
+    )
+    return _ResolvedZeroOneHierarchy(
+        family_file_path=family_file_path,
+        family_anchor_line=min(root_anchor_lines),
+        element_type=family_element_type,
+        members=tuple(members),
+        reaching_symbols=reaching_symbols,
+        owner_qualnames_by_file={
+            fp: frozenset(names) for fp, names in qualnames_by_file.items()
+        },
+    )
+
+
 def _collect_zero_one_returns(
     function: FunctionNode,
 ) -> tuple[_ZeroOneReturnRewrite, ...]:
@@ -633,8 +966,9 @@ def _collect_closed_consumers(
     source_path: str,
     enclosure: FunctionEnclosure,
     function: FunctionNode,
+    hierarchy: _ResolvedZeroOneHierarchy,
 ) -> tuple[_ZeroOneConsumer, ...]:
-    """Prove every reference to `function` across the scanned repo is a closed iterable/loop call."""
+    """Prove every reference to `function` (or its overriding hierarchy) is a closed iterable/loop call."""
 
     is_private = function.name.startswith("_")
     is_async = isinstance(function, ast.AsyncFunctionDef)
@@ -686,7 +1020,7 @@ def _collect_closed_consumers(
                         parent,
                         is_async=is_async,
                         function_name=function.name,
-                        source_path=source_path,
+                        source_path=hierarchy.family_file_path,
                     )
                 )
         if not is_private and not consumers:
@@ -698,27 +1032,11 @@ def _collect_closed_consumers(
 
     index = snapshot.compact_class_index
     classes = index.classes_by_symbol
-    if owner_symbol not in classes:
-        raise NeedsInput(
-            f"`{owner_symbol}` is not in the scanned class index",
-            NeededInput.PROOF,
-        )
-    family_others = (
-        *index.ancestor_symbols(owner_symbol),
-        *index.descendant_symbols(owner_symbol),
-    )
-    for other_sym in family_others:
-        decl = classes.get(other_sym)
-        if decl is not None and function.name in decl.member_binding_names:
-            raise NeedsInput(
-                f"`{decl.qualname}` also declares `{function.name}`; overriding hierarchy is not rewritten",
-                NeededInput.PROOF,
-            )
-    reaching_symbols = frozenset((owner_symbol, *index.descendant_symbols(owner_symbol)))
+    reaching_symbols = hierarchy.reaching_symbols
     owner_qualname = classes[owner_symbol].qualname
     reaching_files = frozenset(
         (
-            source_path,
+            hierarchy.family_file_path,
             *(
                 classes[sym].file_path
                 for sym in reaching_symbols
@@ -748,6 +1066,9 @@ def _collect_closed_consumers(
                     reaching_class_ranges.append(
                         (cls_node.lineno, cls_node.end_lineno or cls_node.lineno)
                     )
+        local_owner_qualnames = hierarchy.owner_qualnames_by_file.get(
+            mod.file_path, frozenset()
+        )
         for node in attr_nodes:
             parent = node_index.parents.get(node)
             parent_call = (
@@ -759,8 +1080,7 @@ def _collect_closed_consumers(
                     continue
             if (
                 isinstance(node.value, ast.Name)
-                and node.value.id == owner_qualname
-                and mod.file_path == source_path
+                and node.value.id in local_owner_qualnames
             ):
                 definite_hits.append((mod, node_index, node, parent_call))
                 continue
@@ -816,7 +1136,7 @@ def _collect_closed_consumers(
                 parent_call,
                 is_async=is_async,
                 function_name=function.name,
-                source_path=source_path,
+                source_path=hierarchy.family_file_path,
             )
         )
 
@@ -830,14 +1150,14 @@ def _collect_closed_consumers(
 
 @dataclass(frozen=True)
 class ZeroOneTupleProof:
-    """A 0/1 tuple producer proved safe to replace with a Held/Absent nominal family."""
+    """A 0/1 tuple producer (or overriding hierarchy) proved safe to replace with a Held/Absent family."""
 
-    source_path: str
+    family_file_path: str
     function: FunctionNode
     enclosure: FunctionEnclosure
-    return_annotation: ast.expr
     element_type: ast.expr
-    return_rewrites: tuple[_ZeroOneReturnRewrite, ...]
+    members: tuple[_HierarchyOverrideMember, ...]
+    cross_module_imports: tuple[tuple[str, str], ...]
     pushed_loop_plan: _PushedLoopPlan
     needs_iter: bool
     family_name: str
@@ -869,7 +1189,6 @@ class ZeroOneTupleProof:
         source_path, enclosure, function = TypeTestDispatchProof.locate_function(
             snapshot, target
         )
-        source_module = snapshot.parsed_module_for_source_path(source_path)
         if function.name.startswith("__") and function.name.endswith("__"):
             raise NeedsInput(
                 f"`{function.name}` is a dunder method whose signature is fixed by Python",
@@ -883,26 +1202,71 @@ class ZeroOneTupleProof:
             )
         return_annotation = returns_tuple[0]
         element_type = _extract_zero_one_element_type(return_annotation)
-        return_rewrites = _collect_zero_one_returns(function)
 
-        existing_names = _module_top_level_bound_names(source_module.module)
+        hierarchy = _resolve_zero_one_hierarchy(
+            snapshot,
+            source_path,
+            enclosure,
+            function,
+            return_annotation,
+            element_type,
+        )
+        family_file_path = hierarchy.family_file_path
+        family_module = snapshot.parsed_module_for_source_path(family_file_path)
+
+        existing_names = _module_top_level_bound_names(family_module.module)
         absent_name = f"Absent{family_name}"
         held_name = f"Held{family_name}"
         for candidate_name in (family_name, absent_name, held_name):
             if candidate_name in existing_names:
                 raise NeedsInput(
-                    f"`{candidate_name}` is already bound in `{source_path}`; pick another family name",
+                    f"`{candidate_name}` is already bound in `{family_file_path}`; pick another family name",
                     NeededInput.OWNER_PICK,
                 )
 
-        insert_before = _top_level_enclosing_stmt(source_module.module, function.lineno)
+        # Verify cycle-free cross-module imports for overrides declared outside `family_file_path`.
+        import_graph = snapshot.module_import_graph
+        needed_by_ext_file: dict[str, list[str]] = {}
+        for member in hierarchy.members:
+            if member.file_path == family_file_path:
+                continue
+            ext_names = needed_by_ext_file.setdefault(member.file_path, [])
+            for name in member.needed_family_names(family_name, absent_name, held_name):
+                if name not in ext_names:
+                    ext_names.append(name)
+
+        cross_module_imports: list[tuple[str, str]] = []
+        for ext_file, needed_names in sorted(needed_by_ext_file.items()):
+            ext_mod = snapshot.parsed_module_for_source_path(ext_file)
+            ext_bound = _module_top_level_bound_names(ext_mod.module)
+            for name in needed_names:
+                if name in ext_bound:
+                    raise NeedsInput(
+                        f"`{name}` is already bound in override module `{ext_file}`; pick another family name",
+                        NeededInput.OWNER_PICK,
+                    )
+                try:
+                    import_src = import_graph.required_import_source(
+                        importing_file_path=ext_file,
+                        imported_file_path=family_file_path,
+                        imported_name=name,
+                    )
+                except ValueError as error:
+                    raise NeedsInput(str(error), NeededInput.SOURCE_CHANGE) from error
+                cross_module_imports.append((ext_file, import_src))
+
+        insert_before = _top_level_enclosing_stmt(
+            family_module.module, hierarchy.family_anchor_line
+        )
         if insert_before is None:
             raise NeedsInput(
                 f"could not locate top-level anchor for `{target.qualname}`",
                 NeededInput.PROOF,
             )
 
-        consumers = _collect_closed_consumers(snapshot, source_path, enclosure, function)
+        consumers = _collect_closed_consumers(
+            snapshot, source_path, enclosure, function, hierarchy
+        )
         pushed_candidates = [
             pushed
             for consumer in consumers
@@ -918,12 +1282,12 @@ class ZeroOneTupleProof:
             needs_iter = True
 
         return cls(
-            source_path=source_path,
+            family_file_path=family_file_path,
             function=function,
             enclosure=enclosure,
-            return_annotation=return_annotation,
-            element_type=element_type,
-            return_rewrites=return_rewrites,
+            element_type=hierarchy.element_type,
+            members=hierarchy.members,
+            cross_module_imports=tuple(cross_module_imports),
             pushed_loop_plan=pushed_loop_plan,
             needs_iter=needs_iter,
             family_name=family_name,
@@ -991,17 +1355,20 @@ class ZeroOneTupleProof:
     def edits(
         self, snapshot: CodemodSourceSnapshot, rationale: str
     ) -> tuple[NominalSourceEdit, ...]:
-        source_module = snapshot.parsed_module_for_source_path(self.source_path)
-        source_geometry = SourceTextGeometry(
-            snapshot.sources_by_file_path[self.source_path]
-        )
+        family_module = snapshot.parsed_module_for_source_path(self.family_file_path)
+        geometries: dict[str, SourceTextGeometry] = {
+            self.family_file_path: SourceTextGeometry(
+                snapshot.sources_by_file_path[self.family_file_path]
+            )
+        }
+        family_geometry = geometries[self.family_file_path]
         family_block = self._render_family_classes()
         insert_offset, _insert_end, _insert_indent = _statement_full_line_span(
-            source_geometry, self.insert_before_stmt
+            family_geometry, self.insert_before_stmt
         )
 
         replacements_by_file: dict[str, list[SourceTextSpanReplacement]] = {
-            self.source_path: [
+            self.family_file_path: [
                 SourceTextSpanReplacement(
                     start_offset=insert_offset,
                     end_offset=insert_offset,
@@ -1010,26 +1377,16 @@ class ZeroOneTupleProof:
             ]
         }
 
-        ret_start, ret_end = source_geometry.required_node_offsets(self.return_annotation)
-        replacements_by_file[self.source_path].append(
-            SourceTextSpanReplacement(
-                start_offset=ret_start,
-                end_offset=ret_end,
-                replacement_source=self.family_name,
-            )
-        )
-
         absent_name = f"Absent{self.family_name}"
         held_name = f"Held{self.family_name}"
-        for rw in self.return_rewrites:
-            t_start, t_end = source_geometry.required_node_offsets(rw.tuple_node)
-            replacements_by_file[self.source_path].append(
-                SourceTextSpanReplacement(
-                    start_offset=t_start,
-                    end_offset=t_end,
-                    replacement_source=rw.replacement_text(
-                        source_geometry, absent_name, held_name
-                    ),
+        for member in self.members:
+            geom = geometries.get(member.file_path)
+            if geom is None:
+                geom = SourceTextGeometry(snapshot.sources_by_file_path[member.file_path])
+                geometries[member.file_path] = geom
+            replacements_by_file.setdefault(member.file_path, []).extend(
+                member.span_replacements(
+                    geom, self.family_name, absent_name, held_name
                 )
             )
 
@@ -1058,23 +1415,32 @@ class ZeroOneTupleProof:
             )
         for name, expected_qnames, import_src in required_imports:
             witness = bindings.reference_or_builtin_witness_at(
-                source_module,
+                family_module,
                 ast.Name(id=name, ctx=ast.Load()),
                 line=self.insert_before_stmt.lineno,
             )
             if witness is None:
                 extra_edits.append(
                     ModuleImportMutation.from_source(
-                        file_path=self.source_path,
+                        file_path=self.family_file_path,
                         import_source=import_src,
                         rationale=rationale,
                     )
                 )
             elif witness.qualified_name not in expected_qnames:
                 raise NeedsInput(
-                    f"`{name}` is bound to `{witness.qualified_name}` in `{self.source_path}`",
+                    f"`{name}` is bound to `{witness.qualified_name}` in `{self.family_file_path}`",
                     NeededInput.SOURCE_CHANGE,
                 )
+
+        for ext_file, import_src in self.cross_module_imports:
+            extra_edits.append(
+                ModuleImportMutation.from_source(
+                    file_path=ext_file,
+                    import_source=import_src,
+                    rationale=rationale,
+                )
+            )
 
         span_edits = tuple(
             SourceTextGeometry(snapshot.sources_by_file_path[file_path]).nominal_edit(

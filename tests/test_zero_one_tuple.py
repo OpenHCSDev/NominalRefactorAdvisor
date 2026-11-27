@@ -265,7 +265,7 @@ def test_zero_one_tuple_refuses_non_iterable_consumers_overrides_and_unclosed_pu
         "        return ()\n\n"
         "class Sub(Base):\n"
         "    def item(self, flag: bool) -> tuple[int, ...]:\n"
-        "        return ()\n\n"
+        "        return (1, 2)\n\n"
         "def _use_override(b: Base, flag: bool) -> list[int]:\n"
         "    return list(b.item(flag))\n",
         encoding="utf-8",
@@ -286,7 +286,105 @@ def test_zero_one_tuple_refuses_non_iterable_consumers_overrides_and_unclosed_pu
         assert "public_no_callers" in by_symbol
         assert "no scanned callers" in by_symbol["public_no_callers"].reason
         assert "Base.item" in by_symbol
-        assert "overriding hierarchy" in by_symbol["Base.item"].reason
+        assert "overriding hierarchy is not pure 0/1" in by_symbol["Base.item"].reason
         for ev in by_symbol.values():
             assert ev.recipe is None
             assert NeededInput.OWNER_PICK not in ev.needs
+
+
+def test_zero_one_tuple_overriding_hierarchy_across_modules_and_abstract_base(
+    tmp_path: Path,
+):
+    """A pure-0/1 overriding hierarchy spanning an abstract root base, a same-module
+    subclass, and a cross-module subclass rewrites every override atomically, places
+    the family in the root base's module, adds cycle-free absolute imports to the
+    subclass module, and preserves exact runtime behavior."""
+
+    pkg = tmp_path / "hier"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "base.py").write_text(
+        "from __future__ import annotations\n"
+        "from abc import ABC, abstractmethod\n\n"
+        "class BaseEmitter(ABC):\n"
+        "    @abstractmethod\n"
+        "    def emitted(self, flag: bool) -> tuple[str, ...]:\n"
+        '        """Emit zero or one label."""\n\n'
+        "class SilentEmitter(BaseEmitter):\n"
+        "    def emitted(self, flag: bool) -> tuple[str, ...]:\n"
+        "        return ()\n",
+        encoding="utf-8",
+    )
+    (pkg / "sub.py").write_text(
+        "from __future__ import annotations\n"
+        "from hier.base import BaseEmitter\n\n"
+        "class ActiveEmitter(BaseEmitter):\n"
+        "    def __init__(self, label: str) -> None:\n"
+        "        self.label = label\n\n"
+        "    def emitted(self, flag: bool) -> tuple[str, ...]:\n"
+        "        if flag:\n"
+        "            return (self.label,)\n"
+        "        return ()\n\n"
+        "class LeafEmitter(ActiveEmitter):\n"
+        "    pass\n\n"
+        "def collect_all(emitters: list[BaseEmitter], flag: bool) -> list[str]:\n"
+        "    return [item for em in emitters for item in em.emitted(flag)]\n",
+        encoding="utf-8",
+    )
+
+    before_base = _import_fresh(tmp_path, "hier.base")
+    before_sub = _import_fresh(tmp_path, "hier.sub")
+    ems_before = [before_base.SilentEmitter(), before_sub.ActiveEmitter("a"), before_sub.LeafEmitter("b")]
+    expected = (
+        before_sub.collect_all(ems_before, True),
+        before_sub.collect_all(ems_before, False),
+    )
+    assert expected == (["a", "b"], [])
+
+    with ScanCache.scope():
+        _mods, snap, findings = _scan(tmp_path)
+        assert len(findings) == 1
+        assert findings[0].primary_evidence.symbol == "ActiveEmitter.emitted"
+        picks = OwnerPicks(
+            "picks.json",
+            "",
+            (
+                OwnerPick(
+                    finding=findings[0].stable_id,
+                    owner="ActiveEmitter.emitted",
+                    because="emitted label presence belongs on a nominal family",
+                    name="EmittedLabel",
+                    judgement="Present or absent emitted label.",
+                ),
+            ),
+        )
+        picked, report = picks.applied(findings)
+        assert not report.unmatched
+        plan = codemod_plan_from_findings(picked, selector_context=snap)
+        assert plan.candidate_count == 1, plan.report
+        sim = plan.document.simulate(snap)
+        assert sim.is_clean, sim.preflight_report
+        sim.apply()
+
+    after_base_text = (pkg / "base.py").read_text(encoding="utf-8")
+    after_sub_text = (pkg / "sub.py").read_text(encoding="utf-8")
+    assert "class EmittedLabel(ABC):" in after_base_text
+    assert "def emitted(self, flag: bool) -> EmittedLabel:" in after_base_text
+    assert "return AbsentEmittedLabel()" in after_base_text
+    assert "from hier.base import" in after_sub_text
+    assert "def emitted(self, flag: bool) -> EmittedLabel:" in after_sub_text
+    assert "return HeldEmittedLabel(self.label)" in after_sub_text
+    assert "return AbsentEmittedLabel()" in after_sub_text
+
+    after_base = _import_fresh(tmp_path, "hier.base")
+    after_sub = _import_fresh(tmp_path, "hier.sub")
+    ems_after = [after_base.SilentEmitter(), after_sub.ActiveEmitter("a"), after_sub.LeafEmitter("b")]
+    actual = (
+        after_sub.collect_all(ems_after, True),
+        after_sub.collect_all(ems_after, False),
+    )
+    assert actual == expected
+
+    with ScanCache.scope():
+        _mods_after, _snap_after, findings_after = _scan(tmp_path)
+        assert findings_after == []
