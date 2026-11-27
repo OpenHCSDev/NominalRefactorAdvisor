@@ -3747,6 +3747,11 @@ class FunctionEnclosure(ABC):
         """Return enclosing class symbol for ClassEnclosure or None."""
         return None
 
+    def declaring_class_symbol(self, snapshot: CodemodSourceSnapshot) -> str | None:
+        """Return enclosing class symbol for any method (including `@staticmethod`), or None."""
+        del snapshot
+        return None
+
     def dispatch_kind_for_receiver(self, subject, first_param, function, source_path, snapshot):
         """Return dispatch kind if subject is this class enclosure's receiver."""
         parsed = snapshot.parsed_module_for_source_path(source_path)
@@ -3794,6 +3799,9 @@ class StaticMethodEnclosure(FunctionEnclosure):
         return frozenset(
             tp.name for tp in getattr(self.owner.node, "type_params", ())
         )
+
+    def declaring_class_symbol(self, snapshot: CodemodSourceSnapshot) -> str | None:
+        return self.owner.required_symbol(snapshot)
 
 
 @dataclass(frozen=True)
