@@ -3410,20 +3410,21 @@ def test_reaching_bound_once_pushes_first_sequential_for_loop_and_refuses_second
         "",
         (
             OwnerPick(
-                by_fn["curate"],
-                "Band",
-                "band_entry",
-                "Band owns its curation label formatting.",
+                finding=by_fn["curate"].stable_id,
+                owner="curate",
+                because="Band owns its curation label formatting.",
+                name="band_entry",
+                judgement="Format the band entry label.",
             ),
         ),
     )
-    picked = OwnTypeTestDetector().evaluate_recipe_for_finding(
-        by_fn["curate"], picks.applied(snap)
-    )
+    (picked_finding,), report = picks.applied((by_fn["curate"],))
+    assert not report.unmatched
+    picked = OwnTypeTestDetector().evaluate_recipe_for_finding(picked_finding, snap)
     _apply(tmp_path, picked.executable_recipe)
 
     after = (tmp_path / "pkg/bands.py").read_text(encoding="utf-8")
-    assert "out.append(band.band_entry())" in after
+    assert "band.band_entry(" in after
     before_ns: dict[str, object] = {}
     after_ns: dict[str, object] = {}
     exec(compile(src, str(tmp_path / "pkg/bands.py"), "exec"), before_ns)
