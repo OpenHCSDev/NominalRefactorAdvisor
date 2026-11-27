@@ -197,6 +197,10 @@ class ThreadedAbsenceFamilyConcept(ClassFamilyAuthorityConcept):
     """Replace a threaded optional parameter with a held/absent nominal family."""
 
 
+class OwnStateBranchAnswerConcept(ClassFamilyAuthorityConcept):
+    """Split a frozen record's derived bool state into a subtype and push consumer branches onto it."""
+
+
 class ForeignAdapterBindChainConcept(ClassFamilyAuthorityConcept):
     """Fold per-class bindings of foreign nodes into one declared adapter family."""
 

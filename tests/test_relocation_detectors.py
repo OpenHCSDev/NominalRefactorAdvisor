@@ -12,6 +12,9 @@ from nominal_refactor_advisor.refactors.constant_subtype_answer import (
     DeleteConstantSubtypeAnswerOperation,
     PushConstantSubtypeAnswerOperation,
 )
+from nominal_refactor_advisor.refactors.own_state_branch_answer import (
+    OwnStateBranchAnswerOperation,
+)
 from nominal_refactor_advisor.refactors.threaded_absence import (
     ThreadedAbsenceToFamilyOperation,
 )
@@ -58,6 +61,7 @@ def test_every_finding_states_fact_owner_and_prescription(detector):
             PushConstantSubtypeAnswerOperation,
             DeleteConstantSubtypeAnswerOperation,
         ),
+        OwnStateBranchAnswerDetector: (OwnStateBranchAnswerOperation,),
         ThreadedAbsenceDetector: (ThreadedAbsenceToFamilyOperation,),
     }
     assert detector.restated.operations == expected_operations.get(detector, ())

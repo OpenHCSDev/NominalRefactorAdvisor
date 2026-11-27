@@ -862,6 +862,26 @@ class ConstantSubtypeAnswerMetrics(DeclaredBasePickMetrics):
 
 
 @dataclass(frozen=True)
+class OwnStateBranchAnswerMetrics(DeclaredBasePickMetrics):
+    """One frozen record's derived bool predicate and its branch-read consumers."""
+
+    record_symbol: str
+    record_qualname: str
+    member_name: str
+    accessed_as: str
+    consumer_locations: tuple[SourceLocation, ...] = ()
+
+    def base_pick_owner_name(
+        self, authority_evidence: SourceLocation | None
+    ) -> str | None:
+        del authority_evidence
+        return f"{self.record_qualname}.{self.member_name}"
+
+    def base_pick_owner_label(self) -> str:
+        return "own-state predicate"
+
+
+@dataclass(frozen=True)
 class ForeignAbsenceProbeMetrics(DeclaredBasePickMetrics):
     """One foreign absence probe group on a receiver, ready for a method-name pick when embedded."""
 
