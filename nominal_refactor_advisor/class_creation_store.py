@@ -36,12 +36,16 @@ from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 FunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
+ABC_META = "abc.ABCMeta"
+ABSTRACT_HOOKS_META = "metaclass_registry.abstract_hooks.AbstractHooksMeta"
+AUTO_REGISTER_META = "metaclass_registry.core.AutoRegisterMeta"
+
 MODELLED_METACLASSES = frozenset(
     (
         "builtins.type",
-        "abc.ABCMeta",
-        "metaclass_registry.abstract_hooks.AbstractHooksMeta",
-        "metaclass_registry.core.AutoRegisterMeta",
+        ABC_META,
+        ABSTRACT_HOOKS_META,
+        AUTO_REGISTER_META,
     )
 )
 """Metaclasses whose class creation NRA knows without reading it: they keep the
@@ -63,8 +67,6 @@ REGISTRY_NAMES = frozenset(
     )
 )
 """The names a modelled metaclass reads from a class being created."""
-
-AUTO_REGISTER_META = "metaclass_registry.core.AutoRegisterMeta"
 
 
 def _functions(statements: list[ast.stmt]) -> dict[str, FunctionNode]:

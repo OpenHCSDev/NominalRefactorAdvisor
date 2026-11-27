@@ -44,7 +44,12 @@ from nominal_refactor_advisor.class_index import (
     CompactIndexedClass,
     CompactUnannotatedCallable,
 )
-from nominal_refactor_advisor.class_creation_store import MODELLED_METACLASSES, REGISTRY_NAMES
+from nominal_refactor_advisor.class_creation_store import (
+    ABC_META,
+    ABSTRACT_HOOKS_META,
+    MODELLED_METACLASSES,
+    REGISTRY_NAMES,
+)
 from nominal_refactor_advisor.class_mro import native_root_type
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
@@ -1073,17 +1078,24 @@ class ClassCreationProof:
         for indexed in self.metaclass_ancestry(symbol):
             yield from self.methods(indexed, hooks)
 
-    def metaclass_ancestry(self, symbol: str) -> Iterator[CompactIndexedClass]:
-        """The classes along a metaclass's ancestry, the scan's or an installed
-        module's source; a modelled metaclass ends its branch, and one NRA cannot
-        read refuses."""
+    def _walk_metaclasses(
+        self, roots: Iterable[str]
+    ) -> tuple[tuple[CompactIndexedClass, ...], frozenset[str]]:
+        """Walk metaclass ancestries from `roots`, returning `(classes, models)` where
+        `classes` are the non-modelled metaclasses (scanned or installed) and `models`
+        are the `MODELLED_METACLASSES` reached."""
 
-        pending, seen = [symbol], set()
+        classes: list[CompactIndexedClass] = []
+        models: set[str] = set()
+        pending, seen = list(roots), set()
         while pending:
             current = self.canonical(pending.pop())
-            if current in seen or current in MODELLED_METACLASSES:
+            if current in seen:
                 continue
             seen.add(current)
+            if current in MODELLED_METACLASSES:
+                models.add(current)
+                continue
             indexed = self.snapshot.class_overlap_verdicts.ancestor(current)
             if indexed is None:
                 raise NeedsInput(
@@ -1091,8 +1103,28 @@ class ClassCreationProof:
                     "and is none of its creation models: NRA needs a proof of what it reads",
                     NeededInput.PROOF,
                 )
-            yield indexed
+            classes.append(indexed)
             pending.extend(".".join(reference.resolved_parts) for reference in indexed.base_references)
+        return tuple(classes), frozenset(models)
+
+    def metaclass_ancestry(self, symbol: str) -> Iterator[CompactIndexedClass]:
+        """The classes along a metaclass's ancestry, the scan's or an installed
+        module's source; a modelled metaclass ends its branch, and one NRA cannot
+        read refuses."""
+
+        yield from self._walk_metaclasses((symbol,))[0]
+
+    def collects_mro_abstract_methods(self) -> bool:
+        """Whether class creation populates `__abstractmethods__` by walking `vars(base)`
+        across every class in `cls.__mro__` (plain bases included).
+
+        `AbstractHooksMeta.__init__` reads `vars(base)` across `cls.__mro__`, so moving an
+        `@abstractmethod` onto any composed base preserves `__abstractmethods__` without
+        requiring that base to inherit `ABC`. When `ABCMeta` is also present, only bases
+        whose own metaclass populates `__abstractmethods__` qualify."""
+
+        _, models = self._walk_metaclasses(self.metaclasses())
+        return ABSTRACT_HOOKS_META in models and ABC_META not in models
 
     @staticmethod
     def modelled_hooks() -> frozenset[str]:
