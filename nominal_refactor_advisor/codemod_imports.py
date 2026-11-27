@@ -360,7 +360,7 @@ def _trailing_comment(source: str, statement: ast.stmt) -> str | None:
     return None
 
 
-def _node_contains_comment(source: str, node: ast.AST) -> bool:
+def node_contains_comment(source: str, node: ast.AST) -> bool:
     if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
         return False
     fragment = SourceLineSpan(
@@ -947,7 +947,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 and not aliases_by_statement[id(statement)]
                 for statement in guard.body
             )
-            and not _node_contains_comment(source, guard)
+            and not node_contains_comment(source, guard)
         )
         self._drop_unread_guard_flag(
             module, guard_projection, deletable_guards, import_from_statements,
@@ -989,7 +989,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             if aliases == original_aliases:
                 continue
             comment = _trailing_comment(source, statement)
-            if comment is None and _node_contains_comment(source, statement):
+            if comment is None and node_contains_comment(source, statement):
                 raise ValueError(
                     f"Cannot rewrite commented import at {self.file_path!r}:"
                     f"{statement.lineno}"

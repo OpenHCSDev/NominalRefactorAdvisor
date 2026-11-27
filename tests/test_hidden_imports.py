@@ -356,3 +356,33 @@ def test_three_hop_cross_subpackage_cycle_is_refused_in_auto_and_partial_scans(
         detector_types=(HiddenImportDetector,),
     )
     assert compact_partial.findings == []
+
+
+def test_commented_type_checking_guard_is_not_promoted_to_dead_pass(tmp_path: Path):
+    """Reproduces Toad `toad/qt/client_start.py:33-35`: a commented `if TYPE_CHECKING:`
+    guard explaining platform/boundary isolation must not be promoted out and left behind
+    as `if TYPE_CHECKING:\\n    # ...\\n    pass`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/desktop.py": "class ClientLaunch:\n    pass\n",
+            "pkg/client_start.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    # Android's start never loads the desktop's local connection.\n"
+                "    from pkg.desktop import ClientLaunch\n\n\n"
+                "def start(launch: ClientLaunch | None = None) -> None:\n"
+                "    del launch\n"
+            ),
+        },
+    )
+    plan = _plan(tmp_path)
+    assert plan.accepted == ()
+    [refusal] = plan.refused
+    assert isinstance(refusal, UnpromotableImport)
+    assert "carries a comment" in str(refusal.need)
+    assert refusal.need.needs == (NeededInput.SOURCE_CHANGE,)
+    assert _findings(tmp_path) == []
+

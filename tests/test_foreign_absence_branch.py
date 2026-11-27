@@ -2014,3 +2014,67 @@ def test_nonnone_early_return_multi_probe_void_return_loop_continue_and_ternary(
         assert OwnStateBranchAnswerDetector().detect(mods_after, DetectorConfig()) == []
 
 
+def test_cross_module_push_preserves_aliased_module_and_symbol_imports(
+    tmp_path: Path,
+) -> None:
+    """Reproduces Toad `agent_controller.py:34` (`from toad.core import events as core_events`)
+    pushing onto `SurfaceBinding`: cross-module free-name imports must preserve module targets
+    and `as` aliases rather than emitting `from pkg.core.events import core_events`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/core/__init__.py": "",
+            "pkg/core/events.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class TranscriptSnapshot:\n"
+                "    text: str\n"
+            ),
+            "pkg/surface.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class SurfaceBinding:\n"
+                "    transcript: str | None\n"
+            ),
+            "pkg/controller.py": (
+                "from pkg.core import events as core_events\n"
+                "from pkg.core.events import TranscriptSnapshot as Snap\n"
+                "from pkg.surface import SurfaceBinding\n\n\n"
+                "def publish_snapshot(surface: SurfaceBinding) -> Snap | None:\n"
+                "    if surface.transcript is None:\n"
+                "        return None\n"
+                "    return core_events.TranscriptSnapshot(surface.transcript)\n"
+            ),
+        },
+    )
+
+    _mods, snap, findings = _scan(tmp_path)
+    (finding,) = [f for f in findings if f.primary_evidence.symbol == "publish_snapshot"]
+    _apply_one(finding, snap)
+
+    after_surface = (tmp_path / "pkg/surface.py").read_text()
+    assert "from pkg.core import events as core_events" in after_surface
+    assert "from pkg.core.events import core_events" not in after_surface
+    assert "from pkg.core.events import TranscriptSnapshot as Snap" in after_surface
+    assert "from pkg.core.events import Snap\n" not in after_surface
+
+    # Real runtime import + execution parity (no ImportError on line 1).
+    sys.path.insert(0, str(tmp_path))
+    try:
+        for mod_name in [m for m in sys.modules if m == "pkg" or m.startswith("pkg.")]:
+            del sys.modules[mod_name]
+        import pkg.controller as controller  # type: ignore[import-not-found]
+        import pkg.surface as surface  # type: ignore[import-not-found]
+
+        assert controller.publish_snapshot(surface.SurfaceBinding(None)) is None
+        snap_val = controller.publish_snapshot(surface.SurfaceBinding("hi"))
+        assert snap_val is not None and snap_val.text == "hi"
+    finally:
+        sys.path.remove(str(tmp_path))
+        for mod_name in [m for m in sys.modules if m == "pkg" or m.startswith("pkg.")]:
+            del sys.modules[mod_name]
+
+
+
