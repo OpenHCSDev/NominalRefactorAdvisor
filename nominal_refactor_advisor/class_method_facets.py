@@ -429,6 +429,7 @@ class ClassMethodPromotionSafetyProfile:
         *,
         source_lines: tuple[str, ...],
         admitted_decorators: frozenset[str] = PROMOTABLE_METHOD_DECORATOR_IDENTITIES,
+        admit_zero_arg_super: bool = False,
     ) -> ClassMethodPromotionSafetyProfile:
         inspection = MethodPromotionInspection(
             method,
@@ -438,7 +439,7 @@ class ClassMethodPromotionSafetyProfile:
             admitted_decorators,
         )
         return cls(
-            ClassScopeDependency.from_node(method)
+            ClassScopeDependency.from_node(method, admit_zero_arg_super=admit_zero_arg_super)
             + tuple(
                 hazard
                 for hazard in MethodPromotionHazard

@@ -1557,6 +1557,7 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
                 context.class_bound_names,
                 source_lines=context.source_lines,
                 admitted_decorators=context.admitted_decorators,
+                admit_zero_arg_super=context.admit_zero_arg_super,
             ).hazards
         ))
         if hazards:
@@ -1577,15 +1578,22 @@ class ClassMemberMoveProofContext(SourceTextGeometry):
     admitted_decorators: frozenset[str] = PROMOTABLE_METHOD_DECORATOR_IDENTITIES
     """What a moved method's decorators may resolve to: the natives whose application
     the destination's class statement repeats unchanged."""
+    admit_zero_arg_super: bool = False
+    """Whether zero-argument `super().<attr>` calls are admitted because the caller's
+    subsequent `ComposedAncestry.require_super_lookups` proves every composer's chain."""
 
     def into_new_abc(self) -> Self:
         """The destination is a new class `ABCMeta` creates, which nothing instantiates
         and whose composers `ABCMeta` creates too: `abstractmethod` only marks the
         function, and each composer takes the mixin's abstract names, so a moved
-        abstract method stays abstract wherever it was."""
+        abstract method stays abstract wherever it was. Zero-arg `super().<attr>` calls
+        stay sound because `CreateMixinOperation` proves each composer's `super()` chain
+        via `ComposedAncestry.require_super_lookups`."""
 
         return replace(
-            self, admitted_decorators=self.admitted_decorators | {ABSTRACT_METHOD_DECORATOR}
+            self,
+            admitted_decorators=self.admitted_decorators | {ABSTRACT_METHOD_DECORATOR},
+            admit_zero_arg_super=True,
         )
 
     @classmethod

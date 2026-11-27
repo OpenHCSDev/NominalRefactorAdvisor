@@ -242,6 +242,8 @@ class ClassOverlapMove(Case):
     @classmethod
     def finish_ladder_candidate(cls, judged, overlap: ClassBodyOverlap, shape, extractable, members, shared_receipts, caller: ClassOverlapVerdicts, first, second, axis_receipts, differing_receipts) -> ClassOverlapCandidate | None:
         """Finish a ladder overlap candidate for this move."""
+        if not extractable:
+            return judged
         extraction = caller._candidate(overlap, shape, PairRepair(ExtractMixin, first, second, None), extractable, members, shared_receipts, (*axis_receipts, *differing_receipts))
         own = frozenset(((receipt.kind, receipt.detail) for receipt in extraction.refusals))
         if not own.isdisjoint(((receipt.kind, receipt.detail) for receipt in judged.refusals)) or not any((owner.permitted or owner.keyword_cure for owner in extraction.owner_candidates)):
@@ -3209,6 +3211,12 @@ class ClassOverlapVerdicts(DeclaredC3):
             return ()
         owned = self.declared_through_ancestry(owner.symbol)
         owned_resolved = self.resolved_declarations(owner.symbol)
+        super_shared_names = frozenset(
+            declaration.name
+            for declaration in owner.body_declarations
+            if declaration.name in shared_names
+            and any(target == "builtins.super" for _, target in declaration.bindings)
+        )
         receipts: list[Receipt] = []
         for receiver in receivers:
             had = self.declared_through_ancestry(receiver.symbol)
@@ -3259,7 +3267,39 @@ class ClassOverlapVerdicts(DeclaredC3):
                         count=len(conflicting),
                     )
                 )
-            if not gained and not conflicting:
+            super_ancestors: list[tuple[CompactIndexedClass, str]] = []
+            if super_shared_names:
+                for anc_sym in self.class_index.ancestor_symbols(owner.symbol):
+                    if anc_sym in receiver_ancestors:
+                        continue
+                    anc_class = self.class_index.class_for(anc_sym)
+                    if anc_class is None:
+                        continue
+                    anc_decls = self.bodies.declarations_of(anc_sym)
+                    for name in sorted(super_shared_names):
+                        if name in anc_decls:
+                            super_ancestors.append((anc_class, name))
+            if super_ancestors:
+                receipts.append(
+                    Receipt(
+                        OverlapReceiptKind.UNWANTED_SUPPLY,
+                        f"`{receiver.qualname}` would gain cooperative `super()` ancestor "
+                        + ", ".join(
+                            f"`{anc.qualname}.{name}`" for anc, name in super_ancestors[:6]
+                        )
+                        + (
+                            f" and {len(super_ancestors) - 6} more"
+                            if len(super_ancestors) > 6
+                            else ""
+                        )
+                        + f" through `{owner.qualname}`: the block needs a mixin of its own",
+                        tuple(
+                            _location(anc, None, name) for anc, name in super_ancestors[:4]
+                        ),
+                        count=len(super_ancestors),
+                    )
+                )
+            if not gained and not conflicting and not super_ancestors:
                 self._append_external_supplied_member_receipt(owner, receiver, receipts)
         return tuple(receipts)
 
