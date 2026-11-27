@@ -63,6 +63,7 @@ from nominal_refactor_advisor.refactors.finding_recipes import PrewarmTypeChecke
 from nominal_refactor_advisor.refactors.optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
 )
+from nominal_refactor_advisor.relocation_observations import PURE_BUILTINS
 from nominal_refactor_advisor.refactors.type_test_dispatch import (
     CapturedArgument,
     DispatchSite,
@@ -339,6 +340,10 @@ class AbsenceBranchSite(ABC):
 
     @property
     def is_void_method(self) -> bool:
+        return False
+
+    @property
+    def returns_bool(self) -> bool:
         return False
 
     @property
@@ -795,6 +800,43 @@ class PrefixGuardedAndTernaryAbsenceBranchSite(TernaryAbsenceBranchSite):
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
         del line_indent
         return f"{call_expr} if {ast.unparse(self.guard_expr)} else {ast.unparse(self.short_circuit_expr)}"
+
+
+@dataclass(frozen=True)
+class BoolOpAbsenceBranchSite(AbsenceBranchSite):
+    """Compound `subject.attr is [not] None and/or <domain>` expression replaced inline by `subject.method(...)`."""
+
+    node: ast.BoolOp
+    is_bool_expr: bool = False
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        return geometry.required_node_offsets(self.node)
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        return call_expr
+
+    def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
+        return (self.node,)
+
+    @property
+    def returns_bool(self) -> bool:
+        return self.is_bool_expr
+
+
+@dataclass(frozen=True)
+class PrefixGuardedBoolOpAbsenceBranchSite(BoolOpAbsenceBranchSite):
+    """`PREFIX and/or subject.attr is [not] None and/or <domain>` replaced by `PREFIX and/or subject.method(...)`."""
+
+    guard_expr: ast.expr = ast.Constant(value=True)
+    op_keyword: str = "and"
+
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        return f"{ast.unparse(self.guard_expr)} {self.op_keyword} {call_expr}"
 
 
 def _extract_absence_if_site(
@@ -1340,6 +1382,132 @@ def _extract_composite_ternary_site(
     return None if best is None else best[1]
 
 
+def _is_statically_bool_expr(expr: ast.expr) -> bool:
+    """Whether `expr` always evaluates to `bool` (safe for `-> bool` annotation)."""
+
+    match expr:
+        case ast.Compare() | ast.UnaryOp(op=ast.Not()):
+            return True
+        case ast.Constant(value=bool()):
+            return True
+        case ast.BoolOp(values=values):
+            return all(_is_statically_bool_expr(val) for val in values)
+        case ast.Call(func=ast.Name(id="bool" | "isinstance" | "issubclass" | "any" | "all")):
+            return True
+    return False
+
+
+def _boolop_is_domain_predicate(expr: ast.BoolOp, subject: ast.expr) -> bool:
+    """True when `expr` pairs an absence probe with real domain logic rather than a
+    zero-arg pure own-field boolean (which would relocate into OwnStateBranchAnswer)."""
+
+    if len(expr.values) < 2:
+        return False
+    if any(
+        isinstance(
+            sub,
+            (
+                ast.NamedExpr,
+                ast.Yield,
+                ast.YieldFrom,
+                ast.Lambda,
+            ),
+        )
+        for sub in ast.walk(expr)
+    ):
+        return False
+    subject_dump = ast.dump(subject)
+
+    def _has_external_work(node: ast.AST) -> bool:
+        if isinstance(node, ast.expr) and ast.dump(node) == subject_dump:
+            return False
+        match node:
+            case ast.Call(func=ast.Name(id=name)) if name not in PURE_BUILTINS:
+                return True
+            case ast.Call(func=ast.Attribute()):
+                return True
+            case ast.Name(id=name, ctx=ast.Load()) if name not in PURE_BUILTINS:
+                return True
+        return any(_has_external_work(child) for child in ast.iter_child_nodes(node))
+
+    return _has_external_work(expr)
+
+
+def _extract_boolop_absence_site(
+    function: FunctionNode,
+    body: list[ast.stmt],
+    target_lines: frozenset[int],
+    *,
+    subject_source: str | None = None,
+) -> BoolOpAbsenceBranchSite | None:
+    """Locate a pushable compound `BoolOp` (optionally prefix-guarded) probing `subject.attr is [not] None`."""
+
+    whole_return_expr: ast.expr | None = None
+    if len(body) == 1 and isinstance(body[0], ast.Return):
+        whole_return_expr = body[0].value
+
+    for node in ast.walk(function):
+        if not isinstance(node, ast.BoolOp) or len(node.values) < 2:
+            continue
+        probes = _unconditional_absence_probes_in(
+            node, target_lines, subject_source=subject_source
+        )
+        if probes and _boolop_is_domain_predicate(node, probes[0].subject):
+            site = BoolOpAbsenceBranchSite(
+                subject=probes[0].subject,
+                probe_nodes=tuple(probe.node for probe in probes),
+                method_body=(ast.Return(value=node),),
+                is_whole_function=node is whole_return_expr,
+                node=node,
+                is_bool_expr=_is_statically_bool_expr(node),
+            )
+            if site.subject_allowed():
+                return site
+        split = _split_prefix_guarded_boolop(
+            node, target_lines, subject_source=subject_source
+        )
+        if split is not None:
+            op, guard_expr, remaining_test, split_probes = split
+            if isinstance(remaining_test, ast.BoolOp) and _boolop_is_domain_predicate(
+                remaining_test, split_probes[0].subject
+            ):
+                guarded_site = PrefixGuardedBoolOpAbsenceBranchSite(
+                    subject=split_probes[0].subject,
+                    probe_nodes=tuple(probe.node for probe in split_probes),
+                    method_body=(ast.Return(value=remaining_test),),
+                    is_whole_function=False,
+                    node=node,
+                    is_bool_expr=_is_statically_bool_expr(remaining_test),
+                    guard_expr=guard_expr,
+                    op_keyword="and" if isinstance(op, ast.And) else "or",
+                )
+                if guarded_site.subject_allowed():
+                    return guarded_site
+    return None
+
+
+def _enclosing_comprehension_locals(
+    function: FunctionNode,
+    target: ast.AST,
+    subject: ast.expr,
+) -> frozenset[str]:
+    """Return comprehension loop variables in scope around `target` (excluding `subject` if a Name)."""
+
+    target_id = id(target)
+    subject_name = subject.id if isinstance(subject, ast.Name) else None
+    found: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(
+            node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+        ) and any(id(sub) == target_id for sub in ast.walk(node)):
+            for gen in node.generators:
+                for sub in ast.walk(gen.target):
+                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                        if sub.id != subject_name:
+                            found.add(sub.id)
+    return frozenset(found)
+
+
 def find_absence_branch_site(
     function: FunctionNode,
     source_text: str,
@@ -1432,7 +1600,9 @@ def find_absence_branch_site(
             )
             if extracted is not None and extracted.subject_allowed():
                 return extracted
-    return None
+    return _extract_boolop_absence_site(
+        function, body, target_lines, subject_source=subject_source
+    )
 
 
 def _resolve_scanned_instance_owner(
@@ -1632,6 +1802,7 @@ class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
             (proof.owner,),
             propagates_function_return_type=proof.site.propagates_function_return_type,
             is_void_method=proof.site.is_void_method,
+            constant_bool_return=proof.site.returns_bool,
             rationale=rationale,
         )
 
@@ -1851,7 +2022,9 @@ class ForeignAbsenceBranchProof:
                     )
 
         adapter = site.as_dispatch_adapter()
-        enclosing_locals = enclosure.enclosing_local_names()
+        enclosing_locals = enclosure.enclosing_local_names() | _enclosing_comprehension_locals(
+            function, site.replaced_ast_nodes()[0], site.subject
+        )
         outer_receiver_aliases = _outer_receiver_aliases(
             function, adapter, (site.method_body,), enclosing_locals=enclosing_locals
         )

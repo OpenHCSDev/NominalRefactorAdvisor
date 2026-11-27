@@ -1629,3 +1629,139 @@ def test_pushing_call_and_subscript_subjects_with_single_eval_guard(tmp_path: Pa
         ns["require_single_name"](())  # type: ignore[operator]
     with pytest.raises(ValueError, match="bad"):
         ns["require_single_name"]((Ref(None),))  # type: ignore[operator]
+
+
+def test_foreign_absence_boolop_comprehension_generator_prefix_loop_and_non_relocation(
+    tmp_path: Path,
+):
+    source = (
+        "from __future__ import annotations\n"
+        "from dataclasses import dataclass\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Binding:\n"
+        "    module: str\n"
+        "    member: str | None\n"
+        "    tag: str\n\n"
+        "class Checker:\n"
+        "    def __init__(self, known: set[tuple[str, str]]) -> None:\n"
+        "        self._known = known\n\n"
+        "    def has(self, module: str, member: str) -> bool:\n"
+        "        return (module, member) in self._known\n\n"
+        "    def filter_matching(self, items: list[Binding], allowed: set[str]) -> list[Binding]:\n"
+        "        return [\n"
+        "            item\n"
+        "            for item in items\n"
+        "            if item.member is not None and item.member in allowed\n"
+        "        ]\n\n"
+        "    def any_missing(self, items: list[Binding]) -> bool:\n"
+        "        return any(\n"
+        "            b.member is not None and (not self.has(b.module, b.member))\n"
+        "            for b in items\n"
+        "        )\n\n"
+        "    def collect_until_skipped(self, items: list[Binding | None], skipped: set[str]) -> list[str]:\n"
+        "        out: list[str] = []\n"
+        "        for b in items:\n"
+        "            if b is None or b.member is None or b.tag in skipped:\n"
+        "                break\n"
+        "            out.append(b.tag)\n"
+        "        return out\n\n"
+        "    def matches_target(self, b: Binding, target: str) -> bool:\n"
+        "        return b.member is not None and b.member == target\n\n"
+        "    def pure_own_state(self, b: Binding) -> bool:\n"
+        "        return b.member is not None and b.tag == 'x'\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/check.py": source})
+    _modules, snap, findings = _scan(tmp_path)
+    by_fn = {f.primary_evidence.subject_symbol.rsplit(".", 1)[-1]: f for f in findings}
+    assert set(by_fn) == {
+        "filter_matching",
+        "any_missing",
+        "collect_until_skipped",
+        "matches_target",
+        "pure_own_state",
+    }
+
+    # Pure own-field BoolOp with zero external args/calls must NOT be relocated into OwnStateBranchAnswer.
+    pure_eval = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(
+        by_fn["pure_own_state"], snap
+    )
+    assert pure_eval.recipe is None
+    assert NeededInput.OWNER_PICK not in pure_eval.needs
+
+    # All four real domain BoolOp sites are pushable (whole-function `matches_target` -> direct EXEC;
+    # embedded `filter_matching`, `any_missing`, `collect_non_skipped` -> OWNER_PICK).
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_fn["filter_matching"].stable_id,
+                owner="Checker.filter_matching",
+                because="Binding owns membership check against allowed members",
+                name="member_in_allowed",
+                judgement="True when member is present and in allowed.",
+            ),
+            OwnerPick(
+                finding=by_fn["any_missing"].stable_id,
+                owner="Checker.any_missing",
+                because="Binding owns missing-from-checker predicate",
+                name="is_missing_from",
+                judgement="True when member is present and absent from checker.",
+            ),
+            OwnerPick(
+                finding=by_fn["collect_until_skipped"].stable_id,
+                owner="Checker.collect_until_skipped",
+                because="Binding owns skip predicate",
+                name="is_skipped",
+                judgement="True when member is absent or tag is skipped.",
+            ),
+        ),
+    )
+    target_findings = (
+        by_fn["filter_matching"],
+        by_fn["any_missing"],
+        by_fn["collect_until_skipped"],
+        by_fn["matches_target"],
+    )
+    picked, report = picks.applied(target_findings)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 4
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "check.py").read_text()
+    assert "if item.member_in_allowed(allowed)" in after
+    assert "b.is_missing_from(self)" in after
+    assert "if b is None or b.is_skipped(skipped):" in after
+    assert "return b.matches_target(target)" in after
+
+    # Runtime parity check.
+    ns_before: dict[str, object] = {}
+    ns_after: dict[str, object] = {}
+    exec(compile(source, str(tmp_path / "pkg/check.py"), "exec"), ns_before)
+    exec(compile(after, str(tmp_path / "pkg/check.py"), "exec"), ns_after)
+    for ns in (ns_before, ns_after):
+        B = ns["Binding"]
+        C = ns["Checker"]({("m", "a")})
+        items = [B("m", "a", "t1"), B("m", "b", "t2"), B("m", None, "t3")]
+        ns["res"] = (
+            [x.tag for x in C.filter_matching(items, {"a", "z"})],
+            C.any_missing(items),
+            C.any_missing([B("m", "a", "t1"), B("m", None, "t3")]),
+            C.collect_until_skipped([*items, None], {"t2"}),
+            C.matches_target(items[0], "a"),
+            C.matches_target(items[2], "a"),
+        )
+    assert ns_after["res"] == ns_before["res"]
+    assert ns_after["res"] == (["t1"], True, False, ["t1"], True, False)
+
+    # Zero OwnStateBranchAnswer introduced; only `pure_own_state` remains as ForeignAbsenceProbe.
+    mods_after, _snap_after, findings_after = _scan(tmp_path)
+    assert [f.primary_evidence.subject_symbol for f in findings_after] == [
+        "Checker.pure_own_state"
+    ]
+    with ScanCache.scope():
+        assert OwnStateBranchAnswerDetector().detect(mods_after, DetectorConfig()) == []
+
