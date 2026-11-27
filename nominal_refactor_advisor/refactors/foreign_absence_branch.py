@@ -87,6 +87,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _has_non_continue_loop_escape,
     _has_value_return,
     _is_definitely_bound_before,
+    _is_dispatchable_match_subject,
     _is_pure_subject,
     _names_referenced_outside,
     _names_stored_in,
@@ -120,13 +121,97 @@ class ParsedAbsenceProbe:
     node: ast.Compare
 
 
+def _node_covers_line(node: ast.AST, line: int) -> bool:
+    start = getattr(node, "lineno", None)
+    if start is None:
+        return False
+    end = getattr(node, "end_lineno", start) or start
+    return start <= line <= end
+
+
+def _is_pure_slice(expr: ast.expr) -> bool:
+    match expr:
+        case ast.Constant():
+            return True
+        case ast.Name() | ast.Attribute():
+            return _is_pure_subject(expr)
+        case ast.Tuple(elts=elts):
+            return all(_is_pure_slice(elt) for elt in elts)
+    return False
+
+
+def _is_pure_subscript(expr: ast.expr) -> bool:
+    match expr:
+        case ast.Subscript(value=value, slice=sl):
+            return (
+                _is_pure_subject(value) or _is_pure_subscript(value)
+            ) and _is_pure_slice(sl)
+        case ast.Attribute(value=value):
+            return _is_pure_subscript(value)
+    return False
+
+
+def _subject_occurs_outside_probes(
+    subject_dump: str,
+    nodes: Sequence[ast.AST],
+    excluded_probe_subject_ids: frozenset[int],
+) -> bool:
+    for root in nodes:
+        for child in ast.walk(root):
+            if (
+                isinstance(child, ast.expr)
+                and id(child) not in excluded_probe_subject_ids
+                and ast.dump(child) == subject_dump
+            ):
+                return True
+    return False
+
+
+def _subject_allowed_for_branch(
+    subject: ast.expr,
+    probe_nodes: tuple[ast.Compare, ...],
+    method_body: tuple[ast.stmt, ...],
+    extra_exprs: Sequence[ast.expr] = (),
+) -> bool:
+    if _is_pure_subject(subject):
+        return True
+    if not _is_dispatchable_match_subject(subject):
+        return False
+    probe_subject_ids = frozenset(
+        id(probe.left.value)
+        for probe in probe_nodes
+        if isinstance(probe.left, ast.Attribute)
+    )
+    subject_dump = ast.dump(subject)
+    extra_roots: list[ast.AST] = [*method_body, *extra_exprs]
+    if not _subject_occurs_outside_probes(subject_dump, extra_roots, probe_subject_ids):
+        return len(probe_nodes) == 1
+    if _is_pure_subscript(subject):
+        subject_names = frozenset(
+            child.id
+            for child in ast.walk(subject)
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+        )
+        if subject_names & _names_stored_in(method_body):
+            return False
+        for stmt in method_body:
+            for child in ast.walk(stmt):
+                match child:
+                    case ast.Subscript(value=ast.Name(id=nm), ctx=ast.Store() | ast.Del()) if (
+                        nm in subject_names
+                    ):
+                        return False
+        return True
+    return False
+
+
 def _parse_absence_probe(node: ast.AST) -> ParsedAbsenceProbe | None:
     match node:
         case ast.Compare(
             left=ast.Attribute(value=subject, attr=attr_name),
             ops=[ast.Is() | ast.IsNot()],
             comparators=[ast.Constant(value=None)],
-        ) if _is_pure_subject(subject) and not (
+        ) if _is_dispatchable_match_subject(subject) and not (
             isinstance(subject, ast.Name) and subject.id in ("self", "cls")
         ):
             return ParsedAbsenceProbe(subject=subject, attr_name=attr_name, node=node)
@@ -138,7 +223,7 @@ def _absence_probes_in(
 ) -> tuple[ParsedAbsenceProbe, ...]:
     found: list[ParsedAbsenceProbe] = []
     for child in ast.walk(node):
-        if getattr(child, "lineno", None) not in target_lines:
+        if not any(_node_covers_line(child, line) for line in target_lines):
             continue
         parsed = _parse_absence_probe(child)
         if parsed is not None:
@@ -271,6 +356,14 @@ class AbsenceBranchSite(ABC):
 
         del target_name, method_body, reassigned_target
         return None
+
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return ()
+
+    def subject_allowed(self) -> bool:
+        return _subject_allowed_for_branch(
+            self.subject, self.probe_nodes, self.method_body, self.guard_exprs()
+        )
 
     def covers_lines(self, lines: Sequence[int]) -> bool:
         nodes = self.replaced_ast_nodes()
@@ -453,6 +546,9 @@ class ElifAbsenceBranchSite(AbsenceBranchSite):
     def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
         return self.inner.replaced_ast_nodes()
 
+    def subject_allowed(self) -> bool:
+        return self.inner.subject_allowed()
+
     @property
     def checks_local_store_escapes(self) -> bool:
         return self.inner.checks_local_store_escapes
@@ -515,6 +611,9 @@ class PrefixGuardedOrAbsenceBranchSite(AbsenceBranchSite):
     def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
         return self.replaced_nodes
 
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
+
     @property
     def checks_local_store_escapes(self) -> bool:
         return not self.returns_value
@@ -564,6 +663,9 @@ class PrefixGuardedAndAbsenceBranchSite(AbsenceBranchSite):
 
     def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
         return self.replaced_nodes
+
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
 
     @property
     def checks_local_store_escapes(self) -> bool:
@@ -620,6 +722,9 @@ class PrefixGuardedAndReturningAbsenceBranchSite(AbsenceBranchSite):
     def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
         return self.replaced_nodes
 
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
+
     @property
     def propagates_function_return_type(self) -> bool:
         return True
@@ -640,6 +745,9 @@ class CompositeTernaryAbsenceBranchSite(AbsenceBranchSite):
 
     def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
         return (self.node,)
+
+    def subject_allowed(self) -> bool:
+        return _is_pure_subject(self.subject) or _is_pure_subscript(self.subject)
 
 
 @dataclass(frozen=True)
@@ -666,6 +774,9 @@ class PrefixGuardedOrTernaryAbsenceBranchSite(TernaryAbsenceBranchSite):
     guard_expr: ast.expr
     short_circuit_expr: ast.expr
 
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
+
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
         del line_indent
         return f"{ast.unparse(self.short_circuit_expr)} if {ast.unparse(self.guard_expr)} else {call_expr}"
@@ -677,6 +788,9 @@ class PrefixGuardedAndTernaryAbsenceBranchSite(TernaryAbsenceBranchSite):
 
     guard_expr: ast.expr
     short_circuit_expr: ast.expr
+
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
 
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
         del line_indent
@@ -1269,14 +1383,16 @@ def find_absence_branch_site(
             if extracted is not None:
                 if is_elif:
                     if extracted.replaced_ast_nodes() == (stmt,):
-                        return ElifAbsenceBranchSite(
+                        elif_site = ElifAbsenceBranchSite(
                             subject=extracted.subject,
                             probe_nodes=extracted.probe_nodes,
                             method_body=extracted.method_body,
                             is_whole_function=False,
                             inner=extracted,
                         )
-                else:
+                        if elif_site.subject_allowed():
+                            return elif_site
+                elif extracted.subject_allowed():
                     return extracted
         if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.IfExp):
             ifexp = stmt.value
@@ -1288,17 +1404,17 @@ def find_absence_branch_site(
                 extracted = _extract_absence_ternary_site(
                     ifexp, probes, is_whole_return=is_whole
                 )
-                if extracted is not None:
+                if extracted is not None and extracted.subject_allowed():
                     return extracted
             extracted = _extract_prefix_guarded_absence_ternary_site(
                 ifexp, target_lines, subject_source=subject_source
             )
-            if extracted is not None:
+            if extracted is not None and extracted.subject_allowed():
                 return extracted
     composite = _extract_composite_ternary_site(
         function, body, target_lines, subject_source=subject_source
     )
-    if composite is not None:
+    if composite is not None and composite.subject_allowed():
         return composite
     for node in ast.walk(function):
         if isinstance(node, ast.IfExp):
@@ -1309,12 +1425,12 @@ def find_absence_branch_site(
                 extracted = _extract_absence_ternary_site(
                     node, probes, is_whole_return=False
                 )
-                if extracted is not None:
+                if extracted is not None and extracted.subject_allowed():
                     return extracted
             extracted = _extract_prefix_guarded_absence_ternary_site(
                 node, target_lines, subject_source=subject_source
             )
-            if extracted is not None:
+            if extracted is not None and extracted.subject_allowed():
                 return extracted
     return None
 

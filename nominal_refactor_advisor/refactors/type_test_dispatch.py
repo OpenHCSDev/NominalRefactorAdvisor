@@ -4079,6 +4079,8 @@ def _cross_module_imports_for_body(
     if source_module.file_path == destination.file_path:
         return ()
     bindings = snapshot.module_binding_proof
+    import_graph = snapshot.module_import_graph
+    scanned_module_names = frozenset(import_graph.source_files_by_module_name)
     dest_module = snapshot.parsed_module_for_source_path(destination.file_path)
     excluded = local_exclusions | _body_bound_names(body)
     imports: list[ModuleImportMutation] = []
@@ -4119,7 +4121,18 @@ def _cross_module_imports_for_body(
         targets = snapshot.source_index.targets_matching_repository_symbol(
             expected.qualified_name
         )
-        if len(targets) != 1:
+        import_source: str | None = None
+        if len(targets) == 1:
+            import_source = import_graph.required_import_source(
+                importing_file_path=destination.file_path,
+                imported_file_path=targets[0].file_path,
+                imported_name=name,
+            )
+        else:
+            import_source = _external_import_source_for_name(
+                source_module.module, name, scanned_module_names
+            )
+        if import_source is None:
             raise NeedsInput(
                 f"`{expected.qualified_name}` has no single scanned declaration to import",
                 NeededInput.PROOF,
@@ -4127,11 +4140,7 @@ def _cross_module_imports_for_body(
         imports.append(
             ModuleImportMutation.from_source(
                 file_path=destination.file_path,
-                import_source=snapshot.module_import_graph.required_import_source(
-                    importing_file_path=destination.file_path,
-                    imported_file_path=targets[0].file_path,
-                    imported_name=name,
-                ),
+                import_source=import_source,
                 rationale=rationale,
             )
         )
