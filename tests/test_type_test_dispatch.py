@@ -2918,6 +2918,203 @@ def test_split_base_method_in_place_with_tier2_mi_precedence_override(
     assert _findings(tmp_path) == []
 
 
+def test_widened_in_membership_issubclass_type_impure_subject_elif_void_and_boolop(
+    tmp_path: Path,
+) -> None:
+    """Widened OwnTypeTest dispatch shapes: `cls in (A, B)`, `issubclass(type(x), Sub)`,
+    single-evaluation `Call`/`Subscript` subjects (refusing repeated calls), non-type-test
+    `elif` as `default_body`, consecutive exact void `if`s, and inline `BoolOp` suffix
+    predicate inside an unpushable loop `if`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/shapes.py": (
+                "from __future__ import annotations\n"
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Base:\n"
+                "    tag: str\n\n\n"
+                "class SubA(Base):\n"
+                "    pass\n\n\n"
+                "class SubASub(SubA):\n"
+                "    pass\n\n\n"
+                "class SubB(Base):\n"
+                "    pass\n\n\n"
+                "class SubC(Base):\n"
+                "    pass\n\n\n"
+                "CALLS: list[str] = []\n\n\n"
+                "def fetch(key: str) -> Base:\n"
+                "    CALLS.append(key)\n"
+                "    if key == 'a':\n"
+                "        return SubA('a')\n"
+                "    if key == 'b':\n"
+                "        return SubB('b')\n"
+                "    return Base(key)\n\n\n"
+                "def kind_label(cls: type[Base]) -> str:\n"
+                "    return 'bc' if cls in (SubB, SubC) else 'other'\n\n\n"
+                "def exact_with_subclass_refused(cls: type[Base]) -> str:\n"
+                "    return 'ab' if cls in (SubA, SubB) else 'other'\n\n\n"
+                "def is_sub_a_via_type(item: Base) -> bool:\n"
+                "    return issubclass(type(item), SubA)\n\n\n"
+                "def fetched_is_sub_a(key: str) -> bool:\n"
+                "    return isinstance(fetch(key), SubA)\n\n\n"
+                "def first_cls_is_sub_b(classes: tuple[type[Base], ...]) -> bool:\n"
+                "    return issubclass(classes[0], SubB)\n\n\n"
+                "def repeated_call_refused(key: str) -> str:\n"
+                "    if isinstance(fetch(key), SubA):\n"
+                "        return fetch(key).tag\n"
+                "    return 'none'\n\n\n"
+                "def elif_default(item: Base, fallback: bool) -> str:\n"
+                "    if isinstance(item, SubA):\n"
+                "        return f'a:{item.tag}'\n"
+                "    elif fallback:\n"
+                "        return 'fallback'\n"
+                "    else:\n"
+                "        return 'plain'\n\n\n"
+                "def record_exact(cls: type[Base], out: list[str]) -> None:\n"
+                "    if cls is SubB:\n"
+                "        out.append('B')\n"
+                "    if cls is SubC:\n"
+                "        out.append('C')\n\n\n"
+                "def filter_special_tags(\n"
+                "    items: list[Base], allowed: set[str], ready: bool | None\n"
+                ") -> list[str]:\n"
+                "    kept: list[str] = []\n"
+                "    for item in items:\n"
+                "        if (\n"
+                "            ready is not None\n"
+                "            and type(item) is SubB\n"
+                "            and item.tag in allowed\n"
+                "        ):\n"
+                "            kept.append(item.tag)\n"
+                "            continue\n"
+                "        if item.tag == 'stop':\n"
+                "            break\n"
+                "    return kept\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    snap = _snapshot(tmp_path)
+    by_fn = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_fn) == {
+        "kind_label",
+        "exact_with_subclass_refused",
+        "is_sub_a_via_type",
+        "fetched_is_sub_a",
+        "first_cls_is_sub_b",
+        "repeated_call_refused",
+        "elif_default",
+        "record_exact",
+        "filter_special_tags",
+    }
+
+    # Impure Call subject referenced again in the arm body MUST stay refused.
+    rep_ev = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        by_fn["repeated_call_refused"], snap
+    )
+    assert rep_ev.recipe is None
+    assert "not a pushable dispatch shape" in (rep_ev.rejection_reason or "")
+
+    # Exact `in (SubA, SubB)` when `SubA` has a subclass MUST stay refused.
+    exact_sub_ev = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        by_fn["exact_with_subclass_refused"], snap
+    )
+    assert exact_sub_ev.recipe is None
+    assert "disagrees with the original type-test branch order" in (
+        exact_sub_ev.rejection_reason or ""
+    )
+
+    # Whole-function shapes execute directly; embedded BoolOp suffix requests OWNER_PICK.
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_fn["filter_special_tags"].stable_id,
+                owner="filter_special_tags",
+                because="Base owns exact SubB allowed-tag matching",
+                name="matches_allowed_tag",
+                judgement="True when this is an exact SubB whose tag is in allowed.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(
+        tuple(
+            f
+            for sym, f in by_fn.items()
+            if sym not in {"repeated_call_refused", "exact_with_subclass_refused"}
+        )
+    )
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 7, plan.report
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "shapes.py").read_text()
+    assert "cls.kind_label()" in after
+    assert "item.is_sub_a_via_type()" in after
+    assert "fetch(key).fetched_is_sub_a()" in after
+    assert "classes[0].first_cls_is_sub_b()" in after
+    assert "item.elif_default(fallback)" in after
+    assert "cls.record_exact(out)" in after
+    assert "and item.matches_allowed_tag(allowed)" in after
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "pkg/shapes.py"), "exec"), ns)
+    Base, SubA, SubASub, SubB, SubC = (
+        ns["Base"],
+        ns["SubA"],
+        ns["SubASub"],
+        ns["SubB"],
+        ns["SubC"],
+    )
+    assert ns["kind_label"](SubB) == "bc"  # type: ignore[operator]
+    assert ns["kind_label"](SubC) == "bc"  # type: ignore[operator]
+    assert ns["kind_label"](SubA) == "other"  # type: ignore[operator]
+    assert ns["kind_label"](Base) == "other"  # type: ignore[operator]
+
+    assert ns["is_sub_a_via_type"](SubA("x")) is True  # type: ignore[operator]
+    assert ns["is_sub_a_via_type"](SubASub("x")) is True  # type: ignore[operator]
+    assert ns["is_sub_a_via_type"](SubB("x")) is False  # type: ignore[operator]
+
+    calls: list[str] = ns["CALLS"]  # type: ignore[assignment]
+    assert ns["fetched_is_sub_a"]("a") is True  # type: ignore[operator]
+    assert ns["fetched_is_sub_a"]("b") is False  # type: ignore[operator]
+    assert calls == ["a", "b"]
+
+    assert ns["first_cls_is_sub_b"]((SubB, SubA)) is True  # type: ignore[operator]
+    assert ns["first_cls_is_sub_b"]((SubA, SubB)) is False  # type: ignore[operator]
+
+    assert ns["elif_default"](SubA("hi"), False) == "a:hi"  # type: ignore[operator]
+    assert ns["elif_default"](SubB("hi"), True) == "fallback"  # type: ignore[operator]
+    assert ns["elif_default"](SubB("hi"), False) == "plain"  # type: ignore[operator]
+
+    recorded: list[str] = []
+    ns["record_exact"](SubB, recorded)  # type: ignore[operator]
+    ns["record_exact"](SubA, recorded)  # type: ignore[operator]
+    ns["record_exact"](SubC, recorded)  # type: ignore[operator]
+    ns["record_exact"](Base, recorded)  # type: ignore[operator]
+    assert recorded == ["B", "C"]
+
+    assert ns["filter_special_tags"](  # type: ignore[operator]
+        [SubB("ok"), SubA("ok"), SubC("ok"), SubB("ok"), SubB("stop"), SubB("ok")],
+        {"ok"},
+        True,
+    ) == ["ok", "ok"]
+    assert ns["filter_special_tags"](  # type: ignore[operator]
+        [SubB("ok"), SubA("stop"), SubB("ok")],
+        {"ok"},
+        True,
+    ) == ["ok"]
+    assert ns["filter_special_tags"]([SubB("ok")], {"ok"}, None) == []  # type: ignore[operator]
+
+
+
 
 
 

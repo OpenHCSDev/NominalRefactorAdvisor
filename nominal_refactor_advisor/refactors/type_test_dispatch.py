@@ -236,6 +236,46 @@ def _is_pure_subject(expr: ast.expr) -> bool:
     return isinstance(current, ast.Name)
 
 
+def _is_dispatchable_type_test_subject(expr: ast.expr) -> bool:
+    """Pure Name/Attribute chain, or single-evaluation Call/Subscript chain."""
+
+    if _is_pure_subject(expr):
+        return True
+    if not isinstance(expr, (ast.Attribute, ast.Call, ast.Subscript)):
+        return False
+    return _is_dispatchable_match_subject(expr)
+
+
+def _looks_like_class_reference(expr: ast.expr) -> bool:
+    """Whether `expr` is a `Name` or `Attribute` whose leaf name starts uppercase."""
+
+    match expr:
+        case ast.Name(id=leaf) | ast.Attribute(attr=leaf):
+            stripped = leaf.lstrip("_")
+            return bool(stripped) and stripped[0].isupper()
+    return False
+
+
+def _unpack_exact_class_members(expr: ast.expr) -> tuple[ast.expr, ...] | None:
+    """Unpack `(SubA, SubB)`, `{SubA, SubB}`, `[SubA, SubB]`, or `frozenset((SubA, SubB))`."""
+
+    elts: list[ast.expr]
+    match expr:
+        case ast.Tuple(elts=items) | ast.Set(elts=items) | ast.List(elts=items):
+            elts = items
+        case ast.Call(
+            func=ast.Name(id="frozenset" | "set"),
+            args=[ast.Tuple(elts=items) | ast.Set(elts=items) | ast.List(elts=items)],
+            keywords=[],
+        ):
+            elts = items
+        case _:
+            return None
+    if not elts or not all(_looks_like_class_reference(item) for item in elts):
+        return None
+    return tuple(elts)
+
+
 def _unpack_type_targets(expr: ast.expr) -> tuple[ast.expr, ...] | None:
     match expr:
         case ast.Tuple(elts=elts) if elts:
@@ -260,10 +300,22 @@ def _parse_type_test(expr: ast.expr) -> ParsedTypeTest | None:
             inner = operand
     match inner:
         case ast.Call(
+            func=ast.Name(id="issubclass"),
+            args=[
+                ast.Call(func=ast.Name(id="type"), args=[subject], keywords=[]),
+                target,
+            ],
+            keywords=[],
+        ) if _is_dispatchable_type_test_subject(subject):
+            targets = _unpack_type_targets(target)
+            if targets is None:
+                return None
+            return ParsedTypeTest(subject, targets, InstanceDispatchKind(), negated, False, expr)
+        case ast.Call(
             func=ast.Name(id="isinstance" | "issubclass" as func_name),
             args=[subject, target],
             keywords=[],
-        ) if _is_pure_subject(subject):
+        ) if _is_dispatchable_type_test_subject(subject):
             targets = _unpack_type_targets(target)
             if targets is None:
                 return None
@@ -277,7 +329,7 @@ def _parse_type_test(expr: ast.expr) -> ParsedTypeTest | None:
             left=ast.Call(func=ast.Name(id="type"), args=[subject], keywords=[]),
             ops=[ast.Is() | ast.IsNot() as op],
             comparators=[ast.Name() | ast.Attribute() as target],
-        ) if _is_pure_subject(subject):
+        ) if _is_dispatchable_type_test_subject(subject):
             is_negated = negated ^ isinstance(op, ast.IsNot)
             return ParsedTypeTest(
                 subject, (target,), InstanceDispatchKind(), is_negated, True, expr
@@ -286,10 +338,22 @@ def _parse_type_test(expr: ast.expr) -> ParsedTypeTest | None:
             left=subject,
             ops=[ast.Is() | ast.IsNot() as op],
             comparators=[ast.Name() | ast.Attribute() as target],
-        ) if _is_pure_subject(subject):
+        ) if _is_dispatchable_type_test_subject(subject):
             is_negated = negated ^ isinstance(op, ast.IsNot)
             return ParsedTypeTest(
                 subject, (target,), ClassDispatchKind(), is_negated, True, expr
+            )
+        case ast.Compare(
+            left=subject,
+            ops=[ast.In() | ast.NotIn() as op],
+            comparators=[container],
+        ) if _is_dispatchable_type_test_subject(subject):
+            targets = _unpack_exact_class_members(container)
+            if targets is None:
+                return None
+            is_negated = negated ^ isinstance(op, ast.NotIn)
+            return ParsedTypeTest(
+                subject, targets, ClassDispatchKind(), is_negated, True, expr
             )
     return None
 
@@ -365,6 +429,19 @@ class DispatchSite(ABC):
     def reassigned_target(self) -> str | None:
         """Outer local explicitly passed in, rebound/augmented, and returned by the pushed method."""
         return None
+
+    def has_single_evaluation_subject(self) -> bool:
+        """Whether evaluating `self.subject` once at the dispatch call preserves side effects."""
+
+        if _is_pure_subject(self.subject):
+            return True
+        subject_dump = ast.dump(self.subject)
+        body_nodes: list[ast.AST] = [
+            stmt
+            for body in (*(arm.body for arm in self.arms), self.default_body)
+            for stmt in body
+        ]
+        return not _expr_occurs_in_nodes(subject_dump, body_nodes)
 
     def with_assigning_target(
         self,
@@ -2136,6 +2213,15 @@ def _extract_compound_if_site(
     return None
 
 
+def _contains_type_test_on(node: ast.AST, subject_dump: str) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.expr):
+            parsed = _parse_type_test(child)
+            if parsed is not None and ast.dump(parsed.subject) == subject_dump:
+                return True
+    return False
+
+
 def _extract_if_site(
     container: list[ast.stmt],
     index: int,
@@ -2156,7 +2242,11 @@ def _extract_if_site(
     if first_test.negated:
         if stmt.orelse:
             # `if not isinstance(x, Sub): default else: arm`
-            if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.If):
+            if (
+                len(stmt.orelse) == 1
+                and isinstance(stmt.orelse[0], ast.If)
+                and _contains_type_test_on(stmt.orelse[0], subject_dump)
+            ):
                 return None
             replaced = (stmt,)
             is_whole = container is whole_fn_body and len(whole_fn_body) == 1
@@ -2249,12 +2339,18 @@ def _extract_if_site(
     while len(current_orelse) == 1 and isinstance(current_orelse[0], ast.If):
         branch = current_orelse[0]
         branch_test = _parse_type_test(branch.test)
-        if branch_test is None or branch_test.negated:
+        if branch_test is None:
+            if _contains_type_test_on(branch, subject_dump):
+                return None
+            break
+        if branch_test.negated:
             return None
         same_subject = ast.dump(branch_test.subject) == subject_dump
         same_kind = type(branch_test.kind) is type(first_test.kind)
         if not (same_subject and same_kind):
-            return None
+            if _contains_type_test_on(branch, subject_dump):
+                return None
+            break
         arms_list.append(
             TypeTestArm(branch_test.tested_exprs, tuple(branch.body), branch_test.exact)
         )
@@ -2468,6 +2564,51 @@ def _extract_if_site(
             replaced_nodes=tuple(container[index:]),
         )
     if not any(_has_any_return(arm.body) for arm in arms_list):
+        if (
+            len(arms_list) == 1
+            and first_test.exact
+            and not _has_loop_escape(stmt.body)
+        ):
+            exact_void_arms = list(arms_list)
+            exact_void_tests = list(test_nodes)
+            seen_targets = {ast.dump(e) for e in first_test.tested_exprs}
+            void_end = index + 1
+            while void_end < len(container):
+                nxt = container[void_end]
+                if not isinstance(nxt, ast.If) or nxt.orelse:
+                    break
+                nxt_test = _parse_type_test(nxt.test)
+                if (
+                    nxt_test is None
+                    or nxt_test.negated
+                    or not nxt_test.exact
+                    or ast.dump(nxt_test.subject) != subject_dump
+                    or type(nxt_test.kind) is not type(first_test.kind)
+                    or _has_any_return(nxt.body)
+                    or _has_loop_escape(nxt.body)
+                ):
+                    break
+                nxt_dumps = {ast.dump(e) for e in nxt_test.tested_exprs}
+                if not seen_targets.isdisjoint(nxt_dumps):
+                    break
+                seen_targets.update(nxt_dumps)
+                exact_void_arms.append(
+                    TypeTestArm(nxt_test.tested_exprs, tuple(nxt.body), nxt_test.exact)
+                )
+                exact_void_tests.append(nxt_test.test_node)
+                void_end += 1
+            if void_end > index + 1:
+                replaced = tuple(container[index:void_end])
+                is_whole = container is whole_fn_body and index == 0 and void_end == len(container)
+                return StatementDispatchSite(
+                    subject=first_test.subject,
+                    kind=first_test.kind,
+                    arms=tuple(exact_void_arms),
+                    default_body=(ast.Pass(),),
+                    is_whole_function=is_whole,
+                    test_nodes=tuple(exact_void_tests),
+                    replaced_nodes=replaced,
+                )
         replaced = (stmt,)
         is_whole = container is whole_fn_body and len(whole_fn_body) == 1
         return StatementDispatchSite(
@@ -3378,16 +3519,16 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
     body = _body_without_docstring(function)
     for container, index, stmt, in_loop_body in _statement_list_children(body):
         if isinstance(stmt, ast.If) and (
-            stmt.test.lineno == test_line
+            _node_covers_line(stmt.test, test_line)
             or (
                 isinstance(stmt.test, ast.BoolOp)
-                and any(value.lineno == test_line for value in stmt.test.values)
+                and any(_node_covers_line(value, test_line) for value in stmt.test.values)
             )
         ):
             extracted = _extract_if_site(
                 container, index, stmt, body, test_line, in_loop_body=in_loop_body
             )
-            if extracted is not None:
+            if extracted is not None and extracted.has_single_evaluation_subject():
                 return extracted
         if isinstance(stmt, ast.Match) and (
             stmt.lineno == test_line
@@ -3403,10 +3544,10 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
                 ):
                     is_whole = container is body and len(body) == 1
                     extracted = _extract_ternary_site(ifexp, is_whole, test_line=test_line)
-                    if extracted is not None:
+                    if extracted is not None and extracted.has_single_evaluation_subject():
                         return extracted
                 case ast.Return(value=ast.expr() as returned) if (
-                    returned.lineno == test_line
+                    _node_covers_line(returned, test_line)
                     or (
                         isinstance(returned, ast.BoolOp)
                         and any(
@@ -3417,10 +3558,11 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
                 ):
                     is_whole = container is body and len(body) == 1
                     extracted = _extract_boolean_expr_site(returned, is_whole, test_line)
-                    if extracted is not None:
+                    if extracted is not None and extracted.has_single_evaluation_subject():
                         return extracted
-    # Fallback: ternary `IfExp`, non-branching compound `BoolOp`, or bare boolean type-test
-    # expression (e.g. inside `any(...)`, `all(...)`, assignments, comprehensions) on `test_line`.
+    # Fallback: ternary `IfExp`, compound `BoolOp` (including non-constant-bool suffixes
+    # inside unpushable `if`/`IfExp` conditions), or bare boolean type-test expression
+    # (e.g. inside `any(...)`, `all(...)`, assignments, comprehensions) on `test_line`.
     branch_tests: set[int] = set()
     excluded_bare_tests: set[int] = set()
     for node in ast.walk(function):
@@ -3443,33 +3585,32 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
             extracted = _extract_ternary_site(
                 node, is_whole_return=False, test_line=test_line
             )
-            if extracted is not None:
+            if extracted is not None and extracted.has_single_evaluation_subject():
                 return extracted
     for node in ast.walk(function):
-        if (
-            isinstance(node, ast.BoolOp)
-            and id(node) not in branch_tests
-            and any(
-                value.lineno <= test_line <= (value.end_lineno or value.lineno)
-                for value in node.values
-            )
+        if isinstance(node, ast.BoolOp) and any(
+            _node_covers_line(value, test_line) for value in node.values
         ):
             extracted = _extract_boolean_expr_site(
                 node, is_whole_return=False, test_line=test_line
             )
-            if extracted is not None:
+            if (
+                extracted is not None
+                and extracted.has_single_evaluation_subject()
+                and (id(node) not in branch_tests or not extracted.returns_constant_bool)
+            ):
                 return extracted
     for node in ast.walk(function):
         if (
             isinstance(node, ast.expr)
             and id(node) not in excluded_bare_tests
-            and node.lineno <= test_line <= (node.end_lineno or node.lineno)
+            and _node_covers_line(node, test_line)
             and _parse_type_test(node) is not None
         ):
             extracted = _extract_boolean_expr_site(
                 node, is_whole_return=False, test_line=test_line
             )
-            if extracted is not None:
+            if extracted is not None and extracted.has_single_evaluation_subject():
                 return extracted
     return None
 
