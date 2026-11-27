@@ -22,6 +22,7 @@ from nominal_refactor_advisor.detectors._restated_overrides import RestatedOverr
 from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.refactors.class_attribute_reads import InstalledPackageBaseReads
+from nominal_refactor_advisor.refactors.class_overlap import ComposedAncestry, OverlapClass
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 META = (
@@ -329,3 +330,120 @@ def test_names_an_installed_class_declares_for_the_type_checker_only_are_not_bou
     assert evaluation.rejection_reason == ""
     _apply(evaluation, snapshot)
     assert _run(site, scan) == expected
+
+
+COMPOSITION_NODE = (
+    "class Marker:\n    pass\n\n\n"
+    "class Node:\n"
+    "    def __init_subclass__(cls, **kwargs):\n"
+    "        super().__init_subclass__(**kwargs)\n"
+    "        marked = cls._marked = {}\n"
+    "        for base in reversed(cls.__mro__):\n"
+    "            marked.update({name: value for name, value in base.__dict__.items() if isinstance(value, Marker)})\n"
+    "        bases = cls._css_bases(cls)\n"
+    "        cls._css_names = tuple(base.__name__ for base in bases)\n"
+    "        cls._gen_bases = tuple(base for base in cls.__mro__ if issubclass(base, Node))\n"
+    "        for base in bases:\n"
+    "            cls._last_css = base.__name__\n"
+    "        cls._paints = any(method in cls.__dict__ for method in ('render', '_render'))\n"
+    "        cls._own_markers = cls._collect_own('_tag')\n"
+    "        cls._computed = frozenset(name for name in dir(cls) if name.startswith('compute_'))\n\n"
+    "    @classmethod\n"
+    "    def _css_bases(cls, base):\n"
+    "        classes: list[type] = []\n"
+    "        for ancestor in base.__mro__:\n"
+    "            if issubclass(ancestor, Node):\n"
+    "                classes.append(ancestor)\n"
+    "        return classes\n\n"
+    "    @classmethod\n"
+    "    def _collect_own(cls, key, bases=None):\n"
+    "        found = []\n"
+    "        for base in cls.__mro__ if bases is None else bases:\n"
+    "            if key in base.__dict__:\n"
+    "                found.append(base.__dict__[key])\n"
+    "        return tuple(found)\n\n\n"
+    "class Widget(Node):\n    pass\n"
+)
+
+
+def _compose_proof(site: Path, scan: Path, app_source: str, main_source: str, composer: str, owner: str, moved: tuple[str, ...]):
+    _write(site, {"toolkit/comp.py": COMPOSITION_NODE})
+    _write(scan, {"app/comp.py": app_source, "main.py": main_source})
+    for cached in CACHES:
+        cached.cache_clear()
+    snap = CodemodSourceSnapshot.from_modules(parse_python_modules(scan, use_parse_cache=False))
+    comp_cls = OverlapClass.for_symbol(snap, f"app.comp.{composer}")
+    owner_cls = OverlapClass.for_symbol(snap, f"app.comp.{owner}")
+    return ComposedAncestry(snap, comp_cls, (owner_cls,), frozenset(moved)).creation()
+
+
+def test_class_creation_proves_plain_mixin_under_textual_style_init_subclass(roots):
+    site, scan = roots
+    app_source = (
+        "from toolkit.comp import Marker, Widget\n\n\n"
+        "class SharedStyle:\n"
+        "    def format_label(self):\n        return 'ok'\n\n\n"
+        "class Panel(Widget):\n"
+        "    flag = Marker()\n"
+        "    _tag = 'panel'\n\n"
+        "    def render(self):\n        return 'r'\n\n"
+        "    def format_label(self):\n        return 'ok'\n"
+    )
+    main_source = (
+        "from app.comp import Panel\n"
+        "print(Panel._css_names, [c.__name__ for c in Panel._gen_bases], sorted(Panel._marked), "
+        "Panel._paints, Panel._own_markers, sorted(Panel._computed), Panel().format_label())\n"
+    )
+    proof = _compose_proof(site, scan, app_source, main_source, "Panel", "SharedStyle", ("format_label",))
+    proof.require_unchanged()
+    before = _run(site, scan)
+    _write(
+        scan,
+        {
+            "app/comp.py": app_source.replace(
+                "class Panel(Widget):", "class Panel(SharedStyle, Widget):"
+            ).replace(
+                "    def render(self):\n        return 'r'\n\n    def format_label(self):\n        return 'ok'\n",
+                "    def render(self):\n        return 'r'\n",
+            )
+        },
+    )
+    assert _run(site, scan) == before
+
+
+def test_class_creation_refuses_node_subclass_or_marker_or_dir_or_moved_dict_key(roots):
+    site, scan = roots
+    base_app = (
+        "from toolkit.comp import Marker, Widget\n\n\n"
+        "class CenteredText(Widget):\n"
+        "    def format_label(self):\n        return 'ok'\n\n\n"
+        "class MarkerMixin:\n"
+        "    extra = Marker()\n"
+        "    def format_label(self):\n        return 'ok'\n\n\n"
+        "class ExtraAnnMixin:\n"
+        "    extra_ann: int = 1\n"
+        "    def format_label(self):\n        return 'ok'\n\n\n"
+        "class RenderMixin:\n"
+        "    def render(self):\n        return 'r'\n\n\n"
+        "class Panel(Widget):\n"
+        "    extra_ann = 1\n\n"
+        "    def render(self):\n        return 'r'\n\n"
+        "    def format_label(self):\n        return 'ok'\n"
+    )
+    main_source = "from app.comp import Panel\nprint(Panel._css_names)\n"
+
+    # Composing another Node subclass changes `issubclass(ancestor, Node)` walks.
+    with pytest.raises(Exception, match="subclasses"):
+        _compose_proof(site, scan, base_app, main_source, "Panel", "CenteredText", ("format_label",)).require_unchanged()
+
+    # Composing a mixin with a Marker changes `isinstance(v, Marker)` reversed MRO walks.
+    with pytest.raises(Exception, match="Marker"):
+        _compose_proof(site, scan, base_app, main_source, "Panel", "MarkerMixin", ("format_label",)).require_unchanged()
+
+    # Composing a mixin with an annotation changes `dir(cls)` (`__annotations__`/`__annotate_func__`).
+    with pytest.raises(Exception, match="dir"):
+        _compose_proof(site, scan, base_app, main_source, "Panel", "ExtraAnnMixin", ("format_label",)).require_unchanged()
+
+    # Moving `'render'` out of `Panel` changes `any(method in cls.__dict__ for method in ('render', '_render'))`.
+    with pytest.raises(Exception, match="reads the class namespace"):
+        _compose_proof(site, scan, base_app, main_source, "Panel", "RenderMixin", ("render",)).require_unchanged()
