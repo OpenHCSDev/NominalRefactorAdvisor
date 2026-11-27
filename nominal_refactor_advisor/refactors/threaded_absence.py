@@ -45,6 +45,7 @@ from nominal_refactor_advisor.models import (
     RefactorFinding,
     ThreadedAbsenceMetrics,
 )
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.probe_owner import ReceiverSpan
 from nominal_refactor_advisor.refactor_concepts import ThreadedAbsenceFamilyConcept
@@ -1494,32 +1495,31 @@ def _collect_closed_call_args(
             )
         target_symbol = f"{source_module.module_name}.{function.name}"
         for mod in snapshot.parsed_modules:
-            call_func_ids: dict[int, ast.Call] = {
-                id(node.func): node
-                for node in ast.walk(mod.module)
-                if isinstance(node, ast.Call)
-            }
-            for node in ast.walk(mod.module):
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                    if node.id != function.name:
-                        continue
-                elif isinstance(node, ast.Attribute) and node.attr == function.name:
-                    pass
-                else:
-                    continue
+            if function.name not in mod.source:
+                continue
+            node_index = mod.fact(ModuleNodeIndex)
+            candidates: tuple[ast.Name | ast.Attribute, ...] = (
+                *(
+                    name_node
+                    for name_node in node_index.names_by_id.get(function.name, ())
+                    if isinstance(name_node.ctx, ast.Load)
+                ),
+                *node_index.attributes_by_attr.get(function.name, ()),
+            )
+            for node in candidates:
                 witness = bindings.reference_or_builtin_witness_at(
                     mod, node, line=node.lineno
                 )
                 if witness is None or witness.qualified_name != target_symbol:
                     continue
-                parent_call = call_func_ids.get(id(node))
-                if parent_call is None:
+                parent = node_index.parents.get(node)
+                if not (isinstance(parent, ast.Call) and parent.func is node):
                     raise NeedsInput(
                         f"{mod.file_path}:{node.lineno} references `{function.name}` as a value; callers are not closed",
                         NeededInput.PROOF,
                     )
                 arg_expr = _extract_call_argument(
-                    parent_call, param_name, call_pos, has_default
+                    parent, param_name, call_pos, has_default
                 )
                 if arg_expr is not None:
                     raw_args.append((mod.file_path, arg_expr))
@@ -1550,34 +1550,43 @@ def _collect_closed_call_args(
             )
     reaching_symbols = frozenset((owner_symbol, *index.descendant_symbols(owner_symbol)))
     owner_qualname = classes[owner_symbol].qualname
+    reaching_files = frozenset(
+        (
+            source_path,
+            *(
+                classes[sym].file_path
+                for sym in reaching_symbols
+                if sym in classes
+            ),
+        )
+    )
 
     # Pass 1: collect definite hits and defer receiver-type queries for one batched mypy call.
     definite_hits: list[tuple[str, ast.Attribute, ast.Call | None]] = []
     deferred_checks: list[tuple[str, ast.Attribute, ast.Call | None, ReceiverSpan]] = []
     for mod in snapshot.parsed_modules:
-        call_func_ids = {
-            id(node.func): node
-            for node in ast.walk(mod.module)
-            if isinstance(node, ast.Call)
-        }
+        if function.name not in mod.source:
+            continue
+        node_index = mod.fact(ModuleNodeIndex)
+        attr_nodes = node_index.attributes_by_attr.get(function.name, ())
+        if not attr_nodes:
+            continue
         reaching_class_ranges: list[tuple[int, int]] = []
-        if mod.file_path == source_path or any(
-            classes[sym].file_path == mod.file_path
-            for sym in reaching_symbols
-            if sym in classes
-        ):
-            for node in ast.walk(mod.module):
-                if isinstance(node, ast.ClassDef):
-                    sym = f"{mod.module_name}.{node.name}"
-                    if sym in reaching_symbols:
-                        reaching_class_ranges.append(
-                            (node.lineno, node.end_lineno or node.lineno)
-                        )
+        if mod.file_path in reaching_files:
+            for _cls_idx, cls_node in mod.syntax_index.indexed_nodes_of_type(
+                ast.ClassDef
+            ):
+                sym = f"{mod.module_name}.{cls_node.name}"
+                if sym in reaching_symbols:
+                    reaching_class_ranges.append(
+                        (cls_node.lineno, cls_node.end_lineno or cls_node.lineno)
+                    )
 
-        for node in ast.walk(mod.module):
-            if not isinstance(node, ast.Attribute) or node.attr != function.name:
-                continue
-            parent_call = call_func_ids.get(id(node))
+        for node in attr_nodes:
+            parent = node_index.parents.get(node)
+            parent_call = (
+                parent if isinstance(parent, ast.Call) and parent.func is node else None
+            )
             if isinstance(node.value, ast.Name) and node.value.id in ("self", "cls"):
                 if any(lo <= node.lineno <= hi for lo, hi in reaching_class_ranges):
                     definite_hits.append((mod.file_path, node, parent_call))

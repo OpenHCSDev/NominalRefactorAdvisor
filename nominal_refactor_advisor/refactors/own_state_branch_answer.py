@@ -19,6 +19,7 @@ from dataclasses import dataclass, replace
 
 from nominal_refactor_advisor.ast_field_decoders import optional_values
 from nominal_refactor_advisor.ast_projection import CallKeywords, ExpressionReference
+from nominal_refactor_advisor.ast_tools import AstParentIndex
 from nominal_refactor_advisor.class_index import (
     PROPERTY_DECORATORS,
     ModuleNominalBindingAuthority,
@@ -661,33 +662,31 @@ class _RewriteToFactoryCtor(_CtorRewrite):
         return True
 
 
-def _annotation_node_ids(module: ast.Module) -> frozenset[int]:
-    """Return AST node ids sitting inside type annotations or `isinstance`/`issubclass` checks."""
+def _is_in_annotation_or_type_check(node: ast.AST, parents: AstParentIndex) -> bool:
+    """True when `node` sits inside a type annotation or the 2nd arg of `isinstance`/`issubclass`."""
 
-    ids: set[int] = set()
-
-    def mark(root: ast.AST) -> None:
-        for node in ast.walk(root):
-            ids.add(id(node))
-
-    for node in ast.walk(module):
-        match node:
-            case ast.AnnAssign(annotation=ann):
-                mark(ann)
-            case ast.arg(annotation=ann) if ann is not None:
-                mark(ann)
-            case ast.FunctionDef(returns=ret) | ast.AsyncFunctionDef(returns=ret) if (
-                ret is not None
-            ):
-                mark(ret)
-            case ast.TypeAlias(value=val):
-                mark(val)
+    child: ast.AST = node
+    parent = parents.get(child)
+    while parent is not None:
+        match parent:
+            case ast.AnnAssign(annotation=ann) if ann is child:
+                return True
+            case ast.arg(annotation=ann) if ann is child:
+                return True
+            case (
+                ast.FunctionDef(returns=ret) | ast.AsyncFunctionDef(returns=ret)
+            ) if ret is child:
+                return True
+            case ast.TypeAlias(value=val) if val is child:
+                return True
             case ast.Call(
                 func=ast.Name(id="isinstance" | "issubclass"),
                 args=[_, second],
-            ):
-                mark(second)
-    return frozenset(ids)
+            ) if second is child:
+                return True
+        child = parent
+        parent = parents.get(child)
+    return False
 
 
 def _replace_call_mutates_predicate_fields(
@@ -766,66 +765,60 @@ def _collect_closed_constructions(
                 raw_ctors.append((record_target.file_path, node, bound))
 
     record_short_name = record_target.qualname.rsplit(".", 1)[-1]
+    pending_replace_checks: list[tuple[str, ast.Call, ReceiverSpan]] = []
     for mod in snapshot.parsed_modules:
-        if record_short_name not in mod.source:
+        has_record_name = record_short_name in mod.source
+        has_replace_name = "replace" in mod.source
+        if not has_record_name and not has_replace_name:
             continue
-        ann_ids = _annotation_node_ids(mod.module)
-        call_func_ids: dict[int, ast.Call] = {}
-        attr_value_ids: dict[int, ast.Attribute] = {}
-        for node in ast.walk(mod.module):
-            if isinstance(node, ast.Call):
-                call_func_ids[id(node.func)] = node
-            elif isinstance(node, ast.Attribute):
-                attr_value_ids[id(node.value)] = node
+        node_index = mod.fact(ModuleNodeIndex)
 
-        mod_bindings = ModuleNominalBindingAuthority(mod)
-        for node in ast.walk(mod.module):
-            # Refuse `dataclasses.replace(rec, ...)` only when it mutates a predicate field on `Record`.
-            if isinstance(node, ast.Call):
-                callee_parts = ExpressionReference.decoded(node.func).attribute_chain
+        if has_replace_name:
+            mod_bindings: ModuleNominalBindingAuthority | None = None
+            for call in node_index.calls:
+                if not call.args or not _replace_call_mutates_predicate_fields(
+                    call, predicate_fields
+                ):
+                    continue
+                callee_parts = ExpressionReference.decoded(call.func).attribute_chain
+                if callee_parts is None:
+                    continue
+                if mod_bindings is None:
+                    mod_bindings = ModuleNominalBindingAuthority(mod)
                 if (
-                    callee_parts is not None
-                    and _replace_call_mutates_predicate_fields(node, predicate_fields)
-                    and mod_bindings.snapshot_before(node.lineno)
+                    mod_bindings.snapshot_before(call.lineno)
                     .reference_for(callee_parts)
                     .has_bound_name("dataclasses.replace")
                 ):
-                    if node.args:
-                        span = ReceiverSpan.of(mod.file_path, node.args[0])
-                        ans = snapshot.type_checker.receiver_types((span,)).get(span)
-                        if ans is not None and ans.reaches_method_owner(
-                            frozenset((record_symbol,)),
-                            file_path=mod.file_path,
-                            line=node.lineno,
-                            method_name="__replace__",
-                        ):
-                            raise NeedsInput(
-                                f"{mod.file_path}:{node.lineno} calls `dataclasses.replace` on predicate field(s) of `{record_target.qualname}`",
-                                NeededInput.PROOF,
-                            )
+                    pending_replace_checks.append(
+                        (mod.file_path, call, ReceiverSpan.of(mod.file_path, call.args[0]))
+                    )
 
-            if id(node) in ann_ids:
-                continue
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                if node.id != record_short_name:
-                    continue
-            elif isinstance(node, ast.Attribute) and node.attr == record_short_name:
-                pass
-            else:
+        if not has_record_name:
+            continue
+        candidates: tuple[ast.Name | ast.Attribute, ...] = (
+            *(
+                name_node
+                for name_node in node_index.names_by_id.get(record_short_name, ())
+                if isinstance(name_node.ctx, ast.Load)
+            ),
+            *node_index.attributes_by_attr.get(record_short_name, ()),
+        )
+        for node in candidates:
+            if _is_in_annotation_or_type_check(node, node_index.parents):
                 continue
             witness = bindings.reference_or_builtin_witness_at(
                 mod, node, line=node.lineno
             )
             if witness is None or witness.qualified_name != record_symbol:
                 continue
-            parent_call = call_func_ids.get(id(node))
-            if parent_call is not None:
-                bound = _bind_ctor_args(parent_call, fields, mod.file_path)
-                raw_ctors.append((mod.file_path, parent_call, bound))
+            parent = node_index.parents.get(node)
+            if isinstance(parent, ast.Call) and parent.func is node:
+                bound = _bind_ctor_args(parent, fields, mod.file_path)
+                raw_ctors.append((mod.file_path, parent, bound))
                 continue
-            parent_attr = attr_value_ids.get(id(node))
-            if parent_attr is not None:
-                if parent_attr.attr == "__new__":
+            if isinstance(parent, ast.Attribute) and parent.value is node:
+                if parent.attr == "__new__":
                     raise NeedsInput(
                         f"{mod.file_path}:{node.lineno} accesses `{record_target.qualname}.__new__`",
                         NeededInput.PROOF,
@@ -835,6 +828,23 @@ def _collect_closed_constructions(
                 f"{mod.file_path}:{node.lineno} references `{record_target.qualname}` as a value; construction sites are not closed",
                 NeededInput.PROOF,
             )
+
+    if pending_replace_checks:
+        replace_types = snapshot.type_checker.receiver_types(
+            tuple(dict.fromkeys(span for _, _, span in pending_replace_checks))
+        )
+        for file_path, call, span in pending_replace_checks:
+            ans = replace_types.get(span)
+            if ans is not None and ans.reaches_method_owner(
+                frozenset((record_symbol,)),
+                file_path=file_path,
+                line=call.lineno,
+                method_name="__replace__",
+            ):
+                raise NeedsInput(
+                    f"{file_path}:{call.lineno} calls `dataclasses.replace` on predicate field(s) of `{record_target.qualname}`",
+                    NeededInput.PROOF,
+                )
 
     if not raw_ctors:
         raise NeedsInput(
