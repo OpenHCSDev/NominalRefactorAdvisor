@@ -933,6 +933,22 @@ class ThreadedAbsenceMetrics(DeclaredBasePickMetrics):
 
 
 @dataclass(frozen=True)
+class ZeroOneTupleMetrics(DeclaredBasePickMetrics):
+    """One function returning `()` or `(x,)`, ready for a present/absent family name pick."""
+
+    function_symbol: str
+
+    def base_pick_owner_name(
+        self, authority_evidence: SourceLocation | None
+    ) -> str | None:
+        del authority_evidence
+        return self.function_symbol
+
+    def base_pick_owner_label(self) -> str:
+        return "function"
+
+
+@dataclass(frozen=True)
 class RegistrationMetrics(RegistrationFindingMetrics, DeclaredBasePickMetrics):
     """Metrics for manual or duplicated class-registration surfaces."""
 
