@@ -789,9 +789,17 @@ def _extract_compound_answer_if(
                 (stmt,),
                 is_whole,
                 (first.test_node,),
+                container=container,
+                index=index,
+                whole_fn_body=whole_fn_body,
             )
         tail = container[index + 1 :]
-        if _always_terminates(stmt.body) and tail and _always_terminates(tail):
+        if (
+            tail
+            and _always_terminates(tail)
+            and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
+            and not _has_break_or_continue(stmt.body)
+        ):
             cond_body = (
                 ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
                 *tail,
@@ -910,17 +918,27 @@ def _extract_compound_answer_if(
                 (first.tested_value,),
             )
         tail = container[index + 1 :]
-        if _always_terminates(stmt.body) and tail and _always_terminates(tail):
+        if (
+            tail
+            and _always_terminates(tail)
+            and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
+            and not _has_break_or_continue(stmt.body)
+        ):
             arm_body = (
                 ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
                 *tail,
+            )
+            default_body = (
+                tuple(stmt.body)
+                if _always_terminates(stmt.body)
+                else (*stmt.body, *tail)
             )
             return _build_answer_statement_site(
                 first,
                 kind,
                 (_dummy_arm(arm_body),),
                 (first.tested_value,),
-                tuple(stmt.body),
+                default_body,
                 tuple(container[index:]),
                 container is whole_fn_body and index == 0,
                 (first.test_node,),

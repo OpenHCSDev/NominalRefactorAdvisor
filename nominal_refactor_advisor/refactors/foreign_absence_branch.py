@@ -2721,10 +2721,29 @@ class ForeignAbsenceProbeFindingRecipeSynthesizer(
         )
         owner_symbol = None if metrics is None else metrics.owner_symbol
         if owner_symbol is None:
+            if ast_evaluation.needs == (NeededInput.OPERATION,):
+                subject = (
+                    metrics.subject_source
+                    if metrics is not None and metrics.subject_source
+                    else "receiver"
+                )
+                return self.stopped_evaluation(
+                    NeedsInput(
+                        f"probed receiver `{subject}` has no resolved scanned owner class",
+                        NeededInput.SOURCE_CHANGE,
+                    )
+                )
             return ast_evaluation
         classes = snapshot.compact_class_index.classes_by_symbol
         if owner_symbol not in classes:
-            return ast_evaluation
+            if owner_symbol.startswith(("ast.", "_ast.")):
+                return ast_evaluation
+            return self.stopped_evaluation(
+                NeedsInput(
+                    f"owner `{owner_symbol}` is outside the scanned repository",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            )
 
         primary = finding.evidence[0]
         target = SourceRewriteTarget(

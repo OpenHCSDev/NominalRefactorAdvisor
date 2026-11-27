@@ -4703,6 +4703,61 @@ def _format_receiver_call(subject: ast.expr, method_name: str, call_args: str) -
     return f"({subject_source}).{method_name}({call_args})"
 
 
+def _declared_subject_annotation(
+    subject: ast.expr,
+    first_param: str | None,
+    positional: tuple[ast.arg, ...],
+    kwonlyargs: Sequence[ast.arg],
+    enclosure: FunctionEnclosure,
+) -> ast.expr | None:
+    match subject:
+        case ast.Name(id=name):
+            matched_param = next(
+                (arg for arg in (*positional, *kwonlyargs) if arg.arg == name),
+                None,
+            )
+            if matched_param is not None:
+                ann_tuple = declared_annotations(matched_param)
+                return ann_tuple[0] if ann_tuple else None
+        case ast.Attribute(value=ast.Name(id=name), attr=field_name) if (
+            name == first_param
+        ):
+            return enclosure.field_annotation(field_name)
+    return None
+
+
+def _subscript_element_annotations(container_annotation: ast.expr) -> tuple[ast.expr, ...]:
+    """Element annotations yielded by indexing a declared tuple, list, or sequence."""
+
+    elements: list[ast.expr] = []
+    for branch in _unpack_union_annotations(container_annotation):
+        if not isinstance(branch, ast.Subscript):
+            return ()
+        base_name = (
+            branch.value.id
+            if isinstance(branch.value, ast.Name)
+            else branch.value.attr
+            if isinstance(branch.value, ast.Attribute)
+            else None
+        )
+        if base_name in {"tuple", "Tuple"}:
+            match branch.slice:
+                case ast.Tuple(elts=[element, ast.Constant(value=Ellipsis)]):
+                    elements.append(element)
+                case ast.Tuple(elts=tuple_elts) if tuple_elts and not any(
+                    isinstance(item, ast.Constant) and item.value is Ellipsis
+                    for item in tuple_elts
+                ):
+                    elements.extend(tuple_elts)
+                case _:
+                    return ()
+        elif base_name in {"list", "List", "Sequence", "MutableSequence"}:
+            elements.append(branch.slice)
+        else:
+            return ()
+    return tuple(elements)
+
+
 def _resolve_subject_roots(
     snapshot: CodemodSourceSnapshot,
     resolver: AnsweredMethod,
@@ -4716,7 +4771,7 @@ def _resolve_subject_roots(
 
     positional = (*function.args.posonlyargs, *function.args.args)
     first_param = positional[0].arg if positional else None
-    annotation: ast.expr | None = None
+    annotations: tuple[ast.expr, ...] = ()
     branches: list[tuple[str, ...]] = []
 
     match site.subject:
@@ -4725,41 +4780,46 @@ def _resolve_subject_roots(
             if owner_symbol is not None:
                 branches.append((owner_symbol,))
             else:
-                param = positional[0]
-                ann_tuple = declared_annotations(param)
-                annotation = ann_tuple[0] if ann_tuple else None
-        case ast.Name(id=name):
-            matched_param = next(
-                (
-                    arg
-                    for arg in (*positional, *function.args.kwonlyargs)
-                    if arg.arg == name
-                ),
-                None,
-            )
-            if matched_param is not None:
-                ann_tuple = declared_annotations(matched_param)
-                annotation = ann_tuple[0] if ann_tuple else None
-        case ast.Attribute(value=ast.Name(id=name), attr=field_name) if (
-            name == first_param
-        ):
-            annotation = enclosure.field_annotation(field_name)
-
-    if not branches and annotation is not None:
-        resolved_all = True
-        for branch in _unpack_union_annotations(annotation):
-            unwrapped = site.kind.unwrap_annotation(branch)
-            symbol = (
-                None
-                if unwrapped is None
-                else resolver.class_symbol(
-                    source_path, unwrapped, cast(dict[ast.AST, ast.AST], parents)
+                ann = _declared_subject_annotation(
+                    site.subject, first_param, positional, function.args.kwonlyargs, enclosure
                 )
+                annotations = (ann,) if ann is not None else ()
+        case ast.Subscript(value=container_expr, slice=index_expr) if not isinstance(
+            index_expr, ast.Slice
+        ):
+            container_ann = _declared_subject_annotation(
+                container_expr,
+                first_param,
+                positional,
+                function.args.kwonlyargs,
+                enclosure,
             )
-            if symbol is None:
-                resolved_all = False
+            if container_ann is not None:
+                annotations = _subscript_element_annotations(container_ann)
+        case _:
+            ann = _declared_subject_annotation(
+                site.subject, first_param, positional, function.args.kwonlyargs, enclosure
+            )
+            annotations = (ann,) if ann is not None else ()
+
+    if not branches and annotations:
+        resolved_all = True
+        for annotation in annotations:
+            for branch in _unpack_union_annotations(annotation):
+                unwrapped = site.kind.unwrap_annotation(branch)
+                symbol = (
+                    None
+                    if unwrapped is None
+                    else resolver.class_symbol(
+                        source_path, unwrapped, cast(dict[ast.AST, ast.AST], parents)
+                    )
+                )
+                if symbol is None:
+                    resolved_all = False
+                    break
+                branches.append((symbol,))
+            if not resolved_all:
                 break
-            branches.append((symbol,))
         if not resolved_all:
             branches.clear()
 
