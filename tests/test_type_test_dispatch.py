@@ -3217,8 +3217,8 @@ def unsafe_maybe_none_loop(items: list[Item]) -> str | None:
             return item.maybe_none()
     return "fallback"
 """
-    _write(tmp_path, "pkg/widened.py", src)
-    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path / "pkg/widened.py", src)
+    _write(tmp_path / "pkg/__init__.py", "")
 
     modules = parse_python_modules(tmp_path)
     with ScanCache.scope():
