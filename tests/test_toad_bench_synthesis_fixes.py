@@ -17,6 +17,7 @@ from nominal_refactor_advisor.detectors._restated_facts import (
     OwnTypeTestDetector,
 )
 from nominal_refactor_advisor.needed_input import NeededInput
+from nominal_refactor_advisor.owner_picks import OwnerPick, OwnerPicks
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 
@@ -163,3 +164,160 @@ def test_own_type_test_resolves_subscripted_tuple_element_annotation(
     blocks = (mod.Divider(), mod.Body())
     assert mod.header_collapse_at(blocks, 0) is True
     assert mod.header_collapse_at(blocks, 1) is False
+
+
+def test_foreign_absence_probe_unresolved_ast_colliding_field_in_non_ast_module(
+    tmp_path: Path,
+) -> None:
+    """Probing `.value` or `.name` on an unresolved `Any` receiver in a module that
+    does not import `ast` reports SOURCE_CHANGE instead of an OptionalValueDecoder /
+    CaptureNameDecoder handback (Toad `model_selection.py:215`, `interactive_dialog.py:236`)."""
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/ui.py": (
+                "def selected(choice, event) -> tuple[bool, bool]:\n"
+                "    return (choice.value is not None, event.pressed.name is not None)\n"
+            ),
+        },
+    )
+    modules = _parse(tmp_path)
+    snap = CodemodSourceSnapshot.from_modules(modules)
+    with ScanCache.scope():
+        findings = ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+    assert len(findings) == 2
+    for finding in findings:
+        evaluation = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(
+            finding, snap
+        )
+        assert "registered decoders cover" not in evaluation.rejection_reason
+        assert "handback" not in evaluation.rejection_reason
+        assert evaluation.needs == (NeededInput.SOURCE_CHANGE,)
+
+
+def test_foreign_absence_prefix_guarded_or_ternary_with_local_name_fallback_pushes(
+    tmp_path: Path,
+) -> None:
+    """`return width if entry is None or entry.extent is None else entry.extent`
+    pushes onto `RowMetrics` cleanly (Toad `qt/virtual_scroll.py:555` pattern)."""
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/metrics.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass\n"
+                "class RowMetrics:\n"
+                "    extent: int | None = None\n\n\n"
+                "def row_extent(table: dict[int, RowMetrics], width: int) -> int:\n"
+                "    entry = table.get(width)\n"
+                "    return width if entry is None or entry.extent is None else entry.extent\n"
+            ),
+        },
+    )
+    modules = _parse(tmp_path)
+    snap = CodemodSourceSnapshot.from_modules(modules)
+    with ScanCache.scope():
+        (finding,) = ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding.stable_id,
+                "row_extent",
+                "RowMetrics owns its effective extent.",
+                "extent_or",
+                "Return recorded extent or fallback width.",
+            ),
+        ),
+    )
+    (picked,), report = picks.applied((finding,))
+    assert not report.unmatched
+    evaluation = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(picked, snap)
+    assert evaluation.rejection_reason == ""
+    sim = CodemodPlanSequence.from_operations(
+        evaluation.required_recipe.operations
+    ).simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    with ScanCache.scope():
+        assert ForeignAbsenceProbeDetector().detect(_parse(tmp_path), DetectorConfig()) == []
+    spec = importlib.util.spec_from_file_location("pkg_metrics", tmp_path / "pkg/metrics.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.row_extent({}, 80) == 80
+    assert mod.row_extent({80: mod.RowMetrics(None)}, 80) == 80
+    assert mod.row_extent({80: mod.RowMetrics(120)}, 80) == 120
+
+
+def test_constant_subtype_compound_and_uniform_early_return_without_tail_pushes(
+    tmp_path: Path,
+) -> None:
+    """`if placed.located and placed.ready(w): ... if cond: return head` at the end
+    of an outer `if` (empty local tail) pushes onto the family via `if placed.m(...): return head`
+    (Toad `transcript_history.py:701` pattern)."""
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/placed.py": (
+                "class FragmentLocation:\n"
+                "    located = True\n"
+                "    def ready(self, limit: int) -> bool:\n"
+                "        return limit > 0\n"
+                "    def target_y(self) -> int:\n"
+                "        return 10\n\n\n"
+                "class UnloadedFragment(FragmentLocation):\n"
+                "    located = False\n\n\n"
+                "def maybe_reveal(placed: FragmentLocation, enabled: bool, limit: int, scroll_y: int, head: str) -> str:\n"
+                "    if enabled:\n"
+                "        if placed.located and placed.ready(limit):\n"
+                "            y = placed.target_y()\n"
+                "            if y < scroll_y:\n"
+                "                return head\n"
+                "    return 'fallback'\n"
+            ),
+        },
+    )
+    modules = _parse(tmp_path)
+    snap = CodemodSourceSnapshot.from_modules(modules)
+    with ScanCache.scope():
+        (finding,) = ConstantSubtypeAnswerDetector().detect(modules, DetectorConfig())
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding.stable_id,
+                "maybe_reveal",
+                "FragmentLocation owns reveal eligibility.",
+                "can_reveal",
+                "Whether this placed location can reveal above scroll_y.",
+            ),
+        ),
+    )
+    (picked,), report = picks.applied((finding,))
+    assert not report.unmatched
+    evaluation = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(picked, snap)
+    assert evaluation.rejection_reason == ""
+    sim = CodemodPlanSequence.from_operations(
+        evaluation.required_recipe.operations
+    ).simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    with ScanCache.scope():
+        assert ConstantSubtypeAnswerDetector().detect(_parse(tmp_path), DetectorConfig()) == []
+    spec = importlib.util.spec_from_file_location("pkg_placed", tmp_path / "pkg/placed.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.maybe_reveal(mod.FragmentLocation(), True, 5, 20, "H") == "H"
+    assert mod.maybe_reveal(mod.FragmentLocation(), True, 5, 5, "H") == "fallback"
+    assert mod.maybe_reveal(mod.FragmentLocation(), True, 0, 20, "H") == "fallback"
+    assert mod.maybe_reveal(mod.UnloadedFragment(), True, 5, 20, "H") == "fallback"
+    assert mod.maybe_reveal(mod.FragmentLocation(), False, 5, 20, "H") == "fallback"
