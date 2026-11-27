@@ -57,6 +57,7 @@ from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     CompactUnannotatedCallable,
+    InstalledClassDeclarations,
     native_identity,
     build_compact_class_family_index,
 )
@@ -135,6 +136,19 @@ class DeclaredType(ABC):
 
     def called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return UndeclaredType(f"{self.spelled()} has no declared method `{name}`")
+
+    def awaited_called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
+        return UndeclaredType(f"{self.spelled()} has no declared async method `{name}`")
+
+    def reaches_method_owner(
+        self,
+        reaching_symbols: frozenset[str],
+        reaching_ancestors: frozenset[str],
+        is_nominal_class: Callable[[str], bool],
+    ) -> bool | None:
+        """Whether this declared type can reach `reaching_symbols`, or `None` if unproved."""
+        del reaching_symbols, reaching_ancestors, is_nominal_class
+        return None
 
     def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return UndeclaredType(f"{self.spelled()} is not a declared collection")
@@ -225,6 +239,21 @@ class DeclaredScannedClasses(DeclaredType):
     def class_symbols(self) -> tuple[str, ...]:
         return self.symbols
 
+    def reaches_method_owner(
+        self,
+        reaching_symbols: frozenset[str],
+        reaching_ancestors: frozenset[str],
+        is_nominal_class: Callable[[str], bool],
+    ) -> bool | None:
+        if any(sym in reaching_symbols for sym in self.symbols):
+            return True
+        if self.symbols and all(
+            sym not in reaching_ancestors and is_nominal_class(sym)
+            for sym in self.symbols
+        ):
+            return False
+        return None
+
     @abstractmethod
     def with_symbols(self, symbols: tuple[str, ...]) -> DeclaredType:
         raise NotImplementedError
@@ -252,6 +281,11 @@ class DeclaredInstance(DeclaredScannedClasses):
     def called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return typing.joined(
             typing.method_call(symbol, name, self) for symbol in self.symbols
+        )
+
+    def awaited_called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
+        return typing.joined(
+            typing.awaited_method_call(symbol, name, self) for symbol in self.symbols
         )
 
     def with_symbols(self, symbols: tuple[str, ...]) -> DeclaredType:
@@ -287,6 +321,20 @@ class DeclaredForeignInstance(DeclaredType):
     def class_symbols(self) -> tuple[str, ...]:
         return self.qualified_names
 
+    def reaches_method_owner(
+        self,
+        reaching_symbols: frozenset[str],
+        reaching_ancestors: frozenset[str],
+        is_nominal_class: Callable[[str], bool],
+    ) -> bool | None:
+        del reaching_symbols
+        if self.qualified_names and all(
+            fqn not in reaching_ancestors and is_nominal_class(fqn)
+            for fqn in self.qualified_names
+        ):
+            return False
+        return None
+
     def spelled(self) -> str:
         return " | ".join(f"`{name}`" for name in self.qualified_names)
 
@@ -311,13 +359,19 @@ class DeclaredClassObject(DeclaredScannedClasses):
 
     def attribute(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return typing.joined(
-            typing.member_read(symbol, name, DeclaredInstance((symbol,)))
+            typing.class_member_read(symbol, name, DeclaredInstance((symbol,)))
             for symbol in self.symbols
         )
 
     def called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return typing.joined(
             typing.method_call(symbol, name, DeclaredInstance((symbol,)))
+            for symbol in self.symbols
+        )
+
+    def awaited_called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
+        return typing.joined(
+            typing.awaited_method_call(symbol, name, DeclaredInstance((symbol,)))
             for symbol in self.symbols
         )
 
@@ -844,6 +898,14 @@ class DeclaredReceiverTyping:
     ) -> DeclaredType:
         typing = self.declaring(symbol)
         return typing.class_index.declared_member(symbol, name).answer(
+            _InstanceMemberRead(typing, symbol, name, receiver)
+        )
+
+    def class_member_read(
+        self, symbol: str, name: str, receiver: DeclaredInstance
+    ) -> DeclaredType:
+        typing = self.declaring(symbol)
+        return typing.class_index.declared_member(symbol, name).answer(
             _MemberRead(typing, symbol, name, receiver)
         )
 
@@ -853,6 +915,14 @@ class DeclaredReceiverTyping:
         typing = self.declaring(symbol)
         return typing.class_index.declared_member(symbol, name).answer(
             _MethodCall(typing, symbol, name, receiver)
+        )
+
+    def awaited_method_call(
+        self, symbol: str, name: str, receiver: DeclaredInstance
+    ) -> DeclaredType:
+        typing = self.declaring(symbol)
+        return typing.class_index.declared_member(symbol, name).answer(
+            _AwaitedMethodCall(typing, symbol, name, receiver)
         )
 
     def function_result(self, function_symbol: str) -> DeclaredType:
@@ -1077,11 +1147,34 @@ class DeclaredReceiverTyping:
             f"`{'.'.join(parts)}(...)` calls no scanned class or annotated function"
         )
 
+    def awaited_called_reference(
+        self, module_name: str, parts: tuple[str, ...]
+    ) -> DeclaredType:
+        """`await f(...)` or `await C.m(...)` for an `async def` function or method."""
+
+        function = self.qualified(module_name, parts)
+        declared = self.function_returns.get(function, ())
+        if declared:
+            if len(declared) == 1 and declared[0].is_async:
+                return self.function_result(function)
+            return UndeclaredType(f"`{function}` is not a single async function")
+        if len(parts) > 1:
+            return self.reference(module_name, parts[:-1]).awaited_called(self, parts[-1])
+        return UndeclaredType(
+            f"`await {'.'.join(parts)}(...)` calls no annotated async function"
+        )
+
     def qualified(self, module_name: str, parts: tuple[str, ...]) -> str:
         """The qualified name a module-level name chain spells."""
 
         head, *rest = parts
-        aliases = self.aliases_by_module.get(module_name, {})
+        aliases = self.aliases_by_module.get(module_name)
+        if aliases is None:
+            aliases = (
+                InstalledClassDeclarations.import_aliases_map(module_name)
+                if module_name.partition(".")[0] not in self.scanned_roots
+                else {}
+            )
         if head in aliases:
             return ".".join((aliases[head], *rest))
         if head in self.definitions_by_module.get(module_name, frozenset()) or not hasattr(
@@ -1465,6 +1558,38 @@ class _MemberRead(ClassMemberAnswersABC[DeclaredType]):
 
 
 @dataclass(frozen=True)
+class _InstanceMemberRead(_MemberRead):
+    """Reading `instance.name`: falls back to `__init__` `self.<name>: T` annotations
+    along the resolved MRO prefix when no class-body declaration binds `name`."""
+
+    def _from_init(self) -> DeclaredType | None:
+        authority = self.typing.class_index.declared_mro_authority
+        mro = authority.resolve(self.symbol).mro_type
+        if mro is not None:
+            owners = mro.declarations_before(
+                lambda entry: authority.bases.stops_lookup(entry, self.name)
+            )
+        else:
+            direct = self.typing.class_index.class_for(self.symbol)
+            owners = (direct,) if direct is not None else ()
+        for owner in owners:
+            for attr_name, source in owner.init_attribute_annotations:
+                if attr_name == self.name:
+                    return self.typing.annotation_source_type(
+                        owner.module_name, source, self.scope(owner)
+                    )
+        return None
+
+    def missing(self) -> DeclaredType:
+        found = self._from_init()
+        return found if found is not None else super().missing()
+
+    def open(self) -> DeclaredType:
+        found = self._from_init()
+        return found if found is not None else super().open()
+
+
+@dataclass(frozen=True)
 class _MethodCall(_MemberRead):
     """Calling `receiver.name(...)`: the method's declared return, `Self` the receiver."""
 
@@ -1478,6 +1603,16 @@ class _MethodCall(_MemberRead):
         return self.typing.annotation_source_type(
             owner.module_name, declaration.return_annotation_expression, self.scope(owner)
         )
+
+
+@dataclass(frozen=True)
+class _AwaitedMethodCall(_MethodCall):
+    """Awaiting `await receiver.name(...)`: only `async def` methods unwrap here."""
+
+    def annotated_method(self, owner: CompactIndexedClass, declaration: CompactAnnotatedMethod) -> DeclaredType:
+        if not declaration.is_async:
+            return UndeclaredType(f"`{owner.symbol}.{self.name}` is not an async method")
+        return super().annotated_method(owner, declaration)
 
 
 def _reference_parts(node: ast.expr) -> tuple[str, ...]:
@@ -1507,6 +1642,15 @@ class ReceiverRoot(ABC):
     def method_call_of(self, path: ReceiverPath, name: str) -> ReceiverPath:
         """`P.name(...)`, for a path P starting here."""
         return path.then(CallStep(name))
+
+    def awaited_method_call_of(self, path: ReceiverPath, name: str) -> ReceiverPath:
+        """`await P.name(...)`, for a path P starting here."""
+        return path.then(AwaitCallStep(name))
+
+    def awaited_call_of(self, path: ReceiverPath) -> ReceiverPath:
+        """`await P(...)`, for a path P starting here."""
+        del path
+        return unresolved("the awaited call's callee is not a declared async callable")
 
     def call_of(
         self,
@@ -1591,6 +1735,16 @@ class ReferenceRoot(ReceiverRoot):
             return super().method_call_of(path, name)
         return ReceiverPath(CalledReferenceRoot(self.module_name, (*self.parts, name)))
 
+    def awaited_method_call_of(self, path: ReceiverPath, name: str) -> ReceiverPath:
+        if path.steps:
+            return super().awaited_method_call_of(path, name)
+        return ReceiverPath(AwaitedCalledReferenceRoot(self.module_name, (*self.parts, name)))
+
+    def awaited_call_of(self, path: ReceiverPath) -> ReceiverPath:
+        if path.steps:
+            return super().awaited_call_of(path)
+        return ReceiverPath(AwaitedCalledReferenceRoot(self.module_name, self.parts))
+
     def call_of(self, path: ReceiverPath, builder: ReceiverPathBuilder, arguments: Sequence[ast.expr], pending: Pending) -> ReceiverPath:
         if path.steps:
             return super().call_of(path, builder, arguments, pending)
@@ -1606,6 +1760,17 @@ class CalledReferenceRoot(ReceiverRoot):
 
     def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.called_reference(self.module_name, self.parts)
+
+
+@dataclass(frozen=True)
+class AwaitedCalledReferenceRoot(ReceiverRoot):
+    """An awaited call of a module-level async function or class method."""
+
+    module_name: str
+    parts: tuple[str, ...]
+
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
+        return typing.awaited_called_reference(self.module_name, self.parts)
 
 
 @dataclass(frozen=True)
@@ -1724,6 +1889,14 @@ class CallStep(ReceiverStep):
 
 
 @dataclass(frozen=True)
+class AwaitCallStep(ReceiverStep):
+    name: str
+
+    def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
+        return declared.awaited_called(typing, self.name)
+
+
+@dataclass(frozen=True)
 class ElementStep(ReceiverStep):
     """Iterating the value: `for x in E` binds an element of E."""
 
@@ -1794,6 +1967,12 @@ class ReceiverPath:
 
     def method_call(self, name: str) -> ReceiverPath:
         return self.root.method_call_of(self, name)
+
+    def awaited_method_call(self, name: str) -> ReceiverPath:
+        return self.root.awaited_method_call_of(self, name)
+
+    def awaited_call(self) -> ReceiverPath:
+        return self.root.awaited_call_of(self)
 
     def call(
         self,
@@ -1952,6 +2131,10 @@ class ReceiverPathBuilder:
                 return self._path(value, pending).method_call(method)
             case ast.Call(func=func, args=arguments):
                 return self._path(func, pending).call(self, arguments, pending)
+            case ast.Await(value=ast.Call(func=ast.Attribute(value=value, attr=method))):
+                return self._path(value, pending).awaited_method_call(method)
+            case ast.Await(value=ast.Call(func=func)):
+                return self._path(func, pending).awaited_call()
             case ast.Subscript(value=value, slice=key):
                 base = self._path(value, pending)
                 match key:

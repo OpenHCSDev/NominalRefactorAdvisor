@@ -20,7 +20,10 @@ from dataclasses import dataclass
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.class_index import (
+    CompactClassFamilyIndex,
     CompactIndexedClass,
+    CompactRepositoryPublicExposureIndex,
+    InstalledClassDeclarations,
     module_import_aliases,
 )
 from nominal_refactor_advisor.declared_receivers import (
@@ -373,11 +376,139 @@ class ProbeOwnerResolver(ParsedModuleFact):
         )
 
 
+_EMPTY_EXPOSURE_INDEX = CompactRepositoryPublicExposureIndex(())
+_PROTOCOL_BASES = frozenset(("typing.Protocol", "typing_extensions.Protocol"))
+
+
+@dataclass
+class MethodOwnerReceiverProof:
+    """Decides whether a receiver expression can dispatch to `reaching_symbols`,
+    using mypy first and falling back to declared/installed receiver types when
+    mypy degrades an unfollowed import to `Any`/`Unknown`/`object`."""
+
+    class_index: CompactClassFamilyIndex
+    declared_typing: DeclaredReceiverTyping
+    reaching_symbols: frozenset[str]
+    _ancestors: frozenset[str] | None = None
+    _scanned_modules: frozenset[str] | None = None
+    _nominal_cache: dict[str, bool] | None = None
+
+    def _collect_installed_ancestors(self, seed_names: set[str], target: set[str]) -> None:
+        pending = [
+            name
+            for name in seed_names
+            if name != "builtins.object" and name not in self.class_index.classes_by_symbol
+        ]
+        seen: set[str] = set(pending)
+        while pending:
+            current = pending.pop()
+            decl = InstalledClassDeclarations.declaration(current, _EMPTY_EXPOSURE_INDEX)
+            if decl is None:
+                continue
+            for ref in decl.base_references:
+                base_name = ref.qualified_name
+                if base_name == "builtins.object":
+                    continue
+                target.add(base_name)
+                if base_name not in seen and base_name not in self.class_index.classes_by_symbol:
+                    seen.add(base_name)
+                    pending.append(base_name)
+
+    def _reaching_ancestors(self) -> frozenset[str]:
+        if self._ancestors is None:
+            ancestors: set[str] = set(self.reaching_symbols)
+            authority = self.class_index.declared_mro_authority
+            for symbol in self.reaching_symbols:
+                mro = authority.resolve(symbol).mro_type
+                if mro is not None:
+                    for decl in mro.declarations:
+                        ancestors.add(decl.symbol)
+                        ancestors.update(ref.qualified_name for ref in decl.base_references)
+                indexed = self.class_index.class_for(symbol)
+                if indexed is not None:
+                    ancestors.update(ref.qualified_name for ref in indexed.base_references)
+            self._collect_installed_ancestors(set(ancestors), ancestors)
+            self._ancestors = frozenset(ancestors)
+        return self._ancestors
+
+    def _is_nominal_class(self, qualified_name: str) -> bool:
+        if self._nominal_cache is None:
+            self._nominal_cache = {}
+        cached = self._nominal_cache.get(qualified_name)
+        if cached is not None:
+            return cached
+        if qualified_name in {"builtins.object", "typing.Any", "typing_extensions.Any"}:
+            result = False
+        elif qualified_name in self.class_index.classes_by_symbol:
+            ancestors: set[str] = set()
+            authority = self.class_index.declared_mro_authority
+            mro = authority.resolve(qualified_name).mro_type
+            if mro is not None:
+                for decl in mro.declarations:
+                    ancestors.add(decl.symbol)
+                    ancestors.update(ref.qualified_name for ref in decl.base_references)
+            indexed = self.class_index.class_for(qualified_name)
+            if indexed is not None:
+                ancestors.update(ref.qualified_name for ref in indexed.base_references)
+            self._collect_installed_ancestors(set(ancestors), ancestors)
+            result = not bool(ancestors & _PROTOCOL_BASES)
+        else:
+            if self._scanned_modules is None:
+                self._scanned_modules = frozenset(
+                    decl.module_name for decl in self.class_index.classes_by_symbol.values()
+                )
+            if qualified_name.rpartition(".")[0] in self._scanned_modules:
+                result = False
+            else:
+                result = InstalledClassDeclarations.is_nominal_non_protocol_class(
+                    qualified_name, _EMPTY_EXPOSURE_INDEX
+                )
+        self._nominal_cache[qualified_name] = result
+        return result
+
+    def reaches(
+        self,
+        answer: ReceiverType | None,
+        parsed_module: ParsedModule,
+        receiver_expr: ast.expr,
+        *,
+        method_name: str,
+        line: int,
+    ) -> bool:
+        try:
+            if answer is None:
+                raise NeedsInput(
+                    f"{parsed_module.file_path}:{line} accesses `.{method_name}` on an unproved receiver",
+                    NeededInput.PROOF,
+                )
+            return answer.reaches_method_owner(
+                self.reaching_symbols,
+                file_path=parsed_module.file_path,
+                line=line,
+                method_name=method_name,
+            )
+        except NeedsInput:
+            declared = (
+                ProbeOwnerResolver.of(parsed_module)
+                .builder.path_of(receiver_expr)
+                .declared(self.declared_typing)
+            )
+            verdict = declared.reaches_method_owner(
+                self.reaching_symbols,
+                self._reaching_ancestors(),
+                self._is_nominal_class,
+            )
+            if verdict is not None:
+                return verdict
+            raise
+
+
 __all__ = (
     "DeclaredFamilyProbeOwner",
     "DeclaredPathProbeOwner",
     "FailedReceiverType",
     "InferredReceiverType",
+    "MethodOwnerReceiverProof",
     "ProbeOwner",
     "ProbeOwnerContext",
     "ProbeOwnerResolver",
