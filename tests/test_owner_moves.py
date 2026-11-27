@@ -2166,3 +2166,228 @@ def test_a_part_one_class_inherits_is_shared_by_the_ancestor_that_declares_it(
     assert "class Growth(Rule):\n    growth: int = field(compare=False)\n" in source
     assert "class Difference(Named):\n    head: str\n    growth: int\n" in source
     assert _run(tmp_path, BRANCH_PROBE) == before
+
+
+TAP_HIGHLIGHT_CROSSING = (
+    "from abc import ABC\n"
+    "from dataclasses import dataclass\n\n\n"
+    "class TapHighlight(ABC):\n"
+    "    def matches_row(self, key: object) -> bool:\n"
+    "        return False\n\n"
+    "    def matches_pinned(self, index: int) -> bool:\n"
+    "        return False\n\n"
+    "    def row_key(self) -> object | None:\n"
+    "        return None\n\n"
+    "    def is_pinned(self) -> bool:\n"
+    "        return False\n\n"
+    "    def selections(self) -> list[str]:\n"
+    "        return []\n\n"
+    "    def paint_document(self) -> str:\n"
+    "        return f'base:{self.selections()}'\n\n\n"
+    "class LinkTapHighlight(TapHighlight):\n"
+    "    href: str\n\n"
+    "    def selections(self) -> list[str]:\n"
+    "        return [f'href:{self.href}']\n\n\n"
+    "class HeaderTapHighlight(TapHighlight):\n"
+    "    def selections(self) -> list[str]:\n"
+    "        return ['header']\n\n"
+    "    def paint_document(self) -> str:\n"
+    "        return f'header:{self.selections()}'\n\n\n"
+    "@dataclass(frozen=True, slots=True)\n"
+    "class RowLinkTapHighlight(LinkTapHighlight):\n"
+    "    key: object\n"
+    "    href: str\n\n"
+    "    def matches_row(self, key: object) -> bool:\n"
+    "        return key == self.key\n\n"
+    "    def row_key(self) -> object:\n"
+    "        return self.key\n\n\n"
+    "@dataclass(frozen=True, slots=True)\n"
+    "class RowHeaderTapHighlight(HeaderTapHighlight):\n"
+    "    key: object\n\n"
+    "    def matches_row(self, key: object) -> bool:\n"
+    "        return key == self.key\n\n"
+    "    def row_key(self) -> object:\n"
+    "        return self.key\n\n\n"
+    "@dataclass(frozen=True, slots=True)\n"
+    "class PinnedLinkTapHighlight(LinkTapHighlight):\n"
+    "    index: int\n"
+    "    href: str\n\n"
+    "    def matches_pinned(self, index: int) -> bool:\n"
+    "        return index == self.index\n\n"
+    "    def is_pinned(self) -> bool:\n"
+    "        return True\n\n\n"
+    "@dataclass(frozen=True, slots=True)\n"
+    "class PinnedHeaderTapHighlight(HeaderTapHighlight):\n"
+    "    index: int\n\n"
+    "    def matches_pinned(self, index: int) -> bool:\n"
+    "        return index == self.index\n\n"
+    "    def is_pinned(self) -> bool:\n"
+    "        return True\n"
+)
+
+TAP_HIGHLIGHT_PROBE = (
+    "from pkg.highlights import (\n"
+    "    HeaderTapHighlight, LinkTapHighlight, PinnedHeaderTapHighlight,\n"
+    "    PinnedLinkTapHighlight, RowHeaderTapHighlight, RowLinkTapHighlight,\n"
+    ")\n"
+    "rl = RowLinkTapHighlight('r1', 'https://a')\n"
+    "rh = RowHeaderTapHighlight('r1')\n"
+    "pl = PinnedLinkTapHighlight(2, 'https://b')\n"
+    "ph = PinnedHeaderTapHighlight(2)\n"
+    "for item in (rl, rh, pl, ph):\n"
+    "    print(\n"
+    "        type(item).__name__,\n"
+    "        item.matches_row('r1'), item.row_key(),\n"
+    "        item.matches_pinned(2), item.is_pinned(),\n"
+    "        item.selections(), item.paint_document(),\n"
+    "        isinstance(item, LinkTapHighlight), isinstance(item, HeaderTapHighlight),\n"
+    "    )\n"
+)
+
+
+def test_crossing_subclass_leaves_with_conflicting_inherited_methods_extract_mixin_with_parity(
+    tmp_path: Path,
+) -> None:
+    """2x2 crossing (Row/Pinned x Link/Header): `RowHeaderTapHighlight`'s own body
+    is contained in `RowLinkTapHighlight`, but composing `RowHeaderTapHighlight`
+    would hand `RowLinkTapHighlight` conflicting `HeaderTapHighlight.selections`
+    and `HeaderTapHighlight.paint_document`. The verdict refuses `ComposeExisting`
+    with `UNWANTED_SUPPLY` and offers `ExtractMixin` for both pairs."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/highlights.py": TAP_HIGHLIGHT_CROSSING})
+    before = _run(tmp_path, TAP_HIGHLIGHT_PROBE)
+
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    verdicts = CodemodSourceSnapshot.from_modules(modules).class_overlap_verdicts
+    for owner_name, rest_name in (
+        ("RowHeaderTapHighlight", "RowLinkTapHighlight"),
+        ("PinnedHeaderTapHighlight", "PinnedLinkTapHighlight"),
+    ):
+        ladder = verdicts.verdict(
+            verdicts.bodies.overlap(f"pkg.highlights.{owner_name}", f"pkg.highlights.{rest_name}"),
+            NO_FLOOR,
+        )
+        assert ladder is not None
+        assert ladder.move is ComposeExisting
+        assert {r.kind for r in ladder.refusals} == {OverlapReceiptKind.UNWANTED_SUPPLY}
+        assert ladder.offered is not None and ladder.offered.move is ExtractMixin
+        assert any(o.permitted for o in ladder.offered.owner_candidates)
+
+    findings = analyze_modules(modules, DetectorConfig())
+    overlap_findings = [
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+    ]
+    assert len(overlap_findings) == 2
+
+    picks = tuple(
+        OwnerPick(
+            finding=finding.stable_id,
+            owner="new_mixin:pkg.highlights",
+            because="new_class",
+            name=(
+                "RowTapHighlight"
+                if "Row" in finding.metrics.owner_symbol
+                else "PinnedTapHighlight"
+            ),
+            judgement="shared tap highlight matching and identity",
+        )
+        for finding in overlap_findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+    )
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks("picks.json", "0", picks),
+    ).run()
+
+    assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked", "picked"]
+    source = (tmp_path / "pkg/highlights.py").read_text()
+    assert "class RowTapHighlight:\n" in source
+    assert "class PinnedTapHighlight:\n" in source
+    assert "class RowLinkTapHighlight(RowTapHighlight, LinkTapHighlight):" in source
+    assert "class RowHeaderTapHighlight(RowTapHighlight, HeaderTapHighlight):" in source
+    assert "class PinnedLinkTapHighlight(PinnedTapHighlight, LinkTapHighlight):" in source
+    assert "class PinnedHeaderTapHighlight(PinnedTapHighlight, HeaderTapHighlight):" in source
+    assert _run(tmp_path, TAP_HIGHLIGHT_PROBE) == before
+    remaining = [
+        finding
+        for finding in analyze_modules(
+            parse_python_modules(tmp_path, use_parse_cache=False), DetectorConfig()
+        )
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+    ]
+    assert remaining == []
+
+
+def test_conflicting_installed_external_ancestor_is_refused_and_offered_as_extract_mixin(
+    tmp_path: Path,
+) -> None:
+    """When `owner` inherits an installed external base (`collections.UserDict`)
+    that `receiver` (`collections.UserList`) does not inherit, composing `owner`
+    would hand over unwanted external members: `ComposeExisting` refuses with
+    `UNWANTED_SUPPLY` and offers `ExtractMixin`."""
+
+    source = (
+        "from collections import UserDict, UserList\n\n\n"
+        "class DictView(UserDict):\n"
+        "    def tag(self) -> str:\n        return 't'\n\n"
+        "    def rank(self) -> int:\n        return 1\n\n"
+        "    def label(self) -> str:\n        return f'{self.tag()}:{self.rank()}'\n\n\n"
+        "class ListView(UserList):\n"
+        "    def tag(self) -> str:\n        return 't'\n\n"
+        "    def rank(self) -> int:\n        return 1\n\n"
+        "    def label(self) -> str:\n        return f'{self.tag()}:{self.rank()}'\n\n"
+        "    def extra(self) -> bool:\n        return True\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/views.py": source})
+    verdicts = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path, use_parse_cache=False)
+    ).class_overlap_verdicts
+    ladder = verdicts.verdict(
+        verdicts.bodies.overlap("pkg.views.DictView", "pkg.views.ListView"), NO_FLOOR
+    )
+    assert ladder is not None
+    assert ladder.move is ComposeExisting
+    assert {r.kind for r in ladder.refusals} == {OverlapReceiptKind.UNWANTED_SUPPLY}
+    assert ladder.offered is not None and ladder.offered.move is ExtractMixin
+    assert any(o.permitted for o in ladder.offered.owner_candidates)
+
+
+def test_shared_ancestor_overridden_by_receiver_is_not_flagged_as_conflicting_supply(
+    tmp_path: Path,
+) -> None:
+    """When `owner` inherits a member from a base that `receiver` already
+    inherits (and overrides itself), composing `owner` introduces no new
+    ancestor declaring that member, so `_supplied_member_receipts` emits no
+    `UNWANTED_SUPPLY`."""
+
+    source = (
+        "class Base:\n"
+        "    def hook(self) -> str:\n        return 'base'\n\n\n"
+        "class Plain(Base):\n"
+        "    def a(self) -> int:\n        return 1\n\n"
+        "    def b(self) -> int:\n        return 2\n\n"
+        "    def c(self) -> int:\n        return 3\n\n\n"
+        "class Custom(Base):\n"
+        "    def hook(self) -> str:\n        return 'custom'\n\n"
+        "    def a(self) -> int:\n        return 1\n\n"
+        "    def b(self) -> int:\n        return 2\n\n"
+        "    def c(self) -> int:\n        return 3\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/kinds.py": source})
+    verdicts = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path, use_parse_cache=False)
+    ).class_overlap_verdicts
+    ladder = verdicts.verdict(
+        verdicts.bodies.overlap("pkg.kinds.Plain", "pkg.kinds.Custom"), NO_FLOOR
+    )
+    assert ladder is not None
+    assert ladder.move is ComposeExisting
+    assert not [r for r in ladder.receipts if r.kind is OverlapReceiptKind.UNWANTED_SUPPLY]

@@ -361,15 +361,17 @@ def test_a_class_gaining_generic_from_its_owner_is_judged_by_the_names_generic_b
 
 def test_a_composition_that_changes_a_name_s_winner_is_refused(tmp_path: Path) -> None:
     """Composing `Labelled` brings its base `Base` ahead of `Mixin` in `Plain`'s
-    C3 order, so `Plain.label` would stop being `Mixin`'s."""
+    C3 order, so `Plain.label` would stop being `Mixin`'s — even when both
+    bases declare `label` identically so the verdict's conflicting-supply guard
+    does not stop first."""
 
     _write(
         tmp_path,
         {
             "pkg/__init__.py": "",
             "pkg/labels.py": (
-                "class Base:\n    def label(self) -> str:\n        return 'base'\n\n\n"
-                "class Mixin:\n    def label(self) -> str:\n        return 'mixin'\n\n\n"
+                "class Base:\n    def label(self) -> str:\n        return 'same'\n\n\n"
+                "class Mixin:\n    def label(self) -> str:\n        return 'same'\n\n\n"
                 "class Labelled(Base):\n    def kind(self) -> str:\n        return 'k'\n\n\n"
                 "class Plain(Mixin):\n    def kind(self) -> str:\n        return 'k'\n"
             ),
@@ -1548,7 +1550,7 @@ def test_compose_existing_refuses_prepending_owner_whose_ancestor_hijacks_super_
                 "        return ()\n\n\n"
                 "class UnfinishedInstall(InstallOutcome):\n"
                 "    def lines(self) -> tuple[str, ...]:\n"
-                "        raise RuntimeError('unfinished')\n\n\n"
+                "        return (*super().lines(), *self.live_lines())\n\n\n"
                 "class ObservedInstall(UnfinishedInstall):\n"
                 "    def live_lines(self) -> tuple[str, ...]:\n"
                 "        return ('live',)\n\n\n"

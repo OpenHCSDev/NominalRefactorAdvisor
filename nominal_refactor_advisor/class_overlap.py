@@ -71,7 +71,9 @@ from nominal_refactor_advisor.class_index import (
     InstalledClassDeclarations,
     followed_reexports,
 )
+from nominal_refactor_advisor.class_mro import NativeMroBase, namespace_read_native
 from nominal_refactor_advisor.declared_c3 import DeclaredC3
+from nominal_refactor_advisor.needed_input import NeedsInput
 from nominal_refactor_advisor.class_references import (
     ClassReferenceRole,
     CompactClassReference,
@@ -2534,6 +2536,7 @@ class ClassOverlapVerdicts(DeclaredC3):
                     move,
                     owner,
                     tuple(composer for composer in (restating, co_restating) if composer is not None),
+                    frozenset(shared.name for shared in overlap.shared),
                 ),
                 *(
                     self._positional_construction_receipts(
@@ -3089,20 +3092,98 @@ class ClassOverlapVerdicts(DeclaredC3):
             and self.takes_no_field(base, block, composer)
         )
 
+    def _has_external_ancestor(self, symbol: str) -> bool:
+        """Whether `symbol` or any scanned ancestor inherits a non-native class outside the scan."""
+
+        for sym in (symbol, *self.class_index.ancestor_symbols(symbol)):
+            indexed = self.class_index.class_for(sym)
+            if indexed is None:
+                continue
+            for ref in indexed.base_references:
+                qname = ".".join(ref.resolved_parts)
+                if (
+                    qname not in self.bodies.classes_by_symbol
+                    and NativeMroBase.for_qualified_name(qname) is None
+                    and namespace_read_native(qname) is None
+                ):
+                    return True
+        return False
+
+    def _external_supplied_member_receipts(
+        self,
+        owner: CompactIndexedClass,
+        receiver: CompactIndexedClass,
+    ) -> tuple[Receipt, ...]:
+        """Members an installed ancestor of `owner` outside `receiver`'s MRO
+        would hand to `receiver` (newly gained or shadowing `receiver`'s
+        inherited declaration from a different external base)."""
+
+        if not self._has_external_ancestor(owner.symbol):
+            return ()
+        try:
+            owner_mro = self.linearized(owner.symbol)
+            recv_mro = self.linearized(receiver.symbol)
+        except NeedsInput:
+            return ()
+        recv_mro_set = frozenset(recv_mro)
+        gained_external = tuple(
+            sym
+            for sym in owner_mro[1:]
+            if sym not in recv_mro_set
+            and sym not in self.bodies.classes_by_symbol
+            and NativeMroBase.for_qualified_name(sym) is None
+            and namespace_read_native(sym) is None
+        )
+        if not gained_external:
+            return ()
+        recv_own = frozenset(self.bodies.declarations_of(receiver.symbol))
+        owner_own = frozenset(self.bodies.declarations_of(owner.symbol))
+        supplied: dict[str, str] = {}
+        for sym in gained_external:
+            ext = self.ancestor(sym)
+            if ext is None:
+                continue
+            for decl in ext.body_declarations:
+                if decl.name == "__slots__" or decl.name in supplied:
+                    continue
+                if decl.name not in recv_own or decl.name in owner_own:
+                    supplied[decl.name] = ext.qualname
+        if not supplied:
+            return ()
+        names = sorted(supplied)
+        return (
+            Receipt(
+                OverlapReceiptKind.UNWANTED_SUPPLY,
+                f"`{receiver.qualname}` would gain "
+                + ", ".join(f"`{supplied[name]}.{name}`" for name in names[:6])
+                + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+                + f" through `{owner.qualname}`, which it neither declares "
+                "nor inherits: the block needs a mixin of its own",
+                (_location(owner),),
+                count=len(names),
+            ),
+        )
+
     def _supplied_member_receipts(
         self,
         move: type[ClassOverlapMove],
         owner: CompactIndexedClass,
         restating: Sequence[CompactIndexedClass],
+        shared_names: frozenset[str] = frozenset(),
     ) -> tuple[Receipt, ...]:
         """Members a class would come to have from the owner and its ancestors
-        without declaring or inheriting them now: supply nobody required, which
-        no later addition cancels (a dataclass field among them also changes
-        how the class is built)."""
+        without declaring or inheriting them now, or that an ancestor of the
+        owner outside the receiver's ancestry declares differently: supply
+        nobody required, which no later addition cancels (a dataclass field
+        among them also changes how the class is built)."""
 
+        receivers = move.receiving_classes(restating)
+        if not receivers:
+            return ()
         owned = self.declared_through_ancestry(owner.symbol)
+        owned_resolved = self.resolved_declarations(owner.symbol)
         receipts: list[Receipt] = []
-        for receiver in move.receiving_classes(restating):
+        for receiver in receivers:
             had = self.declared_through_ancestry(receiver.symbol)
             gained = sorted(name for name in owned if name not in had)
             if gained:
@@ -3120,6 +3201,39 @@ class ClassOverlapVerdicts(DeclaredC3):
                         count=len(gained),
                     )
                 )
+            had_resolved = self.resolved_declarations(receiver.symbol)
+            receiver_ancestors = frozenset(
+                (receiver.symbol, *self.class_index.ancestor_symbols(receiver.symbol))
+            )
+            conflicting = sorted(
+                name
+                for name, owner_entry in owned_resolved.items()
+                if name in had
+                and (owner_entry.owner.symbol != owner.symbol or name not in shared_names)
+                and owner_entry.owner.symbol not in receiver_ancestors
+                and (recv_entry := had_resolved.get(name) or had.get(name)) is not None
+                and not owner_entry.declaration.same_declaration_as(recv_entry.declaration)
+            )
+            if conflicting:
+                receipts.append(
+                    Receipt(
+                        OverlapReceiptKind.UNWANTED_SUPPLY,
+                        f"`{receiver.qualname}` would gain conflicting "
+                        + ", ".join(
+                            f"`{owned_resolved[name].owner.qualname}.{name}`"
+                            for name in conflicting[:6]
+                        )
+                        + (f" and {len(conflicting) - 6} more" if len(conflicting) > 6 else "")
+                        + f" through `{owner.qualname}`: the block needs a mixin of its own",
+                        tuple(
+                            _location(owned_resolved[name].owner, None, name)
+                            for name in conflicting[:4]
+                        ),
+                        count=len(conflicting),
+                    )
+                )
+            if not gained and not conflicting:
+                receipts.extend(self._external_supplied_member_receipts(owner, receiver))
         return tuple(receipts)
 
     def _identity_receipts(
