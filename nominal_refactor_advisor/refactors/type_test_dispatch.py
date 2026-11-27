@@ -355,7 +355,56 @@ def _parse_type_test(expr: ast.expr) -> ParsedTypeTest | None:
             return ParsedTypeTest(
                 subject, targets, ClassDispatchKind(), is_negated, True, expr
             )
+        case ast.BoolOp(op=ast.Or() | ast.And() as bool_op, values=values) if (
+            len(values) >= 2
+        ):
+            want_negated = isinstance(bool_op, ast.And)
+            parsed_parts: list[ParsedTypeTest] = []
+            for value in values:
+                part = _parse_type_test(value)
+                if part is None or part.negated != want_negated:
+                    return None
+                parsed_parts.append(part)
+            first = parsed_parts[0]
+            first_dump = ast.dump(first.subject)
+            first_kind_type = type(first.kind)
+            if any(
+                ast.dump(part.subject) != first_dump
+                or type(part.kind) is not first_kind_type
+                or part.exact != first.exact
+                for part in parsed_parts[1:]
+            ):
+                return None
+            combined_targets = tuple(
+                target for part in parsed_parts for target in part.tested_exprs
+            )
+            return ParsedTypeTest(
+                first.subject,
+                combined_targets,
+                first.kind,
+                negated ^ want_negated,
+                first.exact,
+                expr,
+            )
     return None
+
+
+def _tested_leaf_names(tested_exprs: Sequence[ast.expr]) -> frozenset[str]:
+    names: set[str] = set()
+    for expr in tested_exprs:
+        match expr:
+            case ast.Name(id=leaf) | ast.Attribute(attr=leaf):
+                names.add(leaf)
+    return frozenset(names)
+
+
+def _matches_preferred_tested(
+    parsed: ParsedTypeTest,
+    preferred_tested_names: frozenset[str],
+) -> bool:
+    return not preferred_tested_names or bool(
+        _tested_leaf_names(parsed.tested_exprs) & preferred_tested_names
+    )
 
 
 @dataclass(frozen=True)
@@ -874,6 +923,79 @@ class OrElseGuardedStatementDispatchSite(StatementDispatchSite):
         return None
 
 
+@dataclass(frozen=True)
+class LoopBoolReturnDispatchSite(StatementDispatchSite):
+    """Loop body type-test dispatch whose only early returns are `return True`,
+    replaced by `if x.method(...):\\n    return True`."""
+
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return True
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return False
+
+    @property
+    def is_void_method(self) -> bool:
+        return False
+
+    @property
+    def returns_constant_bool(self) -> bool:
+        return True
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return f"if {call_expr}:\n{line_indent}    return True"
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        del target_name, arms, default_body, reassigned_target
+        return None
+
+
+@dataclass(frozen=True)
+class LoopNonNoneReturnDispatchSite(StatementDispatchSite):
+    """Loop body type-test dispatch whose every early return is proved non-`None`,
+    replaced by `if (_found := x.method(...)) is not None:\\n    return _found`."""
+
+    result_binding: str = "_found"
+
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return True
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return False
+
+    @property
+    def is_void_method(self) -> bool:
+        return False
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return (
+            f"if ({self.result_binding} := {call_expr}) is not None:\n"
+            f"{line_indent}    return {self.result_binding}"
+        )
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        del target_name, arms, default_body, reassigned_target
+        return None
+
+
 def _is_trivial_pure_return_expr(expr: ast.expr) -> bool:
     """Whether `expr` is a pure literal, local name, or small container of them with no calls or attributes."""
 
@@ -1093,6 +1215,8 @@ def _always_terminates(statements: Sequence[ast.stmt]) -> bool:
                     _always_terminates(handler.body) for handler in handlers
                 )
             return bool(last.finalbody) and _always_terminates(body)
+        case ast.With(body=body) | ast.AsyncWith(body=body):
+            return _always_terminates(body)
         case ast.Match(cases=cases) if (
             cases
             and not match_guards(cases[-1])
@@ -1211,10 +1335,18 @@ def _has_non_continue_loop_escape(statements: Sequence[ast.stmt]) -> bool:
 
 
 class _LoopContinueToReturnRewriter(ast.NodeTransformer):
-    """Replace `continue` targeting the current loop with bare `return`."""
+    """Replace `continue` targeting the current loop with `return <value>`."""
+
+    def __init__(self, return_value: ast.expr | None = None) -> None:
+        self._return_value = return_value
 
     def visit_Continue(self, node: ast.Continue) -> ast.AST:
-        return ast.copy_location(ast.Return(value=None), node)
+        value = (
+            copy.deepcopy(self._return_value)
+            if self._return_value is not None
+            else None
+        )
+        return ast.copy_location(ast.Return(value=value), node)
 
     def visit_For(self, node: ast.For) -> ast.AST:
         return node
@@ -1237,12 +1369,284 @@ class _LoopContinueToReturnRewriter(ast.NodeTransformer):
 
 def _rewrite_loop_continues_to_returns(
     statements: Sequence[ast.stmt],
+    *,
+    return_value: ast.expr | None = None,
 ) -> tuple[ast.stmt, ...]:
-    rewriter = _LoopContinueToReturnRewriter()
+    rewriter = _LoopContinueToReturnRewriter(return_value)
     return tuple(
         cast(ast.stmt, rewriter.visit(copy.deepcopy(stmt)))
         for stmt in statements
     )
+
+
+def _has_loop_break_or_yield(statements: Sequence[ast.stmt]) -> bool:
+    """Whether `statements` contains a `break` targeting the current loop or any `yield`."""
+
+    stack: list[ast.AST] = list(statements)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Break, ast.Yield, ast.YieldFrom)):
+            return True
+        if isinstance(
+            node,
+            (
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+            ),
+        ):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+_NON_NONE_BUILTIN_CALLS: frozenset[str] = frozenset(
+    {"tuple", "list", "set", "frozenset", "dict", "str", "int", "float", "bool"}
+)
+
+
+def _is_not_none_guard_name(test: ast.expr) -> str:
+    match test:
+        case ast.Compare(
+            left=ast.Name(id=name),
+            ops=[ast.IsNot()],
+            comparators=[ast.Constant(value=None)],
+        ):
+            return name
+        case ast.Compare(
+            left=ast.Constant(value=None),
+            ops=[ast.IsNot()],
+            comparators=[ast.Name(id=name)],
+        ):
+            return name
+    return ""
+
+
+def _is_none_guard_name(test: ast.expr) -> str:
+    match test:
+        case ast.Compare(
+            left=ast.Name(id=name),
+            ops=[ast.Is()],
+            comparators=[ast.Constant(value=None)],
+        ):
+            return name
+        case ast.Compare(
+            left=ast.Constant(value=None),
+            ops=[ast.Is()],
+            comparators=[ast.Name(id=name)],
+        ):
+            return name
+    return ""
+
+
+def _expr_proved_non_none(
+    expr: ast.expr,
+    non_none_names: frozenset[str],
+    subject_dump: str,
+    tested_class_names: frozenset[str],
+) -> bool:
+    if ast.dump(expr) == subject_dump:
+        return True
+    match expr:
+        case (
+            ast.Tuple()
+            | ast.List()
+            | ast.Set()
+            | ast.Dict()
+            | ast.JoinedStr()
+            | ast.ListComp()
+            | ast.SetComp()
+            | ast.DictComp()
+            | ast.GeneratorExp()
+        ):
+            return True
+        case ast.Constant(value=val):
+            return val is not None
+        case ast.Name(id=name):
+            return name in non_none_names
+        case ast.Call(func=ast.Name(id=func_name)):
+            return (
+                func_name in _NON_NONE_BUILTIN_CALLS
+                or func_name in tested_class_names
+            )
+    return False
+
+
+def _all_returns_are_true(statements: Sequence[ast.stmt]) -> bool:
+    seen_return = False
+    stack: list[ast.AST] = list(statements)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Return):
+            seen_return = True
+            if not (
+                isinstance(node.value, ast.Constant) and node.value.value is True
+            ):
+                return False
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return seen_return
+
+
+def _all_returns_proved_non_none(
+    statements: Sequence[ast.stmt],
+    subject_dump: str,
+    tested_class_names: frozenset[str],
+) -> bool:
+    seen_return = False
+
+    def check_block(
+        stmts: Sequence[ast.stmt], non_none: frozenset[str]
+    ) -> bool:
+        nonlocal seen_return
+        current = non_none
+        for stmt in stmts:
+            match stmt:
+                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+                    continue
+                case ast.Return():
+                    seen_return = True
+                    values = optional_values(stmt)
+                    if not values or not _expr_proved_non_none(
+                        values[0], current, subject_dump, tested_class_names
+                    ):
+                        return False
+                case ast.If(test=test, body=body, orelse=orelse):
+                    pos_name = _is_not_none_guard_name(test)
+                    neg_name = _is_none_guard_name(test)
+                    body_non_none = (
+                        current | frozenset((pos_name,)) if pos_name else current
+                    )
+                    orelse_non_none = (
+                        current | frozenset((neg_name,)) if neg_name else current
+                    )
+                    if not check_block(body, body_non_none):
+                        return False
+                    if not check_block(orelse, orelse_non_none):
+                        return False
+                    if neg_name and not orelse and _always_terminates(body):
+                        current = current | frozenset((neg_name,))
+                case ast.For(body=body, orelse=orelse) | ast.AsyncFor(
+                    body=body, orelse=orelse
+                ) | ast.While(body=body, orelse=orelse):
+                    if not check_block(body, current) or not check_block(
+                        orelse, current
+                    ):
+                        return False
+                case ast.With(body=body) | ast.AsyncWith(body=body):
+                    if not check_block(body, current):
+                        return False
+                case ast.Try(
+                    body=body,
+                    handlers=handlers,
+                    orelse=orelse,
+                    finalbody=finalbody,
+                ):
+                    if not check_block(body, current):
+                        return False
+                    for handler in handlers:
+                        if not check_block(handler.body, current):
+                            return False
+                    if not check_block(orelse, current) or not check_block(
+                        finalbody, current
+                    ):
+                        return False
+                case ast.Match(cases=cases):
+                    for case in cases:
+                        if not check_block(case.body, current):
+                            return False
+        return True
+
+    return check_block(statements, frozenset()) and seen_return
+
+
+def _with_loop_fallback_return(
+    statements: Sequence[ast.stmt],
+    fallback_expr: ast.expr,
+) -> tuple[ast.stmt, ...]:
+    rewritten = _rewrite_loop_continues_to_returns(
+        statements, return_value=copy.deepcopy(fallback_expr)
+    )
+    if _always_terminates(rewritten):
+        return rewritten
+    return (*rewritten, ast.Return(value=copy.deepcopy(fallback_expr)))
+
+
+def _fresh_loop_result_binding(used_names: frozenset[str]) -> str:
+    candidate = "_found"
+    suffix = 2
+    while candidate in used_names:
+        candidate = f"_found_{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _build_loop_return_site(
+    first_test: ParsedTypeTest,
+    arms: tuple[TypeTestArm, ...],
+    default_body: tuple[ast.stmt, ...],
+    replaced_nodes: tuple[ast.stmt, ...],
+    test_nodes: tuple[ast.AST, ...],
+    used_local_names: frozenset[str],
+) -> DispatchSite | None:
+    """Build `LoopBoolReturnDispatchSite` or `LoopNonNoneReturnDispatchSite` when every
+    early return in the loop bodies is `True` or provably non-`None`."""
+
+    all_bodies = (*(arm.body for arm in arms), default_body)
+    if any(_has_loop_break_or_yield(body) for body in all_bodies):
+        return None
+    flat_stmts = tuple(stmt for body in all_bodies for stmt in body)
+    if _all_returns_are_true(flat_stmts):
+        false_expr = ast.Constant(value=False)
+        rewritten_arms = tuple(
+            TypeTestArm(
+                arm.tested_exprs,
+                _with_loop_fallback_return(arm.body, false_expr),
+                arm.exact,
+                alias=arm.alias,
+            )
+            for arm in arms
+        )
+        return LoopBoolReturnDispatchSite(
+            subject=first_test.subject,
+            kind=first_test.kind,
+            arms=rewritten_arms,
+            default_body=_with_loop_fallback_return(default_body, false_expr),
+            is_whole_function=False,
+            test_nodes=test_nodes,
+            replaced_nodes=replaced_nodes,
+        )
+    subject_dump = ast.dump(first_test.subject)
+    tested_names = frozenset().union(
+        *(_tested_leaf_names(arm.tested_exprs) for arm in arms)
+    )
+    if _all_returns_proved_non_none(flat_stmts, subject_dump, tested_names):
+        none_expr = ast.Constant(value=None)
+        rewritten_arms = tuple(
+            TypeTestArm(
+                arm.tested_exprs,
+                _with_loop_fallback_return(arm.body, none_expr),
+                arm.exact,
+                alias=arm.alias,
+            )
+            for arm in arms
+        )
+        return LoopNonNoneReturnDispatchSite(
+            subject=first_test.subject,
+            kind=first_test.kind,
+            arms=rewritten_arms,
+            default_body=_with_loop_fallback_return(default_body, none_expr),
+            is_whole_function=False,
+            test_nodes=test_nodes,
+            replaced_nodes=replaced_nodes,
+            result_binding=_fresh_loop_result_binding(used_local_names),
+        )
+    return None
 
 
 def _names_loaded_in(nodes: Sequence[ast.AST]) -> frozenset[str]:
@@ -1579,36 +1983,59 @@ def _strip_trailing_continue(statements: Sequence[ast.stmt]) -> tuple[ast.stmt, 
     return tuple(remaining) if remaining else (ast.Pass(),)
 
 
+def _statement_list_children_with_fallthrough(
+    block: list[ast.stmt],
+) -> list[tuple[list[ast.stmt], int, ast.stmt, bool, tuple[ast.Return, ...]]]:
+    """Every `(containing_list, index, stmt, in_loop_body, fallthrough_returns)` in `block`."""
+
+    found: list[tuple[list[ast.stmt], int, ast.stmt, bool, tuple[ast.Return, ...]]] = []
+    stack: list[tuple[list[ast.stmt], bool, tuple[ast.Return, ...]]] = [
+        (block, False, ())
+    ]
+    while stack:
+        current, in_loop_body, inherited_fallthrough = stack.pop()
+        last_idx = len(current) - 1
+        for idx, stmt in enumerate(current):
+            found.append((current, idx, stmt, in_loop_body, inherited_fallthrough))
+            if idx == last_idx:
+                child_fallthrough = inherited_fallthrough
+            else:
+                trailing_ret = _trivial_pure_return(current[idx + 1 :])
+                child_fallthrough = (
+                    (trailing_ret,) if trailing_ret is not None else ()
+                )
+            match stmt:
+                case ast.If(body=b, orelse=o):
+                    stack.append((o, False, child_fallthrough))
+                    stack.append((b, False, child_fallthrough))
+                case ast.For(body=b, orelse=o) | ast.AsyncFor(body=b, orelse=o) | ast.While(body=b, orelse=o):
+                    stack.append((o, False, ()))
+                    stack.append((b, True, ()))
+                case ast.With(body=b) | ast.AsyncWith(body=b):
+                    stack.append((b, False, child_fallthrough))
+                case ast.Try(body=b, handlers=hs, orelse=o, finalbody=f):
+                    stack.append((f, False, ()))
+                    stack.append((o, False, ()))
+                    for h in hs:
+                        stack.append((h.body, False, ()))
+                    stack.append((b, False, ()))
+                case ast.Match(cases=cases):
+                    for case in cases:
+                        stack.append((case.body, False, child_fallthrough))
+    return found
+
+
 def _statement_list_children(
     block: list[ast.stmt],
 ) -> list[tuple[list[ast.stmt], int, ast.stmt, bool]]:
     """Every `(containing_list, index, stmt, in_loop_body)` in `block` (excluding nested defs/classes)."""
 
-    found: list[tuple[list[ast.stmt], int, ast.stmt, bool]] = []
-    stack: list[tuple[list[ast.stmt], bool]] = [(block, False)]
-    while stack:
-        current, in_loop_body = stack.pop()
-        for idx, stmt in enumerate(current):
-            found.append((current, idx, stmt, in_loop_body))
-            match stmt:
-                case ast.If(body=b, orelse=o):
-                    stack.append((o, False))
-                    stack.append((b, False))
-                case ast.For(body=b, orelse=o) | ast.AsyncFor(body=b, orelse=o) | ast.While(body=b, orelse=o):
-                    stack.append((o, False))
-                    stack.append((b, True))
-                case ast.With(body=b) | ast.AsyncWith(body=b):
-                    stack.append((b, False))
-                case ast.Try(body=b, handlers=hs, orelse=o, finalbody=f):
-                    stack.append((f, False))
-                    stack.append((o, False))
-                    for h in hs:
-                        stack.append((h.body, False))
-                    stack.append((b, False))
-                case ast.Match(cases=cases):
-                    for case in cases:
-                        stack.append((case.body, False))
-    return found
+    return [
+        (container, index, stmt, in_loop_body)
+        for container, index, stmt, in_loop_body, _ in _statement_list_children_with_fallthrough(
+            block
+        )
+    ]
 
 
 def _polarity_bodies(
@@ -1630,6 +2057,8 @@ def _extract_compound_if_site(
     whole_fn_body: list[ast.stmt],
     test_line: int,
     in_loop_body: bool = False,
+    preferred_tested_names: frozenset[str] = frozenset(),
+    fallthrough_returns: tuple[ast.Return, ...] = (),
 ) -> DispatchSite | None:
     """Extract `if [PREFIX and/or] [not] TEST [and/or REST]:`."""
 
@@ -1638,9 +2067,15 @@ def _extract_compound_if_site(
     if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.If):
         return None
     first_value = stmt.test.values[0]
-    first_test = (
+    first_candidate = (
         _parse_type_test(first_value)
         if first_value.lineno <= test_line <= (first_value.end_lineno or first_value.lineno)
+        else None
+    )
+    first_test = (
+        first_candidate
+        if first_candidate is not None
+        and _matches_preferred_tested(first_candidate, preferred_tested_names)
         else None
     )
     if first_test is None:
@@ -1649,8 +2084,10 @@ def _extract_compound_if_site(
             matched_test: ParsedTypeTest | None = None
             for idx, value in enumerate(stmt.test.values[1:], start=1):
                 parsed = _parse_type_test(value)
-                if parsed is not None and value.lineno <= test_line <= (
-                    value.end_lineno or value.lineno
+                if (
+                    parsed is not None
+                    and value.lineno <= test_line <= (value.end_lineno or value.lineno)
+                    and _matches_preferred_tested(parsed, preferred_tested_names)
                 ):
                     match_index = idx
                     matched_test = parsed
@@ -1840,8 +2277,10 @@ def _extract_compound_if_site(
         matched_test = None
         for idx, value in enumerate(stmt.test.values[1:], start=1):
             parsed = _parse_type_test(value)
-            if parsed is not None and value.lineno <= test_line <= (
-                value.end_lineno or value.lineno
+            if (
+                parsed is not None
+                and value.lineno <= test_line <= (value.end_lineno or value.lineno)
+                and _matches_preferred_tested(parsed, preferred_tested_names)
             ):
                 match_index = idx
                 matched_test = parsed
@@ -1903,11 +2342,18 @@ def _extract_compound_if_site(
             return None
         tail = container[index + 1 :]
         if (
-            tail
+            (tail or fallthrough_returns)
             and _always_terminates(stmt.body)
             and _has_any_return(stmt.body)
             and not _has_break_or_continue(stmt.body)
-            and (fallback := _trivial_pure_return(tail)) is not None
+            and (
+                fallback := (
+                    _trivial_pure_return(tail)
+                    if tail
+                    else fallthrough_returns[0]
+                )
+            )
+            is not None
         ):
             hit_body = (
                 (
@@ -1934,7 +2380,7 @@ def _extract_compound_if_site(
                 default_body=default_body,
                 is_whole_function=False,
                 test_nodes=(matched_test.test_node,),
-                replaced_nodes=tuple(container[index:]),
+                replaced_nodes=tuple(container[index:]) if tail else (stmt,),
                 guard_expr=guard_expr,
                 fallback_return=fallback,
             )
@@ -2229,12 +2675,24 @@ def _extract_if_site(
     whole_fn_body: list[ast.stmt],
     test_line: int,
     in_loop_body: bool = False,
+    preferred_tested_names: frozenset[str] = frozenset(),
+    fallthrough_returns: tuple[ast.Return, ...] = (),
+    used_local_names: frozenset[str] = frozenset(),
 ) -> DispatchSite | None:
     first_test = _parse_type_test(stmt.test)
     if first_test is None:
         return _extract_compound_if_site(
-            container, index, stmt, whole_fn_body, test_line, in_loop_body=in_loop_body
+            container,
+            index,
+            stmt,
+            whole_fn_body,
+            test_line,
+            in_loop_body=in_loop_body,
+            preferred_tested_names=preferred_tested_names,
+            fallthrough_returns=fallthrough_returns,
         )
+    if not _matches_preferred_tested(first_test, preferred_tested_names):
+        return None
     subject_dump = ast.dump(first_test.subject)
 
     # Negated single `if not test:` with early return/raise or else.
@@ -2315,6 +2773,17 @@ def _extract_if_site(
                 test_nodes=(first_test.test_node,),
                 replaced_nodes=tuple(container[index:]),
             )
+        if in_loop_body and tail and _ends_with_continue_only(stmt.body):
+            loop_ret = _build_loop_return_site(
+                first_test,
+                (TypeTestArm(first_test.tested_exprs, tuple(tail), first_test.exact),),
+                tuple(stmt.body),
+                tuple(container[index:]),
+                (first_test.test_node,),
+                used_local_names,
+            )
+            if loop_ret is not None:
+                return loop_ret
         if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
             replaced = (stmt,)
             is_whole = container is whole_fn_body and len(whole_fn_body) == 1
@@ -2563,6 +3032,34 @@ def _extract_if_site(
             test_nodes=tuple(test_nodes),
             replaced_nodes=tuple(container[index:]),
         )
+    if (
+        not tail
+        and fallthrough_returns
+        and all(_always_terminates(arm.body) for arm in arms_list)
+        and any(_has_any_return(arm.body) for arm in arms_list)
+    ):
+        return _build_statement_site(
+            first_test,
+            tuple(arms_list),
+            fallthrough_returns,
+            (stmt,),
+            False,
+            tuple(test_nodes),
+        )
+    if (
+        in_loop_body
+        and any(_has_any_return(arm.body) for arm in arms_list)
+    ):
+        loop_ret = _build_loop_return_site(
+            first_test,
+            tuple(arms_list),
+            tuple(tail),
+            tuple(container[index:]),
+            tuple(test_nodes),
+            used_local_names,
+        )
+        if loop_ret is not None:
+            return loop_ret
     if not any(_has_any_return(arm.body) for arm in arms_list):
         if (
             len(arms_list) == 1
@@ -2851,6 +3348,7 @@ def _extract_match_site(
     stmt: ast.Match,
     whole_fn_body: list[ast.stmt],
     in_loop_body: bool = False,
+    fallthrough_returns: tuple[ast.Return, ...] = (),
 ) -> DispatchSite | None:
     if not stmt.cases or not _is_dispatchable_match_subject(stmt.subject):
         return None
@@ -3007,6 +3505,17 @@ def _extract_match_site(
             False,
             strip_continue=True,
         )
+    if (
+        not tail
+        and fallthrough_returns
+        and all(_always_terminates(body) for _ex, _g, body in raw_arms)
+        and any(_has_any_return(body) for _ex, _g, body in raw_arms)
+    ):
+        return finalize(
+            fallthrough_returns,
+            (stmt,),
+            False,
+        )
     if not any(_has_any_return(body) for _ex, _g, body in raw_arms):
         return finalize(
             (ast.Pass(),),
@@ -3035,9 +3544,12 @@ def _extract_ternary_site(
     node: ast.IfExp,
     is_whole_return: bool,
     test_line: int | None = None,
+    preferred_tested_names: frozenset[str] = frozenset(),
 ) -> TernaryDispatchSite | None:
     parsed = _parse_type_test(node.test)
     if parsed is not None:
+        if not _matches_preferred_tested(parsed, preferred_tested_names):
+            return None
         if parsed.negated:
             arm_body = (ast.Return(value=node.orelse),)
             default_body = (ast.Return(value=node.body),)
@@ -3063,7 +3575,9 @@ def _extract_ternary_site(
         ):
             continue
         candidate = _parse_type_test(value)
-        if candidate is not None:
+        if candidate is not None and _matches_preferred_tested(
+            candidate, preferred_tested_names
+        ):
             match_idx = idx
             matched = candidate
             break
@@ -3414,11 +3928,14 @@ def _extract_boolean_expr_site(
     expr: ast.expr,
     is_whole_return: bool,
     test_line: int | None = None,
+    preferred_tested_names: frozenset[str] = frozenset(),
 ) -> BooleanPredicateDispatchSite | None:
     """Extract bare `isinstance(x, Sub)` or compound `[PREFIX and/or] isinstance(x, Sub) [and/or REST]`."""
 
     parsed = _parse_type_test(expr)
     if parsed is not None:
+        if not _matches_preferred_tested(parsed, preferred_tested_names):
+            return None
         true_val = not parsed.negated
         return BooleanPredicateDispatchSite(
             subject=parsed.subject,
@@ -3438,7 +3955,13 @@ def _extract_boolean_expr_site(
     if not isinstance(expr, ast.BoolOp) or len(expr.values) < 2:
         return None
     multi = _extract_multi_test_boolop_site(expr, is_whole_return, test_line=test_line)
-    if multi is not None:
+    if multi is not None and (
+        not preferred_tested_names
+        or bool(
+            frozenset().union(*(_tested_leaf_names(arm.tested_exprs) for arm in multi.arms))
+            & preferred_tested_names
+        )
+    ):
         return multi
     match_idx: int | None = None
     matched: ParsedTypeTest | None = None
@@ -3448,7 +3971,9 @@ def _extract_boolean_expr_site(
         ):
             continue
         candidate = _parse_type_test(value)
-        if candidate is not None:
+        if candidate is not None and _matches_preferred_tested(
+            candidate, preferred_tested_names
+        ):
             match_idx = idx
             matched = candidate
             break
@@ -3513,11 +4038,20 @@ def _extract_boolean_expr_site(
     )
 
 
-def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite | None:
-    """Locate the normalized type-test dispatch in `function` whose test sits on `test_line`."""
-
+def _find_dispatch_site_pass(
+    function: FunctionNode,
+    test_line: int,
+    preferred_tested_names: frozenset[str],
+) -> DispatchSite | None:
     body = _body_without_docstring(function)
-    for container, index, stmt, in_loop_body in _statement_list_children(body):
+    used_local_names = _function_local_names(function)
+    for (
+        container,
+        index,
+        stmt,
+        in_loop_body,
+        fallthrough_returns,
+    ) in _statement_list_children_with_fallthrough(body):
         if isinstance(stmt, ast.If) and (
             _node_covers_line(stmt.test, test_line)
             or (
@@ -3526,7 +4060,15 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
             )
         ):
             extracted = _extract_if_site(
-                container, index, stmt, body, test_line, in_loop_body=in_loop_body
+                container,
+                index,
+                stmt,
+                body,
+                test_line,
+                in_loop_body=in_loop_body,
+                preferred_tested_names=preferred_tested_names,
+                fallthrough_returns=fallthrough_returns,
+                used_local_names=used_local_names,
             )
             if extracted is not None and extracted.has_single_evaluation_subject():
                 return extracted
@@ -3534,16 +4076,36 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
             stmt.lineno == test_line
             or any(case.pattern.lineno == test_line for case in stmt.cases)
         ):
-            return _extract_match_site(
-                container, index, stmt, body, in_loop_body=in_loop_body
+            extracted = _extract_match_site(
+                container,
+                index,
+                stmt,
+                body,
+                in_loop_body=in_loop_body,
+                fallthrough_returns=fallthrough_returns,
             )
+            if extracted is not None and (
+                not preferred_tested_names
+                or bool(
+                    frozenset().union(
+                        *(_tested_leaf_names(arm.tested_exprs) for arm in extracted.arms)
+                    )
+                    & preferred_tested_names
+                )
+            ):
+                return extracted
         if isinstance(stmt, ast.Return):
             match stmt:
                 case ast.Return(value=ast.IfExp() as ifexp) if (
                     ifexp.test.lineno <= test_line <= (ifexp.test.end_lineno or ifexp.test.lineno)
                 ):
                     is_whole = container is body and len(body) == 1
-                    extracted = _extract_ternary_site(ifexp, is_whole, test_line=test_line)
+                    extracted = _extract_ternary_site(
+                        ifexp,
+                        is_whole,
+                        test_line=test_line,
+                        preferred_tested_names=preferred_tested_names,
+                    )
                     if extracted is not None and extracted.has_single_evaluation_subject():
                         return extracted
                 case ast.Return(value=ast.expr() as returned) if (
@@ -3557,7 +4119,12 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
                     )
                 ):
                     is_whole = container is body and len(body) == 1
-                    extracted = _extract_boolean_expr_site(returned, is_whole, test_line)
+                    extracted = _extract_boolean_expr_site(
+                        returned,
+                        is_whole,
+                        test_line,
+                        preferred_tested_names=preferred_tested_names,
+                    )
                     if extracted is not None and extracted.has_single_evaluation_subject():
                         return extracted
     # Fallback: ternary `IfExp`, compound `BoolOp` (including non-constant-bool suffixes
@@ -3583,7 +4150,10 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
             node.test.lineno <= test_line <= (node.test.end_lineno or node.test.lineno)
         ):
             extracted = _extract_ternary_site(
-                node, is_whole_return=False, test_line=test_line
+                node,
+                is_whole_return=False,
+                test_line=test_line,
+                preferred_tested_names=preferred_tested_names,
             )
             if extracted is not None and extracted.has_single_evaluation_subject():
                 return extracted
@@ -3592,7 +4162,10 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
             _node_covers_line(value, test_line) for value in node.values
         ):
             extracted = _extract_boolean_expr_site(
-                node, is_whole_return=False, test_line=test_line
+                node,
+                is_whole_return=False,
+                test_line=test_line,
+                preferred_tested_names=preferred_tested_names,
             )
             if (
                 extracted is not None
@@ -3608,11 +4181,28 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
             and _parse_type_test(node) is not None
         ):
             extracted = _extract_boolean_expr_site(
-                node, is_whole_return=False, test_line=test_line
+                node,
+                is_whole_return=False,
+                test_line=test_line,
+                preferred_tested_names=preferred_tested_names,
             )
             if extracted is not None and extracted.has_single_evaluation_subject():
                 return extracted
     return None
+
+
+def find_dispatch_site(
+    function: FunctionNode,
+    test_line: int,
+    *,
+    preferred_tested_names: frozenset[str] = frozenset(),
+) -> DispatchSite | None:
+    """Locate the normalized type-test dispatch in `function` whose test sits on `test_line`."""
+
+    found = _find_dispatch_site_pass(function, test_line, preferred_tested_names)
+    if found is not None or not preferred_tested_names:
+        return found
+    return _find_dispatch_site_pass(function, test_line, frozenset())
 
 
 def _function_local_names(function: FunctionNode) -> frozenset[str]:
@@ -4899,6 +5489,12 @@ class ResolvedTargetArm:
 class TargetBaseSelection(ABC):
     """How the base class receiving the pushed dispatch method is chosen."""
 
+    def preferred_tested_names(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> frozenset[str]:
+        del snapshot
+        return frozenset()
+
     @abstractmethod
     def resolver_class(self, snapshot: CodemodSourceSnapshot) -> ResolvedClassTarget:
         raise NotImplementedError
@@ -4919,6 +5515,26 @@ class ExplicitBaseSelection(TargetBaseSelection):
     """Base class explicitly named on `PushTypeTestDispatchOperation`."""
 
     target: SourceRewriteTarget
+
+    def preferred_tested_names(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> frozenset[str]:
+        try:
+            resolved = self.resolver_class(snapshot)
+            symbol = resolved.required_symbol(snapshot)
+        except ValueError:
+            return frozenset()
+        index = snapshot.required_class_family_index
+        family = (symbol, *index.descendant_symbols(symbol))
+        related = (
+            *family,
+            *(
+                ancestor
+                for member in family
+                for ancestor in index.ancestor_symbols(member)
+            ),
+        )
+        return frozenset(item.rsplit(".", 1)[-1] for item in related)
 
     def resolver_class(self, snapshot: CodemodSourceSnapshot) -> ResolvedClassTarget:
         return ResolvedClassTarget.from_rewrite_target(snapshot, self.target)
@@ -6114,7 +6730,14 @@ class TypeTestDispatchProof:
         source_path, enclosure, function = cls.locate_function(
             snapshot, target, test_line=test_line
         )
-        site = find_dispatch_site(function, test_line)
+        preferred_tested_names = (
+            frozenset(symbol.rsplit(".", 1)[-1] for symbol in required_tested_symbols)
+            if required_tested_symbols
+            else base_selection.preferred_tested_names(snapshot)
+        )
+        site = find_dispatch_site(
+            function, test_line, preferred_tested_names=preferred_tested_names
+        )
         if site is None:
             raise NeedsInput(
                 f"type test at {source_path}:{test_line} is not a pushable dispatch shape",
@@ -7158,7 +7781,17 @@ class OwnTypeTestFindingRecipeSynthesizer(
             )
         except ValueError as error:
             return self.stopped_evaluation(error)
-        site = find_dispatch_site(function, primary.line)
+        required_tested_symbols = (
+            finding.metrics.tested_symbols
+            if isinstance(finding.metrics, OwnTypeTestMetrics)
+            else ()
+        )
+        preferred_tested_names = frozenset(
+            symbol.rsplit(".", 1)[-1] for symbol in required_tested_symbols
+        )
+        site = find_dispatch_site(
+            function, primary.line, preferred_tested_names=preferred_tested_names
+        )
         if site is None:
             return self.stopped_evaluation(
                 NeedsInput(
@@ -7166,11 +7799,6 @@ class OwnTypeTestFindingRecipeSynthesizer(
                     NeededInput.SOURCE_CHANGE,
                 )
             )
-        required_tested_symbols = (
-            finding.metrics.tested_symbols
-            if isinstance(finding.metrics, OwnTypeTestMetrics)
-            else ()
-        )
         if pick is not None:
             method_name = pick.name
             docstring: str | None = pick.judgement
