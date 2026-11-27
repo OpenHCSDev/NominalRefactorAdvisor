@@ -74,6 +74,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     OuterReceiverAlias,
     ResolvedMethodAnnotations,
     TypeTestDispatchProof,
+    _all_returns_proved_non_none,
     _always_terminates,
     _always_void_terminates,
     _analyze_arm_bodies,
@@ -82,6 +83,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _cross_module_imports_for_body,
     _definitely_assigns_in_block,
     _ends_with_continue_only,
+    _expr_proved_non_none,
     _has_any_return,
     _has_break_or_continue,
     _has_loop_escape,
@@ -89,6 +91,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _has_value_return,
     _is_definitely_bound_before,
     _is_dispatchable_match_subject,
+    _is_not_none_guard_dumps,
     _is_pure_subject,
     _names_referenced_outside,
     _names_stored_in,
@@ -803,6 +806,292 @@ class PrefixGuardedAndTernaryAbsenceBranchSite(TernaryAbsenceBranchSite):
 
 
 @dataclass(frozen=True)
+class NonNoneReturnAbsenceBranchSite(AbsenceBranchSite):
+    """Absence branch returning a proved non-`None` value (or falling through as `None`),
+    replaced by `if (_found := subject.method(...)) is not None:\\n    return _found`."""
+
+    replaced_nodes: tuple[ast.stmt, ...]
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        start, _ = geometry.required_node_offsets(self.replaced_nodes[0])
+        _, end = geometry.required_node_offsets(self.replaced_nodes[-1])
+        return start, end
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return f"if (_found := {call_expr}) is not None:\n{line_indent}    return _found"
+
+    def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
+        return self.replaced_nodes
+
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return True
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class PrefixGuardedAndNonNoneReturnAbsenceBranchSite(NonNoneReturnAbsenceBranchSite):
+    """`if PREFIX and subject.attr is [not] None: return <non-None>` replaced by
+    `if PREFIX and (_found := subject.method(...)) is not None:\\n    return _found`."""
+
+    guard_expr: ast.expr = ast.Constant(value=True)
+
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return (
+            f"if {ast.unparse(self.guard_expr)} and (_found := {call_expr}) is not None:\n"
+            f"{line_indent}    return _found"
+        )
+
+
+@dataclass(frozen=True)
+class VoidReturnAbsenceBranchSite(AbsenceBranchSite):
+    """Nested-block bare-`return` early-exit tail replaced by `if subject.method(...):\\n    return`."""
+
+    replaced_nodes: tuple[ast.stmt, ...]
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        start, _ = geometry.required_node_offsets(self.replaced_nodes[0])
+        _, end = geometry.required_node_offsets(self.replaced_nodes[-1])
+        return start, end
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return f"if {call_expr}:\n{line_indent}    return"
+
+    def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
+        return self.replaced_nodes
+
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return True
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return False
+
+    @property
+    def returns_bool(self) -> bool:
+        return True
+
+
+@dataclass(frozen=True)
+class PrefixGuardedAndLoopContinueAbsenceBranchSite(AbsenceBranchSite):
+    """Loop `if PREFIX and subject.attr is [not] None: ... continue` replaced by
+    `if PREFIX and subject.method(...):\\n    continue`."""
+
+    replaced_nodes: tuple[ast.stmt, ...]
+    guard_expr: ast.expr
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        start, _ = geometry.required_node_offsets(self.replaced_nodes[0])
+        _, end = geometry.required_node_offsets(self.replaced_nodes[-1])
+        return start, end
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return f"if {ast.unparse(self.guard_expr)} and {call_expr}:\n{line_indent}    continue"
+
+    def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
+        return self.replaced_nodes
+
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
+
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return True
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return False
+
+    @property
+    def returns_bool(self) -> bool:
+        return True
+
+
+@dataclass(frozen=True)
+class PrefixGuardedAndNonNoneTernaryAbsenceBranchSite(TernaryAbsenceBranchSite):
+    """`A if PREFIX and subject.attr is [not] None else B` (proved non-`None` `A`) replaced by
+    `(_found if PREFIX and (_found := subject.method(...)) is not None else B)`."""
+
+    guard_expr: ast.expr
+    short_circuit_expr: ast.expr
+
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        return (
+            f"(_found if {ast.unparse(self.guard_expr)} and (_found := {call_expr}) is not None "
+            f"else {ast.unparse(self.short_circuit_expr)})"
+        )
+
+
+def _has_break_or_yield(statements: Sequence[ast.stmt]) -> bool:
+    """True when `statements` contain loop `break`, `yield`, or `yield from` outside nested defs/loops."""
+    stack: list[ast.AST] = list(statements)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, (ast.Yield, ast.YieldFrom)):
+            return True
+        if isinstance(node, ast.Break):
+            return True
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            # `break` inside a nested loop stays inside that loop, while `yield` still escapes.
+            for sub in ast.walk(node):
+                if isinstance(sub, (ast.Yield, ast.YieldFrom)):
+                    return True
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def _uses_local_name(function: FunctionNode, target: str) -> bool:
+    return any(
+        isinstance(node, ast.Name) and node.id == target
+        for node in ast.walk(function)
+    )
+
+
+def _is_vacuous_attr_return(stmt: ast.If, subject_dump: str) -> bool:
+    """True when `stmt.body` is solely `return subject.<attr>` with no domain work."""
+    if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Return):
+        return False
+    values = optional_values(stmt.body[0])
+    if not values:
+        return False
+    return _is_bare_subject_attr(values[0], subject_dump)
+
+
+def _is_bare_subject_attr(expr: ast.expr, subject_dump: str) -> bool:
+    return isinstance(expr, ast.Attribute) and ast.dump(expr.value) == subject_dump
+
+
+def _rewrite_bare_returns_to_true(statements: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
+    """Deep-copy `statements`, replacing bare `return` with `return True` outside nested defs."""
+
+    class _Rewriter(ast.NodeTransformer):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+            return node
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+            return node
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+            return node
+
+        def visit_Return(self, node: ast.Return) -> ast.AST:
+            return ast.Return(value=ast.Constant(value=True))
+
+    rewriter = _Rewriter()
+    return tuple(rewriter.visit(copy.deepcopy(stmt)) for stmt in statements)
+
+
+def _rewrite_loop_continues_to_true(statements: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
+    """Deep-copy `statements`, replacing loop-level `continue` with `return True`."""
+
+    class _Rewriter(ast.NodeTransformer):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+            return node
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+            return node
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+            return node
+
+        def visit_For(self, node: ast.For) -> ast.AST:
+            return node
+
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> ast.AST:
+            return node
+
+        def visit_While(self, node: ast.While) -> ast.AST:
+            return node
+
+        def visit_Continue(self, node: ast.Continue) -> ast.AST:
+            del node
+            return ast.Return(value=ast.Constant(value=True))
+
+    rewriter = _Rewriter()
+    return tuple(rewriter.visit(copy.deepcopy(stmt)) for stmt in statements)
+
+
+def _all_subject_probes_in(
+    nodes: Sequence[ast.AST], subject_dump: str
+) -> tuple[ast.Compare, ...]:
+    found: list[ast.Compare] = []
+    for root in nodes:
+        for node in ast.walk(root):
+            probe = _parse_absence_probe(node)
+            if probe is not None and ast.dump(probe.subject) == subject_dump:
+                found.append(probe.node)
+    return tuple(found)
+
+
+def _non_none_callee_names(
+    snapshot: CodemodSourceSnapshot,
+    source_path: str,
+    enclosure: FunctionEnclosure,
+    function: FunctionNode,
+) -> frozenset[str]:
+    """Names in `source_path` resolving to scanned classes with closed MROs and no custom `__new__`."""
+    index = snapshot.compact_class_index
+    classes = index.classes_by_symbol
+    authority = index.declared_mro_authority
+    safe: set[str] = set()
+
+    def class_never_returns_none(symbol: str) -> bool:
+        if symbol not in classes:
+            return False
+        mro = authority.resolve(symbol).mro_type
+        if mro is None:
+            return False
+        return not any("__new__" in decl.member_binding_names for decl in mro.declarations)
+
+    parsed = snapshot.parsed_module_for_source_path(source_path)
+    module_identity = parsed.module_path_identity
+    for decl in classes.values():
+        if decl.file_path == source_path and "." not in decl.qualname:
+            if class_never_returns_none(decl.symbol):
+                safe.add(decl.qualname)
+    for node in parsed.module.body:
+        match node:
+            case ast.ImportFrom(module=mod, names=aliases, level=level):
+                resolved_mod = module_identity.resolve_import_from_module(
+                    imported_module=mod, level=level
+                )
+                if resolved_mod is None:
+                    continue
+                for alias in aliases:
+                    if alias.name == "*":
+                        continue
+                    bound = alias.asname or alias.name
+                    if class_never_returns_none(f"{resolved_mod}.{alias.name}"):
+                        safe.add(bound)
+    enclosing_sym = enclosure.class_receiver_symbol(snapshot)
+    if (
+        enclosing_sym is not None
+        and class_never_returns_none(enclosing_sym)
+        and any(
+            isinstance(dec, ast.Name) and dec.id == "classmethod"
+            for dec in function.decorator_list
+        )
+        and function.args.args
+    ):
+        safe.add(function.args.args[0].arg)
+    return frozenset(safe)
+
+
+@dataclass(frozen=True)
 class BoolOpAbsenceBranchSite(AbsenceBranchSite):
     """Compound `subject.attr is [not] None and/or <domain>` expression replaced inline by `subject.method(...)`."""
 
@@ -847,8 +1136,11 @@ def _extract_absence_if_site(
     probes: tuple[ParsedAbsenceProbe, ...],
     *,
     in_loop_body: bool,
+    allow_found_walrus: bool = False,
+    non_none_callees: frozenset[str] = frozenset(),
 ) -> AbsenceBranchSite | None:
     subject = probes[0].subject
+    subject_dump = ast.dump(subject)
     probe_nodes = tuple(probe.node for probe in probes)
 
     if stmt.orelse:
@@ -889,7 +1181,8 @@ def _extract_absence_if_site(
             replaced_nodes=replaced,
         )
 
-    # No explicit `else:`: terminating/partial-return tail, void early-return tail, loop continue tail, or void `if`.
+    # No explicit `else:`: terminating/partial-return tail, void early-return tail, loop continue tail,
+    # proved non-`None` early-return, or void/multi-probe sibling slice.
     tail = container[index + 1 :]
     if (
         tail
@@ -929,6 +1222,25 @@ def _extract_absence_if_site(
             replaced_nodes=replaced,
         )
     if (
+        container is not whole_fn_body
+        and tail
+        and _always_void_terminates(stmt.body)
+        and _has_any_return(stmt.body)
+        and not _has_value_return(tail)
+        and not _has_loop_escape(tail)
+    ):
+        replaced = tuple(container[index:])
+        return VoidReturnAbsenceBranchSite(
+            subject=subject,
+            probe_nodes=_all_subject_probes_in(replaced, subject_dump) or probe_nodes,
+            method_body=(
+                *_rewrite_bare_returns_to_true(replaced),
+                ast.Return(value=ast.Constant(value=False)),
+            ),
+            is_whole_function=False,
+            replaced_nodes=replaced,
+        )
+    if (
         in_loop_body
         and tail
         and _ends_with_continue_only(stmt.body)
@@ -965,12 +1277,66 @@ def _extract_absence_if_site(
             is_whole_function=False,
             replaced_nodes=tuple(container[index:]),
         )
-    if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
-        replaced = (stmt,)
-        is_whole = container is whole_fn_body and len(whole_fn_body) == 1
-        return VoidAbsenceBranchSite(
+    if allow_found_walrus and in_loop_body:
+        loop_slice = tuple(container[index:])
+        if (
+            _has_value_return(loop_slice)
+            and not _has_break_or_yield(loop_slice)
+            and _all_returns_proved_non_none(
+                loop_slice, subject_dump, non_none_callees
+            )
+            and (len(loop_slice) > 1 or not _is_vacuous_attr_return(stmt, subject_dump))
+        ):
+            rewritten_slice = _rewrite_loop_continues_to_returns(loop_slice)
+            return NonNoneReturnAbsenceBranchSite(
+                subject=subject,
+                probe_nodes=_all_subject_probes_in(loop_slice, subject_dump)
+                or probe_nodes,
+                method_body=(
+                    *rewritten_slice,
+                    ast.Return(value=ast.Constant(value=None)),
+                ),
+                is_whole_function=False,
+                replaced_nodes=loop_slice,
+            )
+    if (
+        allow_found_walrus
+        and _always_terminates(stmt.body)
+        and _has_value_return(stmt.body)
+        and not _has_break_or_continue(stmt.body)
+        and not _has_break_or_yield(stmt.body)
+        and _all_returns_proved_non_none((stmt,), subject_dump, non_none_callees)
+        and not _is_vacuous_attr_return(stmt, subject_dump)
+    ):
+        return NonNoneReturnAbsenceBranchSite(
             subject=subject,
             probe_nodes=probe_nodes,
+            method_body=(stmt, ast.Return(value=ast.Constant(value=None))),
+            is_whole_function=False,
+            replaced_nodes=(stmt,),
+        )
+    if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
+        # Coalesce contiguous sibling void statements probing the same subject (e.g. two
+        # sequential `if call.a is not None: ...; if call.b is not None: ...` checks).
+        subject_name = subject.id if isinstance(subject, ast.Name) else None
+        end_idx = index
+        for candidate_idx in range(index + 1, len(container)):
+            sibling = container[candidate_idx]
+            if _has_any_return((sibling,)) or _has_loop_escape((sibling,)):
+                break
+            if subject_name is not None and subject_name in _names_stored_in((sibling,)):
+                break
+            if _all_subject_probes_in((sibling,), subject_dump):
+                end_idx = candidate_idx
+        replaced = tuple(container[index : end_idx + 1])
+        is_whole = (
+            container is whole_fn_body
+            and index == 0
+            and end_idx == len(whole_fn_body) - 1
+        )
+        return VoidAbsenceBranchSite(
+            subject=subject,
+            probe_nodes=_all_subject_probes_in(replaced, subject_dump) or probe_nodes,
             method_body=replaced,
             is_whole_function=is_whole,
             replaced_nodes=replaced,
@@ -1054,6 +1420,8 @@ def _extract_prefix_guarded_absence_if_site(
     *,
     subject_source: str | None = None,
     in_loop_body: bool,
+    allow_found_walrus: bool = False,
+    non_none_callees: frozenset[str] = frozenset(),
 ) -> AbsenceBranchSite | None:
     if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.If):
         return None
@@ -1064,6 +1432,7 @@ def _extract_prefix_guarded_absence_if_site(
         return None
     op, guard_expr, remaining_test, probes = split
     subject = probes[0].subject
+    subject_dump = ast.dump(subject)
     probe_nodes = tuple(probe.node for probe in probes)
 
     if isinstance(op, ast.Or):
@@ -1209,6 +1578,51 @@ def _extract_prefix_guarded_absence_if_site(
                 guard_expr=guard_expr,
                 fallback_return=fallback,
             )
+        if (
+            allow_found_walrus
+            and _always_terminates(stmt.body)
+            and _has_value_return(stmt.body)
+            and not _has_break_or_continue(stmt.body)
+            and not _has_break_or_yield(stmt.body)
+            and _all_returns_proved_non_none(
+                (ast.If(test=remaining_test, body=list(stmt.body), orelse=[]),),
+                subject_dump,
+                non_none_callees,
+            )
+            and not _is_vacuous_attr_return(stmt, subject_dump)
+        ):
+            return PrefixGuardedAndNonNoneReturnAbsenceBranchSite(
+                subject=subject,
+                probe_nodes=probe_nodes,
+                method_body=(
+                    ast.If(test=remaining_test, body=list(stmt.body), orelse=[]),
+                    ast.Return(value=ast.Constant(value=None)),
+                ),
+                is_whole_function=False,
+                replaced_nodes=(stmt,),
+                guard_expr=guard_expr,
+            )
+        if (
+            in_loop_body
+            and not _has_any_return(stmt.body)
+            and not _has_non_continue_loop_escape(stmt.body)
+            and _has_break_or_continue(stmt.body)
+        ):
+            return PrefixGuardedAndLoopContinueAbsenceBranchSite(
+                subject=subject,
+                probe_nodes=probe_nodes,
+                method_body=(
+                    ast.If(
+                        test=remaining_test,
+                        body=list(_rewrite_loop_continues_to_true(stmt.body)),
+                        orelse=[],
+                    ),
+                    ast.Return(value=ast.Constant(value=False)),
+                ),
+                is_whole_function=False,
+                replaced_nodes=(stmt,),
+                guard_expr=guard_expr,
+            )
         if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
             return PrefixGuardedAndAbsenceBranchSite(
                 subject=subject,
@@ -1248,6 +1662,8 @@ def _extract_prefix_guarded_absence_ternary_site(
     target_lines: frozenset[int],
     *,
     subject_source: str | None = None,
+    allow_found_walrus: bool = False,
+    non_none_callees: frozenset[str] = frozenset(),
 ) -> TernaryAbsenceBranchSite | None:
     if (
         (_is_bool_constant(node.body) and _is_bool_constant(node.orelse))
@@ -1281,6 +1697,60 @@ def _extract_prefix_guarded_absence_ternary_site(
             guard_expr=guard_expr,
             short_circuit_expr=node.orelse,
         )
+    if isinstance(op, ast.And) and allow_found_walrus:
+        subject = probes[0].subject
+        subject_dump = ast.dump(subject)
+        guard_dump = ast.dump(guard_expr)
+        non_none_dumps = _is_not_none_guard_dumps(remaining_test)
+        if _expr_proved_non_none(
+            node.body, non_none_dumps, subject_dump, non_none_callees
+        ) and not _is_bare_subject_attr(node.body, subject_dump):
+            # Fold chained nested `B if SAME_GUARD and subj.b is [not] None else C` arms
+            # into one owner method so all probes on `subj` in the chain collapse together.
+            chain_arms: list[tuple[ast.expr, ast.expr]] = [(remaining_test, node.body)]
+            chain_probes: list[ast.Compare] = [probe.node for probe in probes]
+            tail_expr: ast.expr = node.orelse
+            while isinstance(tail_expr, ast.IfExp):
+                next_lines = frozenset(
+                    range(
+                        tail_expr.test.lineno,
+                        (tail_expr.test.end_lineno or tail_expr.test.lineno) + 1,
+                    )
+                )
+                next_split = _split_prefix_guarded_boolop(
+                    tail_expr.test, next_lines, subject_source=subject_source
+                )
+                if next_split is None:
+                    break
+                next_op, next_guard, next_rem, next_probes = next_split
+                if (
+                    not isinstance(next_op, ast.And)
+                    or ast.dump(next_guard) != guard_dump
+                    or ast.dump(next_probes[0].subject) != subject_dump
+                ):
+                    break
+                next_non_none = _is_not_none_guard_dumps(next_rem)
+                if not _expr_proved_non_none(
+                    tail_expr.body, next_non_none, subject_dump, non_none_callees
+                ) or _is_bare_subject_attr(tail_expr.body, subject_dump):
+                    break
+                chain_arms.append((next_rem, tail_expr.body))
+                chain_probes.extend(probe.node for probe in next_probes)
+                tail_expr = tail_expr.orelse
+            method_expr: ast.expr = ast.Constant(value=None)
+            for arm_test, arm_body in reversed(chain_arms):
+                method_expr = ast.IfExp(
+                    test=arm_test, body=arm_body, orelse=method_expr
+                )
+            return PrefixGuardedAndNonNoneTernaryAbsenceBranchSite(
+                subject=subject,
+                probe_nodes=tuple(chain_probes),
+                method_body=(ast.Return(value=method_expr),),
+                is_whole_function=False,
+                node=node,
+                guard_expr=guard_expr,
+                short_circuit_expr=tail_expr,
+            )
     return None
 
 
@@ -1514,10 +1984,12 @@ def find_absence_branch_site(
     test_line: int,
     *,
     subject_source: str | None = None,
+    non_none_callees: frozenset[str] = frozenset(),
 ) -> AbsenceBranchSite | None:
     """Locate a pushable `if`, `elif`, or non-boolean `IfExp` probing `subject.attr is [not] None` on `test_line`."""
 
     target_lines = frozenset((test_line,))
+    allow_found_walrus = not _uses_local_name(function, "_found")
     body = _body_without_docstring(function)
     for container, index, stmt, in_loop_body in _statement_list_children(body):
         if isinstance(stmt, ast.If):
@@ -1537,6 +2009,8 @@ def find_absence_branch_site(
                     body,
                     probes,
                     in_loop_body=extract_in_loop,
+                    allow_found_walrus=allow_found_walrus,
+                    non_none_callees=non_none_callees,
                 )
             if extracted is None:
                 extracted = _extract_prefix_guarded_absence_if_site(
@@ -1547,6 +2021,8 @@ def find_absence_branch_site(
                     target_lines,
                     subject_source=subject_source,
                     in_loop_body=extract_in_loop,
+                    allow_found_walrus=allow_found_walrus,
+                    non_none_callees=non_none_callees,
                 )
             if extracted is not None:
                 if is_elif:
@@ -1575,7 +2051,11 @@ def find_absence_branch_site(
                 if extracted is not None and extracted.subject_allowed():
                     return extracted
             extracted = _extract_prefix_guarded_absence_ternary_site(
-                ifexp, target_lines, subject_source=subject_source
+                ifexp,
+                target_lines,
+                subject_source=subject_source,
+                allow_found_walrus=allow_found_walrus,
+                non_none_callees=non_none_callees,
             )
             if extracted is not None and extracted.subject_allowed():
                 return extracted
@@ -1596,7 +2076,11 @@ def find_absence_branch_site(
                 if extracted is not None and extracted.subject_allowed():
                     return extracted
             extracted = _extract_prefix_guarded_absence_ternary_site(
-                node, target_lines, subject_source=subject_source
+                node,
+                target_lines,
+                subject_source=subject_source,
+                allow_found_walrus=allow_found_walrus,
+                non_none_callees=non_none_callees,
             )
             if extracted is not None and extracted.subject_allowed():
                 return extracted
@@ -1879,9 +2363,8 @@ def _upgrade_to_assigning_site(
     if len(escaping) != 1:
         return None
     target_name = escaping[0]
-    if len(site.method_body) != 1 or not isinstance(site.method_body[0], ast.If):
+    if not site.method_body or not isinstance(site.method_body[0], ast.If):
         return None
-    if_stmt = site.method_body[0]
     if any(
         isinstance(node, (ast.Global, ast.Nonlocal)) and target_name in node.names
         for node in ast.walk(function)
@@ -1891,11 +2374,28 @@ def _upgrade_to_assigning_site(
         isinstance(node, ast.Name)
         and isinstance(node.ctx, ast.Del)
         and node.id == target_name
-        for node in ast.walk(if_stmt)
+        for stmt in site.method_body
+        for node in ast.walk(stmt)
     ):
         return None
 
     is_subject_name = isinstance(site.subject, ast.Name) and site.subject.id == target_name
+    replaced = site.replaced_ast_nodes()
+    if len(site.method_body) > 1:
+        if (
+            not is_subject_name
+            and replaced
+            and _is_definitely_bound_before(function, replaced[0], target_name)
+        ):
+            new_body = (
+                *site.method_body,
+                ast.Return(value=ast.Name(id=target_name, ctx=ast.Load())),
+            )
+            return site.with_assigning_target(
+                target_name, new_body, reassigned_target=target_name
+            )
+        return None
+    if_stmt = site.method_body[0]
 
     # Definite single-target assignment across all arms of an `if ... else:` without pre-reads.
     if (
@@ -1908,7 +2408,6 @@ def _upgrade_to_assigning_site(
         return site.with_assigning_target(target_name, new_body, reassigned_target=None)
 
     # Single-branch conditional rebind or augassign on an already-bound local.
-    replaced = site.replaced_ast_nodes()
     if (
         not if_stmt.orelse
         and replaced
@@ -1988,8 +2487,15 @@ class ForeignAbsenceBranchProof:
             snapshot, target, test_line=test_line
         )
         source_text = snapshot.sources_by_file_path[source_path]
+        non_none_callees = _non_none_callee_names(
+            snapshot, source_path, enclosure, function
+        )
         site = find_absence_branch_site(
-            function, source_text, test_line, subject_source=subject_source
+            function,
+            source_text,
+            test_line,
+            subject_source=subject_source,
+            non_none_callees=non_none_callees,
         )
         if site is None:
             raise NeedsInput(
@@ -2237,8 +2743,15 @@ class ForeignAbsenceProbeFindingRecipeSynthesizer(
         except ValueError as error:
             return self.stopped_evaluation(error)
         source_text = snapshot.sources_by_file_path[primary.file_path]
+        non_none_callees = _non_none_callee_names(
+            snapshot, primary.file_path, _enclosure, function
+        )
         site = find_absence_branch_site(
-            function, source_text, probe_lines[0], subject_source=subject_source
+            function,
+            source_text,
+            probe_lines[0],
+            subject_source=subject_source,
+            non_none_callees=non_none_callees,
         )
         if site is None or not site.covers_lines(probe_lines):
             return self.stopped_evaluation(

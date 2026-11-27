@@ -1404,51 +1404,85 @@ def _has_loop_break_or_yield(statements: Sequence[ast.stmt]) -> bool:
 
 
 _NON_NONE_BUILTIN_CALLS: frozenset[str] = frozenset(
-    {"tuple", "list", "set", "frozenset", "dict", "str", "int", "float", "bool"}
+    {
+        "tuple",
+        "list",
+        "set",
+        "frozenset",
+        "dict",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "len",
+        "bytes",
+        "bytearray",
+        "repr",
+        "sum",
+        "abs",
+        "round",
+        "sorted",
+        "any",
+        "all",
+        "type",
+        "id",
+        "hash",
+        "ord",
+        "chr",
+        "hex",
+        "oct",
+        "bin",
+    }
 )
 
 
-def _is_not_none_guard_name(test: ast.expr) -> str:
+def _is_not_none_guard_dumps(test: ast.expr) -> frozenset[str]:
     match test:
         case ast.Compare(
-            left=ast.Name(id=name),
+            left=left,
             ops=[ast.IsNot()],
             comparators=[ast.Constant(value=None)],
-        ):
-            return name
+        ) if _is_pure_subject(left):
+            return frozenset((ast.dump(left),))
         case ast.Compare(
             left=ast.Constant(value=None),
             ops=[ast.IsNot()],
-            comparators=[ast.Name(id=name)],
-        ):
-            return name
-    return ""
+            comparators=[right],
+        ) if _is_pure_subject(right):
+            return frozenset((ast.dump(right),))
+        case ast.BoolOp(op=ast.And(), values=values):
+            found: set[str] = set()
+            for value in values:
+                found.update(_is_not_none_guard_dumps(value))
+            return frozenset(found)
+    return frozenset()
 
 
-def _is_none_guard_name(test: ast.expr) -> str:
+def _is_none_guard_dump(test: ast.expr) -> str:
     match test:
         case ast.Compare(
-            left=ast.Name(id=name),
+            left=left,
             ops=[ast.Is()],
             comparators=[ast.Constant(value=None)],
-        ):
-            return name
+        ) if _is_pure_subject(left):
+            return ast.dump(left)
         case ast.Compare(
             left=ast.Constant(value=None),
             ops=[ast.Is()],
-            comparators=[ast.Name(id=name)],
-        ):
-            return name
+            comparators=[right],
+        ) if _is_pure_subject(right):
+            return ast.dump(right)
     return ""
 
 
 def _expr_proved_non_none(
     expr: ast.expr,
-    non_none_names: frozenset[str],
+    non_none_dumps: frozenset[str],
     subject_dump: str,
     tested_class_names: frozenset[str],
 ) -> bool:
-    if ast.dump(expr) == subject_dump:
+    expr_dump = ast.dump(expr)
+    if expr_dump == subject_dump or expr_dump in non_none_dumps:
         return True
     match expr:
         case (
@@ -1465,8 +1499,6 @@ def _expr_proved_non_none(
             return True
         case ast.Constant(value=val):
             return val is not None
-        case ast.Name(id=name):
-            return name in non_none_names
         case ast.Call(func=ast.Name(id=func_name)):
             return (
                 func_name in _NON_NONE_BUILTIN_CALLS
@@ -1497,6 +1529,7 @@ def _all_returns_proved_non_none(
     statements: Sequence[ast.stmt],
     subject_dump: str,
     tested_class_names: frozenset[str],
+    initial_non_none: frozenset[str] = frozenset(),
 ) -> bool:
     seen_return = False
 
@@ -1517,20 +1550,18 @@ def _all_returns_proved_non_none(
                     ):
                         return False
                 case ast.If(test=test, body=body, orelse=orelse):
-                    pos_name = _is_not_none_guard_name(test)
-                    neg_name = _is_none_guard_name(test)
-                    body_non_none = (
-                        current | frozenset((pos_name,)) if pos_name else current
-                    )
+                    pos_dumps = _is_not_none_guard_dumps(test)
+                    neg_dump = _is_none_guard_dump(test)
+                    body_non_none = current | pos_dumps if pos_dumps else current
                     orelse_non_none = (
-                        current | frozenset((neg_name,)) if neg_name else current
+                        current | frozenset((neg_dump,)) if neg_dump else current
                     )
                     if not check_block(body, body_non_none):
                         return False
                     if not check_block(orelse, orelse_non_none):
                         return False
-                    if neg_name and not orelse and _always_terminates(body):
-                        current = current | frozenset((neg_name,))
+                    if neg_dump and not orelse and _always_terminates(body):
+                        current = current | frozenset((neg_dump,))
                 case ast.For(body=body, orelse=orelse) | ast.AsyncFor(
                     body=body, orelse=orelse
                 ) | ast.While(body=body, orelse=orelse):
@@ -1560,9 +1591,17 @@ def _all_returns_proved_non_none(
                     for case in cases:
                         if not check_block(case.body, current):
                             return False
+                case _:
+                    stored = _names_stored_in((stmt,))
+                    if stored and current:
+                        current = frozenset(
+                            dump
+                            for dump in current
+                            if not any(f"id='{name}'" in dump for name in stored)
+                        )
         return True
 
-    return check_block(statements, frozenset()) and seen_return
+    return check_block(statements, initial_non_none) and seen_return
 
 
 def _with_loop_fallback_return(

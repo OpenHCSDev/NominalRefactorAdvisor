@@ -1809,3 +1809,208 @@ def test_foreign_absence_boolop_comprehension_generator_prefix_loop_and_non_relo
     with ScanCache.scope():
         assert OwnStateBranchAnswerDetector().detect(mods_after, DetectorConfig()) == []
 
+
+def test_nonnone_early_return_multi_probe_void_return_loop_continue_and_ternary(
+    tmp_path: Path,
+) -> None:
+    """Loop/single/prefix-guarded non-None early returns, chained prefix-guarded non-trivial
+    ternaries, nested bare-return guards, prefix-guarded loop continues, and contiguous
+    sibling void statements all push cleanly with runtime parity and zero OwnStateBranchAnswer."""
+
+    source = (
+        "from contextlib import nullcontext\n"
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Outcome:\n"
+        "    value: int\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Page:\n"
+        "    blocked_seq: int | None\n"
+        "    more_sources: bool\n"
+        "    count: int\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class CacheEntry:\n"
+        "    packets: dict[str, int] | None\n"
+        "    fallback: str\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Sampling:\n"
+        "    prompt_ids: tuple[int, ...] | None\n"
+        "    alt_ids: tuple[int, ...] | None\n\n\n"
+        "@dataclass\n"
+        "class Pane:\n"
+        "    typist: str | None\n"
+        "    started: list[str]\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Claim:\n"
+        "    witness: str | None\n"
+        "    label: str\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class CallStats:\n"
+        "    prompt_tokens: int | None\n"
+        "    completion_tokens: int | None\n\n\n"
+        "def maybe_none(x: int) -> int | None:\n"
+        "    return None if x == 0 else x\n\n\n"
+        "def scan_pages(pages: list[Page]) -> Outcome:\n"
+        "    total = 0\n"
+        "    for page in pages:\n"
+        "        total += page.count\n"
+        "        if page.blocked_seq is not None or not page.more_sources:\n"
+        "            return Outcome(total + (page.blocked_seq or 0))\n"
+        "    return Outcome(-1)\n\n\n"
+        "def cached_packets(entry: CacheEntry, use_cache: bool) -> dict[str, int]:\n"
+        "    raw = ''\n"
+        "    if use_cache:\n"
+        "        if entry.packets is not None:\n"
+        "            return dict(entry.packets)\n"
+        "        raw = entry.fallback\n"
+        "    return {'fallback': len(raw)}\n\n\n"
+        "def prompt_len(native: Sampling | None, default_len: int) -> int:\n"
+        "    if native is not None and native.prompt_ids is not None:\n"
+        "        return len(native.prompt_ids)\n"
+        "    return default_len + 1\n\n\n"
+        "def chained_tokens(native: Sampling | None) -> Outcome:\n"
+        "    return (\n"
+        "        Outcome(len(native.prompt_ids))\n"
+        "        if native is not None and native.prompt_ids is not None\n"
+        "        else (\n"
+        "            Outcome(len(native.alt_ids))\n"
+        "            if native is not None and native.alt_ids is not None\n"
+        "            else Outcome(0)\n"
+        "        )\n"
+        "    )\n\n\n"
+        "def start_typist(pane: Pane, log: list[str]) -> None:\n"
+        "    with nullcontext():\n"
+        "        if pane.typist is not None:\n"
+        "            return\n"
+        "        pane.typist = 'running'\n"
+        "        pane.started.append('go')\n"
+        "    log.append('waited')\n\n\n"
+        "def audit_claims(claims: list[Claim], strict: bool, errors: list[str]) -> int:\n"
+        "    passed = 0\n"
+        "    for claim in claims:\n"
+        "        if strict and claim.witness is not None:\n"
+        "            if claim.witness == 'bad':\n"
+        "                errors.append(claim.label)\n"
+        "                continue\n"
+        "        passed += 1\n"
+        "    return passed\n\n\n"
+        "def sum_calls(calls: list[CallStats]) -> int:\n"
+        "    total_tokens = 0\n"
+        "    for call in calls:\n"
+        "        if call.prompt_tokens is not None:\n"
+        "            total_tokens += call.prompt_tokens\n"
+        "        if call.completion_tokens is not None:\n"
+        "            total_tokens += call.completion_tokens\n"
+        "    return total_tokens\n\n\n"
+        "def refused_maybe_none(pages: list[Page]) -> int | None:\n"
+        "    for page in pages:\n"
+        "        if page.blocked_seq is not None:\n"
+        "            return maybe_none(page.blocked_seq)\n"
+        "    return -1\n\n\n"
+        "def refused_vacuous_getter(native: Sampling | None, fallback: tuple[int, ...]) -> tuple[int, ...]:\n"
+        "    if native is not None and native.prompt_ids is not None:\n"
+        "        return native.prompt_ids\n"
+        "    return fallback + (0,)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/shapes.py": source})
+    _mods, snap, findings = _scan(tmp_path)
+    by_fn = {f.primary_evidence.symbol: f for f in findings}
+    expected_pushable = (
+        "scan_pages",
+        "cached_packets",
+        "prompt_len",
+        "chained_tokens",
+        "start_typist",
+        "audit_claims",
+        "sum_calls",
+    )
+    assert set(expected_pushable).issubset(by_fn)
+    det = ForeignAbsenceProbeDetector()
+
+    # Soundness guards: potentially-None return and vacuous bare getter stay refused.
+    for refused_fn in ("refused_maybe_none", "refused_vacuous_getter"):
+        ev = det.evaluate_recipe_for_finding(by_fn[refused_fn], snap)
+        assert NeededInput.SOURCE_CHANGE in ev.needs
+        assert "is not a pushable branch shape" in ev.rejection_reason
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(by_fn["scan_pages"].stable_id, "scan_pages", "Page owns stop check.", "stop_outcome", "Return Outcome when scanning stops."),
+            OwnerPick(by_fn["cached_packets"].stable_id, "cached_packets", "CacheEntry owns packet copy.", "copied_packets", "Copy cached packets if present."),
+            OwnerPick(by_fn["prompt_len"].stable_id, "prompt_len", "Sampling owns prompt length.", "prompt_token_len", "Return prompt token length when present."),
+            OwnerPick(by_fn["chained_tokens"].stable_id, "chained_tokens", "Sampling owns token outcome.", "token_outcome", "Build Outcome from available token ids."),
+            OwnerPick(by_fn["start_typist"].stable_id, "start_typist", "Pane owns typist startup.", "ensure_typist", "Start typist if absent; return True when already running."),
+            OwnerPick(by_fn["audit_claims"].stable_id, "audit_claims", "Claim owns witness check.", "rejects_witness", "Record invalid witness error and return True to skip."),
+            OwnerPick(by_fn["sum_calls"].stable_id, "sum_calls", "CallStats owns token accumulation.", "add_tokens", "Add recorded prompt and completion tokens to total."),
+        ),
+    )
+    target_findings = tuple(by_fn[name] for name in expected_pushable)
+    picked, report = picks.applied(target_findings)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == len(expected_pushable), plan.report
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after = (tmp_path / "pkg/shapes.py").read_text(encoding="utf-8")
+    assert "if (_found := page.stop_outcome(total)) is not None:" in after
+    assert "if (_found := entry.copied_packets()) is not None:" in after
+    assert "if native is not None and (_found := native.prompt_token_len()) is not None:" in after
+    assert "(_found if native is not None and (_found := native.token_outcome()) is not None else Outcome(0))" in after
+    assert "if pane.ensure_typist():" in after
+    assert "if strict and claim.rejects_witness(errors):" in after
+    assert "total_tokens = call.add_tokens(total_tokens)" in after
+
+    ns_before: dict[str, object] = {}
+    ns_after: dict[str, object] = {}
+    exec(compile(source, str(tmp_path / "pkg/shapes.py"), "exec"), ns_before)
+    exec(compile(after, str(tmp_path / "pkg/shapes.py"), "exec"), ns_after)
+
+    def probe(ns: dict[str, object]) -> tuple[object, ...]:
+        Page = ns["Page"]
+        CacheEntry = ns["CacheEntry"]
+        Sampling = ns["Sampling"]
+        Pane = ns["Pane"]
+        Claim = ns["Claim"]
+        CallStats = ns["CallStats"]
+        log1: list[str] = []
+        p1 = Pane(None, [])
+        ns["start_typist"](p1, log1)  # type: ignore[operator]
+        log2: list[str] = []
+        p2 = Pane("busy", [])
+        ns["start_typist"](p2, log2)  # type: ignore[operator]
+        errs: list[str] = []
+        passed = ns["audit_claims"]([Claim("ok", "a"), Claim("bad", "b"), Claim(None, "c")], True, errs)  # type: ignore[operator]
+        return (
+            ns["scan_pages"]([Page(None, True, 2), Page(5, True, 3)]).value,  # type: ignore[operator,union-attr]
+            ns["scan_pages"]([Page(None, True, 2)]).value,  # type: ignore[operator,union-attr]
+            ns["cached_packets"](CacheEntry({"a": 1}, "fb"), True),  # type: ignore[operator]
+            ns["cached_packets"](CacheEntry(None, "fb"), True),  # type: ignore[operator]
+            ns["cached_packets"](CacheEntry({"a": 1}, "fb"), False),  # type: ignore[operator]
+            ns["prompt_len"](Sampling((1, 2, 3), None), 10),  # type: ignore[operator]
+            ns["prompt_len"](Sampling(None, (1,)), 10),  # type: ignore[operator]
+            ns["prompt_len"](None, 10),  # type: ignore[operator]
+            ns["chained_tokens"](Sampling((1, 2), (3,))).value,  # type: ignore[operator,union-attr]
+            ns["chained_tokens"](Sampling(None, (3, 4, 5))).value,  # type: ignore[operator,union-attr]
+            ns["chained_tokens"](Sampling(None, None)).value,  # type: ignore[operator,union-attr]
+            ns["chained_tokens"](None).value,  # type: ignore[operator,union-attr]
+            (p1.typist, tuple(p1.started), tuple(log1)),
+            (p2.typist, tuple(p2.started), tuple(log2)),
+            (passed, tuple(errs)),
+            ns["sum_calls"]([CallStats(3, None), CallStats(None, 4), CallStats(2, 5)]),  # type: ignore[operator]
+        )
+
+    assert probe(ns_after) == probe(ns_before)
+
+    mods_after, _snap_after, findings_after = _scan(tmp_path)
+    assert {f.primary_evidence.symbol for f in findings_after} == {
+        "refused_maybe_none",
+        "refused_vacuous_getter",
+    }
+    with ScanCache.scope():
+        assert OwnStateBranchAnswerDetector().detect(mods_after, DetectorConfig()) == []
+
+
