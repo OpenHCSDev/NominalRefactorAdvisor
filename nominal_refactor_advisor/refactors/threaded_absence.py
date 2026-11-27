@@ -432,9 +432,9 @@ class AssigningThreadedSite(ThreadedAbsenceBranchSite):
 
 @dataclass(frozen=True)
 class TernaryThreadedSite(ThreadedAbsenceBranchSite):
-    """Inline `a if param is [not] None else b` replaced by `param.method(...)`."""
+    """Inline `a if param is [not] None else b` or compound boolean expression replaced by `param.method(...)`."""
 
-    node: ast.IfExp
+    node: ast.expr
 
     def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
         return geometry.required_node_offsets(self.node)
@@ -565,13 +565,18 @@ def _extract_threaded_if_site(
         if (
             tail
             and _always_terminates(tail)
-            and _always_terminates(stmt.body)
+            and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
             and not _has_break_or_continue((stmt, *tail))
         ):
             replaced = tuple(container[index:])
             is_whole = container is whole_fn_body and index == 0
-            absent_body = tuple(stmt.body) if is_none else tuple(tail)
-            held_body = tuple(tail) if is_none else tuple(stmt.body)
+            hit_body = (
+                tuple(stmt.body)
+                if _always_terminates(stmt.body)
+                else (*stmt.body, *tail)
+            )
+            absent_body = hit_body if is_none else tuple(tail)
+            held_body = tuple(tail) if is_none else hit_body
             if _has_any_return(replaced):
                 return ReturningThreadedSite(
                     param_name=param_name,
@@ -637,8 +642,8 @@ def _extract_threaded_if_site(
             )
         return None
 
-    # Compound BoolOp `if PREFIX and param is [not] None:` / `if param is [not] None and SUFFIX:` / `or`
-    if not isinstance(stmt.test, ast.BoolOp) or len(stmt.test.values) < 2 or stmt.orelse:
+    # Compound BoolOp `if PREFIX and param is [not] None:` / `if param is [not] None and|or SUFFIX:`
+    if not isinstance(stmt.test, ast.BoolOp) or len(stmt.test.values) < 2:
         return None
     match_idx: int | None = None
     matched_probe: tuple[bool, ast.Compare] | None = None
@@ -676,16 +681,136 @@ def _extract_threaded_if_site(
         )
     )
     if isinstance(stmt.test.op, ast.And):
-        if _has_any_return(stmt.body) or _has_loop_escape(stmt.body):
+        if guard_expr is not None:
+            if stmt.orelse or _has_any_return(stmt.body) or _has_loop_escape(stmt.body):
+                return None
+            hit_body: tuple[ast.stmt, ...] = (
+                (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),)
+                if suffix_expr is not None
+                else tuple(stmt.body)
+            )
+            absent_body = hit_body if is_none else ()
+            held_body = () if is_none else hit_body
+            return PrefixGuardedAndThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=absent_body,
+                held_body=held_body,
+                is_whole_function=False,
+                replaced_nodes=(stmt,),
+                guard_expr=guard_expr,
+            )
+        if suffix_expr is None:
             return None
-        hit_body: tuple[ast.stmt, ...] = (
-            (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),)
-            if suffix_expr is not None
-            else tuple(stmt.body)
-        )
-        absent_body = hit_body if is_none else ()
-        held_body = () if is_none else hit_body
-        if guard_expr is None:
+        if stmt.orelse:
+            replaced = (stmt,)
+            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
+            cond_body: tuple[ast.stmt, ...] = (
+                ast.If(test=suffix_expr, body=list(stmt.body), orelse=list(stmt.orelse)),
+            )
+            absent_body = cond_body if is_none else tuple(stmt.orelse)
+            held_body = tuple(stmt.orelse) if is_none else cond_body
+            if _has_any_return(replaced):
+                if _always_terminates(stmt.body) and _always_terminates(stmt.orelse):
+                    return ReturningThreadedSite(
+                        param_name=param_name,
+                        probe_node=probe_node,
+                        absent_body=absent_body,
+                        held_body=held_body,
+                        is_whole_function=is_whole,
+                        replaced_nodes=replaced,
+                    )
+                return None
+            if _has_loop_escape(replaced):
+                return None
+            return VoidThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=absent_body,
+                held_body=held_body,
+                is_whole_function=is_whole,
+                replaced_nodes=replaced,
+            )
+        tail = container[index + 1 :]
+        if (
+            tail
+            and _always_terminates(tail)
+            and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
+            and not _has_break_or_continue((stmt, *tail))
+        ):
+            replaced = tuple(container[index:])
+            is_whole = container is whole_fn_body and index == 0
+            cond_body = (
+                ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),
+                *tail,
+            )
+            absent_body = cond_body if is_none else tuple(tail)
+            held_body = tuple(tail) if is_none else cond_body
+            if _has_any_return(replaced):
+                return ReturningThreadedSite(
+                    param_name=param_name,
+                    probe_node=probe_node,
+                    absent_body=absent_body,
+                    held_body=held_body,
+                    is_whole_function=is_whole,
+                    replaced_nodes=replaced,
+                )
+            return VoidThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=absent_body,
+                held_body=held_body,
+                is_whole_function=is_whole,
+                replaced_nodes=replaced,
+            )
+        if (
+            container is whole_fn_body
+            and tail
+            and _always_void_terminates(stmt.body)
+            and not _has_value_return(tail)
+        ):
+            cond_body = (
+                ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),
+                *tail,
+            )
+            absent_body = cond_body if is_none else tuple(tail)
+            held_body = tuple(tail) if is_none else cond_body
+            return VoidThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=absent_body,
+                held_body=held_body,
+                is_whole_function=index == 0,
+                replaced_nodes=tuple(container[index:]),
+            )
+        if (
+            in_loop_body
+            and tail
+            and _ends_with_continue_only(stmt.body)
+            and not _has_non_continue_loop_escape(tail)
+        ):
+            rewritten_tail = _rewrite_loop_continues_to_returns(tail)
+            cond_body = (
+                ast.If(
+                    test=suffix_expr,
+                    body=list(_strip_trailing_continue(stmt.body)),
+                    orelse=list(rewritten_tail),
+                ),
+            )
+            absent_body = cond_body if is_none else rewritten_tail
+            held_body = rewritten_tail if is_none else cond_body
+            return VoidThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=absent_body,
+                held_body=held_body,
+                is_whole_function=False,
+                replaced_nodes=tuple(container[index:]),
+            )
+        if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
+            hit_body = (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),)
+            absent_body = hit_body if is_none else ()
+            held_body = () if is_none else hit_body
             return VoidThreadedSite(
                 param_name=param_name,
                 probe_node=probe_node,
@@ -694,43 +819,283 @@ def _extract_threaded_if_site(
                 is_whole_function=container is whole_fn_body and len(whole_fn_body) == 1,
                 replaced_nodes=(stmt,),
             )
-        return PrefixGuardedAndThreadedSite(
-            param_name=param_name,
-            probe_node=probe_node,
-            absent_body=absent_body,
-            held_body=held_body,
-            is_whole_function=False,
-            replaced_nodes=(stmt,),
-            guard_expr=guard_expr,
-        )
-    if isinstance(stmt.test.op, ast.Or) and guard_expr is not None:
-        tail = container[index + 1 :]
-        if (
-            tail
-            and _always_terminates(stmt.body)
-            and _always_terminates(tail)
-            and not _has_break_or_continue((stmt, *tail))
-        ):
-            fallback_body: tuple[ast.stmt, ...] = (
-                (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
-                if suffix_expr is not None
-                else tuple(tail)
+        return None
+
+    if isinstance(stmt.test.op, ast.Or):
+        if guard_expr is not None:
+            if stmt.orelse:
+                return None
+            tail = container[index + 1 :]
+            if (
+                tail
+                and _always_terminates(stmt.body)
+                and _always_terminates(tail)
+                and not _has_break_or_continue((stmt, *tail))
+            ):
+                fallback_body: tuple[ast.stmt, ...] = (
+                    (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
+                    if suffix_expr is not None
+                    else tuple(tail)
+                )
+                absent_body = tuple(stmt.body) if is_none else fallback_body
+                held_body = fallback_body if is_none else tuple(stmt.body)
+                replaced = tuple(container[index:])
+                return PrefixGuardedOrThreadedSite(
+                    param_name=param_name,
+                    probe_node=probe_node,
+                    absent_body=absent_body,
+                    held_body=held_body,
+                    is_whole_function=False,
+                    replaced_nodes=replaced,
+                    guard_expr=guard_expr,
+                    guard_body=tuple(stmt.body),
+                    returns_value=_has_any_return(replaced),
+                )
+            return None
+        if suffix_expr is None:
+            return None
+        if stmt.orelse:
+            replaced = (stmt,)
+            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
+            fallback_body = (
+                ast.If(test=suffix_expr, body=list(stmt.body), orelse=list(stmt.orelse)),
             )
             absent_body = tuple(stmt.body) if is_none else fallback_body
             held_body = fallback_body if is_none else tuple(stmt.body)
+            if _has_any_return(replaced):
+                if _always_terminates(stmt.body) and _always_terminates(stmt.orelse):
+                    return ReturningThreadedSite(
+                        param_name=param_name,
+                        probe_node=probe_node,
+                        absent_body=absent_body,
+                        held_body=held_body,
+                        is_whole_function=is_whole,
+                        replaced_nodes=replaced,
+                    )
+                return None
+            if _has_loop_escape(replaced):
+                return None
+            return VoidThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=absent_body,
+                held_body=held_body,
+                is_whole_function=is_whole,
+                replaced_nodes=replaced,
+            )
+        tail = container[index + 1 :]
+        if (
+            tail
+            and _always_terminates(tail)
+            and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
+            and not _has_break_or_continue((stmt, *tail))
+        ):
             replaced = tuple(container[index:])
-            return PrefixGuardedOrThreadedSite(
+            is_whole = container is whole_fn_body and index == 0
+            hit_body = (
+                tuple(stmt.body)
+                if _always_terminates(stmt.body)
+                else (*stmt.body, *tail)
+            )
+            fallback_body = (
+                ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),
+                *tail,
+            )
+            absent_body = hit_body if is_none else fallback_body
+            held_body = fallback_body if is_none else hit_body
+            if _has_any_return(replaced):
+                return ReturningThreadedSite(
+                    param_name=param_name,
+                    probe_node=probe_node,
+                    absent_body=absent_body,
+                    held_body=held_body,
+                    is_whole_function=is_whole,
+                    replaced_nodes=replaced,
+                )
+            return VoidThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=absent_body,
+                held_body=held_body,
+                is_whole_function=is_whole,
+                replaced_nodes=replaced,
+            )
+        if (
+            container is whole_fn_body
+            and tail
+            and _always_void_terminates(stmt.body)
+            and not _has_value_return(tail)
+        ):
+            stripped = _strip_trailing_bare_return(stmt.body)
+            fallback_body = (
+                ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),
+                *tail,
+            )
+            absent_body = stripped if is_none else fallback_body
+            held_body = fallback_body if is_none else stripped
+            return VoidThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=absent_body,
+                held_body=held_body,
+                is_whole_function=index == 0,
+                replaced_nodes=tuple(container[index:]),
+            )
+        if (
+            in_loop_body
+            and tail
+            and _ends_with_continue_only(stmt.body)
+            and not _has_non_continue_loop_escape(tail)
+        ):
+            stripped = _strip_trailing_continue(stmt.body)
+            rewritten_tail = _rewrite_loop_continues_to_returns(tail)
+            fallback_body = (
+                ast.If(
+                    test=suffix_expr,
+                    body=list(stripped),
+                    orelse=list(rewritten_tail),
+                ),
+            )
+            absent_body = stripped if is_none else fallback_body
+            held_body = fallback_body if is_none else stripped
+            return VoidThreadedSite(
                 param_name=param_name,
                 probe_node=probe_node,
                 absent_body=absent_body,
                 held_body=held_body,
                 is_whole_function=False,
-                replaced_nodes=replaced,
-                guard_expr=guard_expr,
-                guard_body=tuple(stmt.body),
-                returns_value=_has_any_return(replaced),
+                replaced_nodes=tuple(container[index:]),
+            )
+        if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
+            fallback_body = (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),)
+            absent_body = tuple(stmt.body) if is_none else fallback_body
+            held_body = fallback_body if is_none else tuple(stmt.body)
+            return VoidThreadedSite(
+                param_name=param_name,
+                probe_node=probe_node,
+                absent_body=absent_body,
+                held_body=held_body,
+                is_whole_function=container is whole_fn_body and len(whole_fn_body) == 1,
+                replaced_nodes=(stmt,),
             )
     return None
+
+
+def _extract_threaded_ifexp_site(
+    node: ast.IfExp,
+    param_name: str,
+    probe_line: int,
+    *,
+    is_whole_function: bool,
+) -> TernaryThreadedSite | None:
+    if not _node_covers_line(node.test, probe_line):
+        return None
+    direct = _parse_param_probe(node.test, param_name)
+    if direct is not None:
+        is_none, probe_node = direct
+        absent_expr = node.body if is_none else node.orelse
+        held_expr = node.orelse if is_none else node.body
+        return TernaryThreadedSite(
+            param_name=param_name,
+            probe_node=probe_node,
+            absent_body=(ast.Return(value=absent_expr),),
+            held_body=(ast.Return(value=held_expr),),
+            is_whole_function=is_whole_function,
+            node=node,
+        )
+    if isinstance(node.test, ast.BoolOp) and len(node.test.values) >= 2:
+        first_val = node.test.values[0]
+        if not _node_covers_line(first_val, probe_line):
+            return None
+        parsed = _parse_param_probe(first_val, param_name)
+        if parsed is None:
+            return None
+        is_none, probe_node = parsed
+        suffix_values = node.test.values[1:]
+        suffix_expr: ast.expr = (
+            suffix_values[0]
+            if len(suffix_values) == 1
+            else ast.BoolOp(op=node.test.op, values=suffix_values)
+        )
+        deferred = ast.IfExp(test=suffix_expr, body=node.body, orelse=node.orelse)
+        if isinstance(node.test.op, ast.Or):
+            absent_expr = node.body if is_none else deferred
+            held_expr = deferred if is_none else node.body
+        else:
+            absent_expr = deferred if is_none else node.orelse
+            held_expr = node.orelse if is_none else deferred
+        return TernaryThreadedSite(
+            param_name=param_name,
+            probe_node=probe_node,
+            absent_body=(ast.Return(value=absent_expr),),
+            held_body=(ast.Return(value=held_expr),),
+            is_whole_function=is_whole_function,
+            node=node,
+        )
+    return None
+
+
+def _extract_threaded_boolop_expr_site(
+    expr: ast.expr,
+    param_name: str,
+    probe_line: int,
+    *,
+    is_whole_function: bool,
+) -> TernaryThreadedSite | None:
+    """Match `param is [not] None and|or SUFFIX` or `bool(param is [not] None and|or SUFFIX)`."""
+
+    wrapped_bool = False
+    target_boolop: ast.BoolOp | None = None
+    match expr:
+        case ast.Call(
+            func=ast.Name(id="bool"),
+            args=[ast.BoolOp() as inner_op],
+            keywords=[],
+        ):
+            wrapped_bool = True
+            target_boolop = inner_op
+        case ast.BoolOp() as inner_op:
+            target_boolop = inner_op
+    if target_boolop is None or len(target_boolop.values) < 2:
+        return None
+    first_val = target_boolop.values[0]
+    if not _node_covers_line(first_val, probe_line):
+        return None
+    parsed = _parse_param_probe(first_val, param_name)
+    if parsed is None:
+        return None
+    is_none, probe_node = parsed
+    suffix_values = target_boolop.values[1:]
+    suffix_expr: ast.expr = (
+        suffix_values[0]
+        if len(suffix_values) == 1
+        else ast.BoolOp(op=target_boolop.op, values=suffix_values)
+    )
+    continue_expr: ast.expr = (
+        ast.Call(
+            func=ast.Name(id="bool", ctx=ast.Load()),
+            args=[suffix_expr],
+            keywords=[],
+        )
+        if wrapped_bool
+        else suffix_expr
+    )
+    if isinstance(target_boolop.op, ast.Or):
+        short_circuit = ast.Constant(value=True)
+        absent_expr = short_circuit if is_none else continue_expr
+        held_expr = continue_expr if is_none else short_circuit
+    else:
+        short_circuit = ast.Constant(value=False)
+        absent_expr = continue_expr if is_none else short_circuit
+        held_expr = short_circuit if is_none else continue_expr
+    return TernaryThreadedSite(
+        param_name=param_name,
+        probe_node=probe_node,
+        absent_body=(ast.Return(value=absent_expr),),
+        held_body=(ast.Return(value=held_expr),),
+        is_whole_function=is_whole_function,
+        node=expr,
+    )
 
 
 def find_threaded_absence_site(
@@ -738,7 +1103,7 @@ def find_threaded_absence_site(
     param_name: str,
     probe_line: int,
 ) -> ThreadedAbsenceBranchSite | None:
-    """Locate a pushable `if` or `IfExp` branching on `param_name is [not] None`."""
+    """Locate a pushable `if`, `IfExp`, or compound `BoolOp` branching on `param_name is [not] None`."""
 
     body = _body_without_docstring(function)
     for container, index, stmt, in_loop_body in _statement_list_children(body):
@@ -756,37 +1121,39 @@ def find_threaded_absence_site(
                 return extracted
         if isinstance(stmt, ast.Return):
             for ret_val in optional_values(stmt):
-                if isinstance(ret_val, ast.IfExp) and _node_covers_line(
-                    ret_val.test, probe_line
-                ):
-                    parsed = _parse_param_probe(ret_val.test, param_name)
-                    if parsed is not None:
-                        is_none, probe_node = parsed
-                        absent_expr = ret_val.body if is_none else ret_val.orelse
-                        held_expr = ret_val.orelse if is_none else ret_val.body
-                        return TernaryThreadedSite(
-                            param_name=param_name,
-                            probe_node=probe_node,
-                            absent_body=(ast.Return(value=absent_expr),),
-                            held_body=(ast.Return(value=held_expr),),
-                            is_whole_function=container is body and len(body) == 1,
-                            node=ret_val,
-                        )
-    for node in ast.walk(function):
-        if isinstance(node, ast.IfExp) and _node_covers_line(node.test, probe_line):
-            parsed = _parse_param_probe(node.test, param_name)
-            if parsed is not None:
-                is_none, probe_node = parsed
-                absent_expr = node.body if is_none else node.orelse
-                held_expr = node.orelse if is_none else node.body
-                return TernaryThreadedSite(
-                    param_name=param_name,
-                    probe_node=probe_node,
-                    absent_body=(ast.Return(value=absent_expr),),
-                    held_body=(ast.Return(value=held_expr),),
-                    is_whole_function=False,
-                    node=node,
+                is_whole = container is body and len(body) == 1
+                if isinstance(ret_val, ast.IfExp):
+                    site = _extract_threaded_ifexp_site(
+                        ret_val, param_name, probe_line, is_whole_function=is_whole
+                    )
+                    if site is not None:
+                        return site
+                bool_site = _extract_threaded_boolop_expr_site(
+                    ret_val, param_name, probe_line, is_whole_function=is_whole
                 )
+                if bool_site is not None:
+                    return bool_site
+    for node in ast.walk(function):
+        if isinstance(node, ast.IfExp):
+            site = _extract_threaded_ifexp_site(
+                node, param_name, probe_line, is_whole_function=False
+            )
+            if site is not None:
+                return site
+    for node in ast.walk(function):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "bool":
+            bool_site = _extract_threaded_boolop_expr_site(
+                node, param_name, probe_line, is_whole_function=False
+            )
+            if bool_site is not None:
+                return bool_site
+    for node in ast.walk(function):
+        if isinstance(node, ast.BoolOp):
+            bool_site = _extract_threaded_boolop_expr_site(
+                node, param_name, probe_line, is_whole_function=False
+            )
+            if bool_site is not None:
+                return bool_site
     return None
 
 
