@@ -3358,6 +3358,87 @@ def unsafe_maybe_none_loop(items: list[Item]) -> str | None:
     assert probe(after_ns) == probe(before_ns)
 
 
+def test_reaching_bound_once_pushes_first_sequential_for_loop_and_refuses_second(
+    tmp_path: Path,
+) -> None:
+    src = (
+        "class Band:\n"
+        "    label = 'base'\n\n\n"
+        "class EarlyBand(Band):\n"
+        "    label = 'early'\n\n\n"
+        "class LateBand(Band):\n"
+        "    label = 'late'\n\n\n"
+        "class Other:\n"
+        "    pass\n\n\n"
+        "def curate(bands: tuple[type[Band], ...], others: tuple[type[Other], ...]) -> list[str]:\n"
+        "    out: list[str] = []\n"
+        "    for band in bands:\n"
+        "        if band is EarlyBand:\n"
+        "            out.append('first:' + band.label)\n"
+        "        else:\n"
+        "            out.append('rest:' + band.label)\n"
+        "    for band in others:\n"
+        "        out.append(band.__name__)\n"
+        "    return out\n\n\n"
+        "def second_loop_refused(others: tuple[type[Other], ...], bands: tuple[type[Band], ...]) -> list[str]:\n"
+        "    out: list[str] = []\n"
+        "    for band in others:\n"
+        "        out.append(band.__name__)\n"
+        "    for band in bands:\n"
+        "        if band is EarlyBand:\n"
+        "            out.append('first')\n"
+        "        else:\n"
+        "            out.append('rest')\n"
+        "    return out\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/bands.py": src})
+    findings = _findings(tmp_path)
+    by_fn = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_fn) == {"curate", "second_loop_refused"}
+
+    snap = _snapshot(tmp_path)
+    first_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(by_fn["curate"], snap)
+    assert NeededInput.OWNER_PICK in first_eval.needs
+    second_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        by_fn["second_loop_refused"], snap
+    )
+    assert NeededInput.PROOF in second_eval.needs
+    assert "bound more than once" in second_eval.rejection_reason
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_fn["curate"].stable_id,
+                owner="curate",
+                because="Band owns its curation label formatting.",
+                name="band_entry",
+                judgement="Format the band entry label.",
+            ),
+        ),
+    )
+    (picked_finding,), report = picks.applied((by_fn["curate"],))
+    assert not report.unmatched
+    picked = OwnTypeTestDetector().evaluate_recipe_for_finding(picked_finding, snap)
+    _apply(tmp_path, picked.executable_recipe)
+
+    after = (tmp_path / "pkg/bands.py").read_text(encoding="utf-8")
+    assert "band.band_entry(" in after
+    before_ns: dict[str, object] = {}
+    after_ns: dict[str, object] = {}
+    exec(compile(src, str(tmp_path / "pkg/bands.py"), "exec"), before_ns)
+    exec(compile(after, str(tmp_path / "pkg/bands.py"), "exec"), after_ns)
+    assert after_ns["curate"](  # type: ignore[operator]
+        (after_ns["EarlyBand"], after_ns["LateBand"]), (after_ns["Other"],)
+    ) == before_ns["curate"](  # type: ignore[operator]
+        (before_ns["EarlyBand"], before_ns["LateBand"]), (before_ns["Other"],)
+    )
+    remaining = {f.primary_evidence.symbol for f in _findings(tmp_path)}
+    assert remaining == {"second_loop_refused"}
+
+
+
 
 
 
