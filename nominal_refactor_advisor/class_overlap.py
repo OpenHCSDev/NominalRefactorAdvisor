@@ -3109,22 +3109,24 @@ class ClassOverlapVerdicts(DeclaredC3):
                     return True
         return False
 
-    def _external_supplied_member_receipts(
+    def _append_external_supplied_member_receipt(
         self,
         owner: CompactIndexedClass,
         receiver: CompactIndexedClass,
-    ) -> tuple[Receipt, ...]:
-        """Members an installed ancestor of `owner` outside `receiver`'s MRO
-        would hand to `receiver` (newly gained or shadowing `receiver`'s
-        inherited declaration from a different external base)."""
+        receipts: list[Receipt],
+    ) -> None:
+        """Append an `UNWANTED_SUPPLY` receipt when an installed ancestor of
+        `owner` outside `receiver`'s MRO would hand members to `receiver`
+        (newly gained or shadowing `receiver`'s inherited declaration from a
+        different external base)."""
 
         if not self._has_external_ancestor(owner.symbol):
-            return ()
+            return
         try:
             owner_mro = self.linearized(owner.symbol)
             recv_mro = self.linearized(receiver.symbol)
         except NeedsInput:
-            return ()
+            return
         recv_mro_set = frozenset(recv_mro)
         gained_external = tuple(
             sym
@@ -3135,7 +3137,7 @@ class ClassOverlapVerdicts(DeclaredC3):
             and namespace_read_native(sym) is None
         )
         if not gained_external:
-            return ()
+            return
         recv_own = frozenset(self.bodies.declarations_of(receiver.symbol))
         owner_own = frozenset(self.bodies.declarations_of(owner.symbol))
         supplied: dict[str, str] = {}
@@ -3149,9 +3151,9 @@ class ClassOverlapVerdicts(DeclaredC3):
                 if decl.name not in recv_own or decl.name in owner_own:
                     supplied[decl.name] = ext.qualname
         if not supplied:
-            return ()
+            return
         names = sorted(supplied)
-        return (
+        receipts.append(
             Receipt(
                 OverlapReceiptKind.UNWANTED_SUPPLY,
                 f"`{receiver.qualname}` would gain "
@@ -3161,7 +3163,7 @@ class ClassOverlapVerdicts(DeclaredC3):
                 "nor inherits: the block needs a mixin of its own",
                 (_location(owner),),
                 count=len(names),
-            ),
+            )
         )
 
     def _supplied_member_receipts(
@@ -3233,7 +3235,7 @@ class ClassOverlapVerdicts(DeclaredC3):
                     )
                 )
             if not gained and not conflicting:
-                receipts.extend(self._external_supplied_member_receipts(owner, receiver))
+                self._append_external_supplied_member_receipt(owner, receiver, receipts)
         return tuple(receipts)
 
     def _identity_receipts(
