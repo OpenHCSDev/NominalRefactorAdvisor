@@ -275,7 +275,7 @@ def test_threaded_absence_refuses_unsound_callers_and_escaped_parameter(
                 "        return len(x)\n\n\n"
                 "class Child(Base):\n"
                 "    def _overridden(self, x: str | None) -> int:\n"
-                "        return 1 if x is None else len(x) + 1\n\n\n"
+                "        return len(x or '')\n\n\n"
                 "def use_them(args: tuple[str | None, ...]) -> None:\n"
                 "    _still_used(None)\n"
                 "    cb = _callback_fn\n"
@@ -514,6 +514,119 @@ def test_threaded_absence_single_brancher_overriding_hierarchy_across_modules(
         if _sys.path and _sys.path[0] == str(tmp_path):
             _sys.path.pop(0)
         for key in [k for k in _sys.modules if k == "hier" or k.startswith("hier.")]:
+            del _sys.modules[key]
+
+    _, _, after_findings = _scan(tmp_path)
+    assert after_findings == []
+
+
+def test_threaded_absence_multi_brancher_and_super_forwarding_hierarchy(
+    tmp_path: Path,
+) -> None:
+    """A multi-brancher overriding hierarchy (base + inverse-branching subclass +
+    `super()`-forwarding subclass) shares one Held/Absent family with distinct
+    methods per brancher and leaves `super()` passthrough calls unwrapped."""
+
+    _write(
+        tmp_path,
+        {
+            "mb/__init__.py": "",
+            "mb/rules.py": (
+                "from __future__ import annotations\n\n\n"
+                "class StatusRule:\n"
+                "    label: str = 'status'\n\n"
+                "    @classmethod\n"
+                "    def check_payload(cls, payload: str | None) -> str:\n"
+                "        if payload is not None:\n"
+                "            raise ValueError(f'{cls.label} forbids payload')\n"
+                "        return f'{cls.label}:empty'\n\n\n"
+                "class HitRule(StatusRule):\n"
+                "    label = 'hit'\n\n"
+                "    @classmethod\n"
+                "    def check_payload(cls, payload: str | None) -> str:\n"
+                "        if payload is None:\n"
+                "            raise ValueError('hit requires payload')\n"
+                "        return f'hit:{payload}'\n\n\n"
+                "class LoggedHitRule(HitRule):\n"
+                "    events: list[str] = []\n\n"
+                "    @classmethod\n"
+                "    def check_payload(cls, payload: str | None) -> str:\n"
+                "        cls.events.append('checked')\n"
+                "        return super().check_payload(payload)\n\n\n"
+                "def run_rules() -> tuple[str, ...]:\n"
+                "    LoggedHitRule.events.clear()\n"
+                "    out = [\n"
+                "        StatusRule.check_payload(None),\n"
+                "        HitRule.check_payload('alpha'),\n"
+                "        LoggedHitRule.check_payload('beta'),\n"
+                "    ]\n"
+                "    for cls, arg in ((StatusRule, 'bad'), (HitRule, None), (LoggedHitRule, None)):\n"
+                "        try:\n"
+                "            cls.check_payload(arg)\n"
+                "        except ValueError as err:\n"
+                "            out.append(f'err:{err}')\n"
+                "    out.append(f'events:{len(LoggedHitRule.events)}')\n"
+                "    return tuple(out)\n"
+            ),
+        },
+    )
+
+    _, snap, findings = _scan(tmp_path)
+    by_sym = {f.evidence[0].symbol: f for f in findings}
+    assert "StatusRule.check_payload" in by_sym
+    assert "HitRule.check_payload" in by_sym
+
+    target_finding = by_sym["StatusRule.check_payload"]
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=target_finding.stable_id,
+                owner="StatusRule.check_payload",
+                because="payload presence belongs on a shared nominal family",
+                name="PayloadPresence",
+                judgement="Present or absent cache payload.",
+            ),
+        ),
+    )
+    picked, report = picks.applied((target_finding,))
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 1, plan.report
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after_rules = (tmp_path / "mb/rules.py").read_text()
+    assert "class PayloadPresence(ABC):" in after_rules
+    assert "def check_payload(" in after_rules
+    assert "def check_payload_for_hit_rule(" in after_rules
+    assert after_rules.count("payload: PayloadPresence") == 3
+    assert "super().check_payload(payload)" in after_rules
+    assert "from_optional(payload)" not in after_rules
+
+    import importlib
+    import sys as _sys
+
+    for key in [k for k in _sys.modules if k == "mb" or k.startswith("mb.")]:
+        del _sys.modules[key]
+    _sys.path.insert(0, str(tmp_path))
+    try:
+        mod = importlib.import_module("mb.rules")
+        assert mod.run_rules() == (
+            "status:empty",
+            "hit:alpha",
+            "hit:beta",
+            "err:status forbids payload",
+            "err:hit requires payload",
+            "err:hit requires payload",
+            "events:2",
+        )
+    finally:
+        if _sys.path and _sys.path[0] == str(tmp_path):
+            _sys.path.pop(0)
+        for key in [k for k in _sys.modules if k == "mb" or k.startswith("mb.")]:
             del _sys.modules[key]
 
     _, _, after_findings = _scan(tmp_path)

@@ -829,18 +829,39 @@ class DeferredTypeChecker(TypeCheckerSession):
         return "not started" if self._started is None else self._started.status
 
 
+def _type_info_conjunction(info: object, types: ModuleType) -> tuple[str, ...]:
+    """Class fullnames a mypy `TypeInfo` satisfies simultaneously (one for a plain class,
+    every base class for a synthetic mypy `<subclass of A and B>` intersection)."""
+
+    if getattr(info, "is_intersection", False):
+        return tuple(
+            chain.from_iterable(_classes_of(base, types) for base in info.bases)  # type: ignore[attr-defined]
+        )
+    return (info.fullname,)  # type: ignore[attr-defined]
+
+
+def _type_info_families(info: object) -> tuple[str, ...]:
+    """Non-protocol family roots a class-object `TypeInfo` denotes."""
+
+    if getattr(info, "is_intersection", False):
+        return tuple(
+            base.type.fullname
+            for base in info.bases  # type: ignore[attr-defined]
+            if not base.type.is_protocol
+            and base.type.fullname != "builtins.object"
+        )
+    if not getattr(info, "is_protocol", False):
+        return (info.fullname,)  # type: ignore[attr-defined]
+    return ()
+
+
 def _instance_conjunction(
     proper: Type, types: ModuleType
 ) -> tuple[str, ...]:
     """Class fullnames an `Instance` satisfies simultaneously (one for a plain class,
     every base class for a synthetic mypy `<subclass of A and B>` intersection)."""
 
-    info = proper.type  # type: ignore[attr-defined]
-    if getattr(info, "is_intersection", False):
-        return tuple(
-            chain.from_iterable(_classes_of(base, types) for base in info.bases)
-        )
-    return (info.fullname,)
+    return _type_info_conjunction(proper.type, types)  # type: ignore[attr-defined]
 
 
 def _conjunctions_of(
@@ -856,6 +877,9 @@ def _conjunctions_of(
             return (conj,) if conj else ()
         case types.TypeType():
             return _conjunctions_of(proper.item, types)
+        case types.CallableType() | types.Overloaded() if proper.is_type_obj():
+            conj = _type_info_conjunction(proper.type_object(), types)
+            return (conj,) if conj else ()
         case types.TypeVarType():
             return _conjunctions_of(proper.upper_bound, types)
         case types.UnionType():
@@ -879,6 +903,8 @@ def _classes_of(found: Type, mypy_types: ModuleType | None = None) -> tuple[str,
             return _instance_conjunction(proper, types)
         case types.TypeType():
             return _classes_of(proper.item, types)
+        case types.CallableType() | types.Overloaded() if proper.is_type_obj():
+            return _type_info_conjunction(proper.type_object(), types)
         case types.TypeVarType():
             return _classes_of(proper.upper_bound, types)
         case types.UnionType():
@@ -930,15 +956,9 @@ def _families_of(found: Type, mypy_types: ModuleType | None = None) -> tuple[str
             if isinstance(item, types.TypeVarType):
                 item = types.get_proper_type(item.upper_bound)
             if isinstance(item, types.Instance):
-                if getattr(item.type, "is_intersection", False):
-                    return tuple(
-                        base.type.fullname
-                        for base in item.type.bases
-                        if not base.type.is_protocol
-                        and base.type.fullname != "builtins.object"
-                    )
-                if not item.type.is_protocol:
-                    return (item.type.fullname,)
+                return _type_info_families(item.type)
+        case types.CallableType() | types.Overloaded() if proper.is_type_obj():
+            return _type_info_families(proper.type_object())
         case types.UnionType():
             families = tuple(_families_of(item, types) for item in proper.items)
             if all(families):
