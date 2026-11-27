@@ -28,6 +28,7 @@ from nominal_refactor_advisor.models import (
     ConstantSubtypeAnswerMetrics,
     EmptyFindingMetrics,
     FindingMetrics,
+    OwnStateBranchAnswerMetrics,
     RefactorFinding,
     SourceLocation,
     ThreadedAbsenceMetrics,
@@ -37,6 +38,10 @@ from nominal_refactor_advisor.refactors.constant_subtype_answer import (
     ConstantSubtypeAnswerFindingRecipeSynthesizer,
     DeleteConstantSubtypeAnswerOperation,
     PushConstantSubtypeAnswerOperation,
+)
+from nominal_refactor_advisor.refactors.own_state_branch_answer import (
+    OwnStateBranchAnswerFindingRecipeSynthesizer,
+    OwnStateBranchAnswerOperation,
 )
 from nominal_refactor_advisor.refactors.threaded_absence import (
     ThreadedAbsenceFindingRecipeSynthesizer,
@@ -448,7 +453,10 @@ class ConstantSubtypeAnswerDetector(
         )
 
 
-class OwnStateBranchAnswerDetector(RelocationDetector):
+class OwnStateBranchAnswerDetector(
+    RelocationDetector,
+    OwnStateBranchAnswerFindingRecipeSynthesizer,
+):
     """A frozen record's `-> bool` derived from its own state, and branches on it."""
 
     module_projection_families = (
@@ -461,6 +469,7 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
         fact="The record is frozen, so the bool is fixed when the record is built; each branch on it restates a state of the record (an optional field present or absent, a kind) that its type does not declare.",
         owner="The owner is the record's type: its states as subtypes decided once at construction (present/absent subtypes for an optional field, one subtype per kind).",
         factoring="Decide the state where the record is built and build a subtype; move each caller's branch body onto the subtypes as a method named for the caller's work; delete the bool.",
+        operations=(OwnStateBranchAnswerOperation,),
     )
     finding_spec = restated.spec(
         PatternId.OWN_STATE_BRANCH_ANSWER,
@@ -470,6 +479,25 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
         (CapabilityTag.CLOSED_FAMILY_DISPATCH,),
         (ObservationTag.BRANCH_DISPATCH, ObservationTag.ATTRIBUTE_PROBE),
     )
+
+    def metrics_for(
+        self, sites: Sequence[RestatingSite], context: RelocationIndex
+    ) -> FindingMetrics:
+        site = sites[0]
+        record_symbol = site.detail[0]
+        record_qualname = site.symbol.rpartition(".")[0]
+        counted = self.consumers(sites, context).counted
+        consumer_locations = tuple(
+            SourceLocation(use.file_path, use.lineno, use.symbol)
+            for use in counted
+        )
+        return OwnStateBranchAnswerMetrics(
+            record_symbol=record_symbol,
+            record_qualname=record_qualname,
+            member_name=site.group,
+            accessed_as=site.detail[1],
+            consumer_locations=consumer_locations,
+        )
 
     def group_of(self, site: RestatingSite, context: RelocationIndex) -> tuple[str, str, str]:
         return (site.file_path, site.symbol, site.group)
