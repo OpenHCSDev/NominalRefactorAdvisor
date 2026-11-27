@@ -10,9 +10,9 @@ namespace loses the moved names; and lookups on the new class can reach the
 attributes `M` binds itself.
 
 A metaclass NRA's own dependencies define is modelled (`type`, `ABCMeta`,
-`metaclass_registry.AutoRegisterMeta`): it reads registry names and abstract
-methods, so the move is invisible to it when no moved name is a registry name and
-no moved statement is abstract. Scanned creation code is read: the namespace only
+`metaclass_registry.AbstractHooksMeta`, `metaclass_registry.AutoRegisterMeta`):
+it reads registry names and abstract methods, so the move is invisible to it
+when no moved name is a registry name and no moved statement is abstract. Scanned creation code is read: the namespace only
 by constant keys that are not moved names; `bases` only by truthiness, by passing
 it to `super()`, or by dispatching each base on its metaclass where a plain class
 gets a constant; the new class never introspected. Anything else names the exact
@@ -24,7 +24,7 @@ from __future__ import annotations
 import ast
 import inspect
 import types
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
 from abc import ABC, abstractmethod
@@ -617,28 +617,55 @@ class ClassCreationProof:
             for decorator in statement.decorator_list
         )
 
+    def _binding_may_match_type(
+        self, indexed: CompactIndexedClass, statement: ast.stmt, filter_symbol: str
+    ) -> bool:
+        """Whether `statement` may bind an instance of `filter_symbol` (non-builtin
+        classes cannot match plain functions/descriptors or primitive literals)."""
+
+        if not filter_symbol.startswith("builtins."):
+            if self._statement_is_plain_callable(indexed, statement):
+                return False
+            match statement:
+                case ast.Assign(value=ast.Constant()) | ast.AnnAssign(value=ast.Constant()):
+                    return False
+        return True
+
     def _type_filtered_bindings(
         self, order: tuple[str, ...], composed: bool, filter_symbol: str
     ) -> tuple[tuple[str, str], ...]:
         """`(symbol, name)` pairs along `order` whose bound value could be an instance
-        of `filter_symbol` (non-builtin classes cannot match plain functions/descriptors
-        or primitive literals)."""
+        of `filter_symbol`."""
 
-        is_builtin_filter = filter_symbol.startswith("builtins.")
         matches: list[tuple[str, str]] = []
         for symbol in order:
             if native_root_type(symbol) is not None:
                 continue
             indexed = self.walked(symbol)
             for name, statement in self.own_bindings(symbol, composed):
-                if not is_builtin_filter:
-                    if self._statement_is_plain_callable(indexed, statement):
-                        continue
-                    match statement:
-                        case ast.Assign(value=ast.Constant()) | ast.AnnAssign(value=ast.Constant()):
-                            continue
-                matches.append((symbol, name))
+                if self._binding_may_match_type(indexed, statement, filter_symbol):
+                    matches.append((symbol, name))
         return tuple(matches)
+
+    def type_filtered_bindings_unchanged(self, filter_symbol: str) -> bool:
+        """Whether the sequence of `(symbol, name)` bindings that could match `filter_symbol`
+        along the MRO is identical before and after. When the MRO itself is unchanged,
+        only bindings deleted from the composer can differ."""
+
+        if self.walk.before == self.walk.after:
+            if not self.walk.deleted:
+                return True
+            composer = self.walk.composer
+            if native_root_type(composer) is not None:
+                return True
+            indexed = self.walked(composer)
+            return not any(
+                name in self.walk.deleted and self._binding_may_match_type(indexed, statement, filter_symbol)
+                for name, statement in self.own_bindings(composer, False)
+            )
+        before = self._type_filtered_bindings(self.walk.before, False, filter_symbol)
+        after = self._type_filtered_bindings(self.walk.after, True, filter_symbol)
+        return before == after
 
     def require_type_filtered_dict_walk_kept(
         self, filter_symbol: str, node: ast.AST, reads: CreationReads
@@ -647,6 +674,8 @@ class ClassCreationProof:
         produces the exact same dict in the exact same order when the sequence of
         `(symbol, name)` bindings that could match `T` is identical before and after."""
 
+        if self.type_filtered_bindings_unchanged(filter_symbol):
+            return
         before = self._type_filtered_bindings(tuple(reversed(self.walk.before)), False, filter_symbol)
         after = self._type_filtered_bindings(tuple(reversed(self.walk.after)), True, filter_symbol)
         if before != after:
@@ -680,16 +709,26 @@ class ClassCreationProof:
             keys.add("__orig_bases__")
         return frozenset(keys)
 
-    def require_dir_kept(self, node: ast.AST, reads: CreationReads) -> None:
+    def require_dir_kept(
+        self,
+        node: ast.AST,
+        reads: CreationReads,
+        prefixes: tuple[str, ...] | None = None,
+    ) -> None:
         """`dir(cls)` returns the sorted union of `c.__dict__.keys()` along `cls.__mro__`
         when no metaclass overrides `__dir__`. Keeping all old MRO classes and matching
         `composer`'s pre-move keys against `composer`'s post-move keys plus every plain
-        gained base's keys proves `dir(cls)` is identical before and after."""
+        gained base's keys proves `dir(cls)` is identical before and after (or, when
+        `prefixes` is given, identical on all keys starting with any of `prefixes`)."""
 
         for symbol in self.metaclasses():
             for indexed in self.metaclass_ancestry(symbol):
                 if self.method(indexed, "__dir__"):
                     reads.refuse(node, f"lists attributes through `{indexed.qualname}`'s own `__dir__`")
+        if prefixes is not None:
+            matching_moved = sorted(name for name in self.moved if name.startswith(prefixes))
+            if matching_moved:
+                reads.refuse(node, f"`dir()` changes attribute set by {matching_moved}")
         before_set = frozenset(self.walk.before)
         after_set = frozenset(self.walk.after)
         if not before_set.issubset(after_set):
@@ -717,6 +756,8 @@ class ClassCreationProof:
         composer_after = self._class_dir_keys(self.walk.composer, composed=True)
         gained_keys = frozenset().union(*(self._class_dir_keys(symbol, composed=True) for symbol in gained))
         diff = composer_before ^ (composer_after | gained_keys)
+        if prefixes is not None:
+            diff = frozenset(key for key in diff if key.startswith(prefixes))
         if not diff:
             return
         unchanged = tuple(symbol for symbol in self.walk.before if symbol != self.walk.composer)
@@ -1079,6 +1120,22 @@ class ClassCreationProof:
         return {name: by_name[name] for name in names[0 if static else 1:] if name in by_name}
 
 
+AUTO_CLASS_NAMESPACE_KEYS = frozenset(
+    {
+        "__module__",
+        "__qualname__",
+        "__doc__",
+        "__firstlineno__",
+        "__static_attributes__",
+        "__annotations__",
+        "__annotate_func__",
+        "__orig_bases__",
+        "__type_params__",
+        "__classcell__",
+    }
+)
+
+
 @dataclass
 class CreationReads:
     """One creation function's reads of the three facts the move changes."""
@@ -1096,7 +1153,10 @@ class CreationReads:
         self.parents = {
             child: parent for parent in ast.walk(self.code.node) for child in ast.iter_child_nodes(parent)
         }
+        skipped = self.unmatched_prefix_namespace_nodes()
         for node in ast.walk(self.code.node):
+            if node in skipped:
+                continue
             match node:
                 case ast.For(iter=ast.Name(id=source)) | ast.comprehension(iter=ast.Name(id=source)) if (
                     source in self.roles
@@ -1118,8 +1178,173 @@ class CreationReads:
                 ) if value is not None and self.is_super_call(value, "__new__"):
                     self.roles[target] = NEW_CLASS
         for node in ast.walk(self.code.node):
+            if node in skipped:
+                continue
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in self.roles:
                 self.require_use(node, self.roles[node.id])
+
+    def unmatched_prefix_namespace_nodes(self) -> frozenset[ast.AST]:
+        """Nodes inside `for k[, v] in namespace[.items()|.keys()]: if k.startswith(P) ...:`
+        loops whose body never executes on the composer either before or after the move."""
+
+        skipped: set[ast.AST] = set()
+        for node in ast.walk(self.code.node):
+            if isinstance(node, ast.For) and self._is_unmatched_prefix_namespace_loop(node):
+                skipped.update(ast.walk(node))
+        return frozenset(skipped)
+
+    def _in_own_function_scope(self, node: ast.AST) -> bool:
+        """Whether a `Store`/`Del` of a name at `node` binds `self.code.node`'s own
+        scope rather than a nested function, class, lambda, or comprehension target."""
+
+        current = self.parents.get(node)
+        while current is not None and current is not self.code.node:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                return False
+            if isinstance(current, ast.comprehension) and any(
+                bound is node for bound in ast.walk(current.target)
+            ):
+                return False
+            current = self.parents.get(current)
+        return current is self.code.node
+
+    def single_local_value(self, name: str) -> ast.expr | None:
+        """The single expression `self.code.node` binds to non-parameter local `name`."""
+
+        arguments = self.code.node.args
+        if any(
+            argument.arg == name
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                *(extra for extra in (arguments.vararg, arguments.kwarg) if extra is not None),
+            )
+        ) or any(
+            isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names
+            for node in ast.walk(self.code.node)
+        ):
+            return None
+        stores = [
+            node
+            for node in ast.walk(self.code.node)
+            if isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and self._in_own_function_scope(node)
+        ]
+        if len(stores) != 1:
+            return None
+        match self.parents.get(stores[0]):
+            case ast.Assign(targets=[target], value=value) | ast.AnnAssign(
+                target=target, value=value
+            ) if target is stores[0] and value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def joined_str_avoids(value: ast.expr, names: Iterable[str]) -> bool:
+        """Whether `value` is an f-string with a constant prefix or suffix no name in `names` has."""
+
+        if not isinstance(value, ast.JoinedStr) or not value.values:
+            return False
+        first, last = value.values[0], value.values[-1]
+        prefix = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else ""
+        suffix = last.value if isinstance(last, ast.Constant) and isinstance(last.value, str) else ""
+        return bool(prefix or suffix) and not any(
+            name.startswith(prefix) and name.endswith(suffix) for name in names
+        )
+
+    def _resolved_constant_str(self, expr: ast.expr) -> str | None:
+        text = self.text(expr)
+        if text is not None:
+            return text
+        if not isinstance(expr, ast.Name):
+            return None
+        bound = self.single_local_value(expr.id)
+        return bound.value if isinstance(bound, ast.Constant) and isinstance(bound.value, str) else None
+
+    def _namespace_mutated_outside(self, ns_name: str, inside: frozenset[ast.AST]) -> bool:
+        """Whether `ns_name` is mutated (subscript write, update, setdefault) or passed to
+        a non-super call outside `inside`."""
+
+        for node in ast.walk(self.code.node):
+            if node in inside or not (isinstance(node, ast.Name) and node.id == ns_name):
+                continue
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                return True
+            parent = self.parents.get(node)
+            match parent:
+                case ast.Subscript(value=value, ctx=ast.Store() | ast.Del()) if value is node:
+                    return True
+                case ast.Attribute(value=value, attr="update" | "setdefault" | "pop" | "popitem" | "clear") if (
+                    value is node
+                ):
+                    return True
+                case ast.Call() if node in parent.args and not self.is_super_call(parent):
+                    return True
+        return False
+
+    def _is_unmatched_prefix_namespace_loop(self, loop: ast.For) -> bool:
+        if loop.orelse:
+            return False
+        match loop.iter:
+            case ast.Name(id=ns) if self.roles.get(ns) is NAMESPACE:
+                view = "keys"
+            case ast.Call(
+                func=ast.Attribute(value=ast.Name(id=ns), attr=("items" | "keys") as view),
+                args=[],
+                keywords=[],
+            ) if self.roles.get(ns) is NAMESPACE:
+                pass
+            case _:
+                return False
+        match view, loop.target:
+            case "items", ast.Tuple(elts=[ast.Name(id=key), ast.Name(id=value)]):
+                bound_vars = (key, value)
+            case "keys", ast.Name(id=key):
+                bound_vars = (key,)
+            case _:
+                return False
+        match loop.body:
+            case [ast.If(test=guard, orelse=[])]:
+                pass
+            case _:
+                return False
+        inside = frozenset(ast.walk(loop))
+        if any(
+            isinstance(node, ast.Name) and node.id in bound_vars and node not in inside
+            for node in ast.walk(self.code.node)
+        ):
+            return False
+        first = (
+            guard.values[0]
+            if isinstance(guard, ast.BoolOp) and isinstance(guard.op, ast.And)
+            else guard
+        )
+        match first:
+            case ast.Call(
+                func=ast.Attribute(value=ast.Name(id=tested), attr="startswith"),
+                args=[prefix_expr],
+                keywords=[],
+            ) if tested == key:
+                prefix = self._resolved_constant_str(prefix_expr)
+            case _:
+                return False
+        if not prefix:
+            return False
+        if any(auto.startswith(prefix) for auto in AUTO_CLASS_NAMESPACE_KEYS):
+            return False
+        if self._namespace_mutated_outside(ns, inside):
+            return False
+        if any(name.startswith(prefix) for name in self.proof.moved):
+            return False
+        composer = self.proof.composer.symbol
+        if any(name.startswith(prefix) for name, _ in self.proof.own_bindings(composer, False)):
+            return False
+        if any(name.startswith(prefix) for name, _ in self.proof.own_bindings(composer, True)):
+            return False
+        return True
 
     def refuse(self, node: ast.AST, what: str) -> NoReturn:
         line = getattr(node, "lineno", self.code.node.lineno) - self.code.node.lineno
@@ -1169,7 +1394,12 @@ class CreationReads:
         ):
             return True
         if isinstance(node, ast.Name):
-            return self.constant_loop_key(node)
+            if self.constant_loop_key(node):
+                return True
+            if not self.comprehension_binds(node):
+                bound = self.single_local_value(node.id)
+                if bound is not None and self.joined_str_avoids(bound, self.proof.moved):
+                    return True
         return False
 
     def constant_loop_key(self, node: ast.Name) -> bool:
@@ -1206,7 +1436,77 @@ class CreationReads:
                 )
         return False
 
-    def require_namespace(self, node: ast.Name, parent: ast.AST | None) -> None:
+    def plain_class(self, kind: ast.expr) -> bool:
+        """Whether `kind` names a class NRA reads whose order names no metaclass:
+        `isinstance` then asks its real order, which no builtin/function/tuple is in."""
+
+        owner = self.code.owner
+        if owner is None:
+            return False
+        qualified = self.proof.resolved(owner, kind, self.proof.module_end(owner))
+        verdicts = self.proof.snapshot.class_overlap_verdicts
+        found = None if qualified is None else verdicts.ancestor(qualified)
+        if found is None:
+            return False
+        pending, seen = [found], set()
+        while pending:
+            current = pending.pop()
+            if current.symbol in seen:
+                continue
+            seen.add(current.symbol)
+            if any(keyword.arg == "metaclass" for keyword in self.proof.class_node(current).keywords):
+                return False
+            for reference in current.base_references:
+                qualified_name = ".".join(reference.resolved_parts)
+                if native_root_type(qualified_name) is not None:
+                    continue
+                base = verdicts.ancestor(qualified_name)
+                if base is None:
+                    return False
+                pending.append(base)
+        return True
+
+    def _is_type_filtered_namespace_loop(self, loop: ast.For | ast.comprehension, view: str) -> bool:
+        """Whether a walk of `ns.values()` / `ns.items()` guards every use behind
+        `isinstance(value, T)` for a plain non-builtin class `T` whose matching
+        bindings along the MRO are unchanged by the move."""
+
+        match view, loop.target:
+            case "items", ast.Tuple(elts=[ast.Name(id=key), ast.Name(id=value)]):
+                bound_vars: tuple[str, ...] = (key, value)
+            case "values", ast.Name(id=value):
+                bound_vars = (value,)
+            case _:
+                return False
+        if isinstance(loop, ast.comprehension):
+            if not loop.ifs:
+                return False
+            guard = loop.ifs[0]
+        else:
+            match loop.body:
+                case [ast.If(test=guard, orelse=[])] if not loop.orelse:
+                    pass
+                case _:
+                    return False
+            if self._leaked_loop_read(loop, bound_vars) is not None:
+                return False
+        first = guard.values[0] if isinstance(guard, ast.BoolOp) and isinstance(guard.op, ast.And) else guard
+        owner = self.code.owner
+        if owner is None:
+            return False
+        match first:
+            case ast.Call(func=ast.Name() as inst_fn, args=[ast.Name(id=tested), filter_expr], keywords=[]) if (
+                tested == value
+                and self.is_builtin(inst_fn, "builtins.isinstance")
+                and self.plain_class(filter_expr)
+            ):
+                filter_symbol = self.proof.resolved(owner, filter_expr, self.proof.module_end(owner))
+                if filter_symbol is None:
+                    return False
+                return self.proof.type_filtered_bindings_unchanged(filter_symbol)
+        return False
+
+    def require_namespace(self, node: ast.AST, parent: ast.AST | None) -> None:
         match parent:
             case ast.Subscript(value=value, slice=key) if value is node and self.constant_key(key):
                 return
@@ -1217,6 +1517,19 @@ class CreationReads:
             case ast.Attribute(attr="get" | "pop" | "setdefault"):
                 call = self.parents.get(parent)
                 if isinstance(call, ast.Call) and call.args and self.constant_key(call.args[0]):
+                    return
+            case ast.Attribute(value=value, attr="values" | "items" as view) if value is node:
+                call = self.parents.get(parent)
+                loop = self.parents.get(call) if call is not None else None
+                if (
+                    isinstance(call, ast.Call)
+                    and call.func is parent
+                    and not call.args
+                    and not call.keywords
+                    and isinstance(loop, (ast.For, ast.comprehension))
+                    and loop.iter is call
+                    and self._is_type_filtered_namespace_loop(loop, view)
+                ):
                     return
         if isinstance(parent, ast.Call) and node in parent.args:
             self.follow(parent, node, NAMESPACE)
@@ -1357,13 +1670,33 @@ class CreationReads:
 
     def called(self, call: ast.Call, attr: str) -> tuple[CreationCode, ...]:
         """The functions a call of `attr` on the new class may run: the one its
-        declared order gives it."""
+        declared order gives it, falling back to any definition on the ancestry
+        or metaclass ancestry (such as a metaclass method called on the built
+        class) when declarations do not single out a scanned class method."""
 
-        return (
-            self.proof.class_index.declared_member(self.proof.composer.symbol, attr).answer(
-                NewClassCall(self, call)
-            ),
-        )
+        try:
+            return (
+                self.proof.class_index.declared_member(self.proof.composer.symbol, attr).answer(
+                    NewClassCall(self, call)
+                ),
+            )
+        except NeedsInput:
+            if attr in self.proof.moved:
+                raise
+            defined = [
+                code
+                for indexed in self.proof.ancestry
+                if (code := self.proof.method(indexed, attr)) is not None
+            ]
+            for metaclass in self.proof.metaclasses():
+                defined.extend(
+                    code
+                    for indexed in self.proof.metaclass_ancestry(metaclass)
+                    if (code := self.proof.method(indexed, attr)) is not None
+                )
+            if not defined:
+                raise
+            return tuple(defined)
 
     def is_builtin(self, func: ast.Name, qualified_name: str) -> bool:
         """Whether `func` names this builtin where the function body runs: its
@@ -1751,6 +2084,46 @@ class CreationReads:
                     self.refuse(other or node, "reads a lookup winner the MRO walk found")
         return attributes
 
+    def _constant_str_prefixes(self, expr: ast.expr) -> tuple[str, ...] | None:
+        single = self._resolved_constant_str(expr)
+        if single is not None:
+            return (single,) if single else None
+        match expr:
+            case ast.Tuple(elts=elts) if elts:
+                values = [self._resolved_constant_str(elt) for elt in elts]
+                if all(value for value in values):
+                    return tuple(value for value in values if value is not None)
+        return None
+
+    def _dir_filter_prefixes(self, call: ast.Call) -> tuple[str, ...] | None:
+        """When `dir(cls)` is only iterated behind `name.startswith(prefix_or_prefixes)`,
+        return the constant prefix tuple; otherwise None."""
+
+        loop = self.parents.get(call)
+        match loop:
+            case ast.comprehension(target=ast.Name(id=key), iter=iterated, ifs=[guard, *_], is_async=0) if (
+                iterated is call
+            ):
+                pass
+            case ast.For(
+                target=ast.Name(id=key),
+                iter=iterated,
+                body=[ast.If(test=guard, orelse=[])],
+                orelse=[],
+            ) if iterated is call and self._leaked_loop_read(loop, (key,)) is None:
+                pass
+            case _:
+                return None
+        first = guard.values[0] if isinstance(guard, ast.BoolOp) and isinstance(guard.op, ast.And) else guard
+        match first:
+            case ast.Call(
+                func=ast.Attribute(value=ast.Name(id=tested), attr="startswith"),
+                args=[prefix_expr],
+                keywords=[],
+            ) if tested == key:
+                return self._constant_str_prefixes(prefix_expr)
+        return None
+
     def follow(self, call: ast.Call, node: ast.Name, role: Role) -> None:
         """A role passed to a function: modelled, or read the same way."""
 
@@ -1763,7 +2136,7 @@ class CreationReads:
                 and self.code.owner is not None
                 and self.is_builtin(call.func, "builtins.dir")
             ):
-                self.proof.require_dir_kept(call, self)
+                self.proof.require_dir_kept(call, self, prefixes=self._dir_filter_prefixes(call))
                 return
         target = self.callee(call.func)
         if target is True:
@@ -1955,7 +2328,147 @@ class BaseDropCreationProof(ClassCreationProof):
 
 
 @dataclass
-class BaseDropReads(CreationReads):
+class OrderPreservingReads(CreationReads):
+    """One creation function's reads when the class's MRO stays identical
+    (`walk.before == walk.after`): walking `__mro__` visits the same classes in
+    the same order, each judged as the new class, and plain dataclass/record
+    constructors only store a class reference without reading its namespace."""
+
+    def _is_specialized_mro_walk(self, attribute: ast.Attribute) -> bool:
+        return (
+            self.first_found_walk(attribute)
+            or self.binding_walk(attribute)
+            or self.subclass_filtered_walk(attribute)
+            or self.reversed_type_filtered_dict_walk(attribute)
+        )
+
+    def require_new_class(self, node: ast.Name, parent: ast.AST | None) -> None:
+        match parent:
+            case ast.Attribute(attr="__mro__", ctx=ast.Load()) if (
+                self._is_specialized_mro_walk(parent) or self.walked_by(parent) is not None
+            ):
+                return
+            case ast.Yield() | ast.Tuple(ctx=ast.Load()) if isinstance(
+                parent if isinstance(parent, ast.Yield) else self.parents.get(parent), ast.Yield | ast.Return
+            ):
+                # Handed back to the caller, alone or in a tuple, as a `return` hands it back.
+                return
+            case ast.GeneratorExp(elt=kept) | ast.ListComp(elt=kept) | ast.SetComp(elt=kept) if kept is node:
+                # Kept in what the comprehension builds: the classes of the order it selects.
+                return
+            case ast.Call(func=ast.Name() as func, args=[value, _, _], keywords=[]) if (
+                value is node
+                and self.is_builtin(func, "builtins.setattr")
+                and self.plain_class_setattr()
+            ):
+                # A store on the class, whatever the name: it reads nothing of it.
+                return
+            case ast.keyword(value=value) if value is node and isinstance(
+                call := self.parents.get(parent), ast.Call
+            ) and self.only_stores(call):
+                return
+            case ast.Call() if node in parent.args and self.only_stores(parent):
+                return
+        super().require_new_class(node, parent)
+
+    def plain_class_setattr(self) -> bool:
+        """Whether no metaclass along the ancestry overrides `__setattr__`."""
+
+        return not any(
+            self.proof.method(indexed, "__setattr__") is not None
+            for metaclass in self.proof.metaclasses()
+            for indexed in self.proof.metaclass_ancestry(metaclass)
+        )
+
+    def only_stores(self, call: ast.Call) -> bool:
+        """Whether the call constructs a value that only keeps what it is handed: a
+        class NRA reads, none of whose order writes its own `__new__`, `__init__` or
+        `__post_init__` and which names no metaclass, so `object` or the dataclass
+        decorator's generated `__init__` assigns each argument to a field. The class
+        is the one the function's module names, or the `cls` of a classmethod."""
+
+        owner = self.code.owner
+        if owner is None or not isinstance(call.func, ast.Name):
+            return False
+        constructed: CompactIndexedClass | None
+        if call.func.id == ClassCreationProof.first_parameter(self.code.node) and any(
+            isinstance(decorator, ast.Name) and decorator.id == "classmethod"
+            for decorator in self.code.node.decorator_list
+        ):
+            constructed = owner
+        else:
+            qualified = self.proof.resolved(owner, call.func, self.proof.module_end(owner))
+            constructed = (
+                None if qualified is None else self.proof.snapshot.class_overlap_verdicts.ancestor(qualified)
+            )
+        if constructed is None:
+            return False
+        pending, seen = [constructed], set()
+        while pending:
+            current = pending.pop()
+            if current.symbol in seen:
+                continue
+            seen.add(current.symbol)
+            node = self.proof.class_node(current)
+            if node.keywords or any(
+                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and statement.name in ("__new__", "__init__", "__post_init__")
+                for statement in node.body
+            ):
+                return False
+            for reference in current.base_references:
+                qualified_name = ".".join(reference.resolved_parts)
+                if native_root_type(qualified_name) is not None:
+                    continue
+                base = self.proof.snapshot.class_overlap_verdicts.ancestor(qualified_name)
+                if base is None:
+                    return False
+                pending.append(base)
+        return True
+
+    def walked_by(self, order: ast.Attribute) -> ast.For | ast.comprehension | None:
+        """The loop that walks `<new class>.__mro__` one class at a time: straight,
+        `reversed`, or as one arm of a conditional that walks other classes otherwise."""
+
+        if self.proof.walk.before != self.proof.walk.after:
+            return None
+        walked: ast.AST = order
+        around = self.parents.get(walked)
+        while True:
+            match around:
+                case ast.Call(func=ast.Name(id="reversed"), args=[only], keywords=[]) if only is walked:
+                    pass
+                case ast.IfExp(body=body, orelse=orelse) if walked is body or walked is orelse:
+                    pass
+                case _:
+                    break
+            walked, around = around, self.parents.get(around)
+        if isinstance(around, (ast.For, ast.comprehension)) and around.iter is walked and isinstance(
+            around.target, ast.Name
+        ):
+            return around
+        return None
+
+    def walked(self, iterable: ast.expr) -> Role | None:
+        """A class of the new class's order, which may be the new class itself,
+        unless a specialized MRO walk already proves the whole loop directly."""
+
+        if self.proof.walk.before != self.proof.walk.after:
+            return None
+        match iterable:
+            case ast.Call(func=ast.Name(id="reversed"), args=[inner], keywords=[]):
+                return self.walked(inner)
+            case ast.IfExp(body=body, orelse=orelse):
+                return self.walked(body) or self.walked(orelse)
+            case ast.Attribute(value=ast.Name(id=name), attr="__mro__") if self.roles.get(name) is NEW_CLASS:
+                if self._is_specialized_mro_walk(iterable):
+                    return None
+                return NEW_CLASS
+        return None
+
+
+@dataclass
+class BaseDropReads(OrderPreservingReads):
     """One creation function's reads of a base list a drop shortens: truthiness and
     passing it on stay the same; reading any one base could meet the dropped one."""
 
@@ -1999,39 +2512,19 @@ class BaseDropReads(CreationReads):
 
     def require_new_class(self, node: ast.Name, parent: ast.AST | None) -> None:
         """The drop keeps the class's order and its own body, so a read of either is
-        the read it was: `__mro__` walked class by class, each class judged as the new
-        one is (it may be it); `__annotations__`; and its namespace, which holds the
+        the read it was: `__annotations__`; and its namespace, which holds the
         header's bases only as `__orig_bases__`, set when a base is subscripted."""
 
         match parent:
-            case ast.Attribute(attr="__mro__", ctx=ast.Load()) if self.walked_by(parent) is not None:
-                return
             case ast.Attribute(attr="__annotations__" | "__annotate__", ctx=ast.Load()):
                 return
             case ast.Attribute(attr="__dict__", ctx=ast.Load()) if (
                 not self.proof.header_is_subscripted or self.asks_no_header_bases(parent)
             ):
                 return
-            case ast.Yield() | ast.Tuple(ctx=ast.Load()) if isinstance(
-                parent if isinstance(parent, ast.Yield) else self.parents.get(parent), ast.Yield | ast.Return
-            ):
-                # Handed back to the caller, alone or in a tuple, as a `return` hands it back.
-                return
-            case ast.GeneratorExp(elt=kept) | ast.ListComp(elt=kept) | ast.SetComp(elt=kept) if kept is node:
-                # Kept in what the comprehension builds: the classes of the order it selects.
-                return
-            case ast.Call(func=ast.Name(id="setattr"), args=[value, _, _], keywords=[]) if value is node:
-                # A store on the class, whatever the name: it reads nothing of it.
-                return
-            case ast.keyword(value=value) if value is node and isinstance(
-                call := self.parents.get(parent), ast.Call
-            ) and self.only_stores(call):
-                return
             case ast.Call(func=ast.Name(id="getattr" | "hasattr"), args=[value, ast.Name(id=key), *_]) if (
                 value is node and self.namespace_key(key)
             ):
-                return
-            case ast.Call() if node in parent.args and self.only_stores(parent):
                 return
             case ast.Call(func=ast.Name() as func, args=[value], keywords=[]) if (
                 value is node
@@ -2040,29 +2533,6 @@ class BaseDropReads(CreationReads):
             ):
                 return
         super().require_new_class(node, parent)
-
-    def called(self, call: ast.Call, attr: str) -> tuple[CreationCode, ...]:
-        """The drop keeps the class's order, its metaclass and every name creation
-        binds, so the call runs the function it ran. When the declarations do not
-        single it out (a metaclass's own method, called on the class it built; a
-        name creation code could have stored), it is one of the functions of that
-        name the order and the metaclasses' order define, and each is read."""
-
-        try:
-            return super().called(call, attr)
-        except NeedsInput:
-            defined = [
-                code for indexed in self.proof.ancestry if (code := self.proof.method(indexed, attr)) is not None
-            ]
-            for metaclass in self.proof.metaclasses():
-                defined.extend(
-                    code
-                    for indexed in self.proof.metaclass_ancestry(metaclass)
-                    if (code := self.proof.method(indexed, attr)) is not None
-                )
-            if not defined:
-                raise
-            return tuple(defined)
 
     def namespace_key(self, name: str) -> bool:
         """Whether `name` holds only names some class of the order binds in its own
@@ -2113,75 +2583,9 @@ class BaseDropReads(CreationReads):
         class the drop changes is of its bases, which `BasesReaders` judges wherever
         it stands."""
 
-        arguments = self.code.node.args
-        if any(
-            argument.arg == name
-            for argument in (
-                *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
-                *(extra for extra in (arguments.vararg, arguments.kwarg) if extra is not None),
-            )
-        ):
-            return None
-        stores = [
-            node for node in ast.walk(self.code.node)
-            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
-        ]
-        if len(stores) != 1:
-            return None
-        match self.parents.get(stores[0]):
-            case ast.Assign(targets=[target], value=value) | ast.AnnAssign(target=target, value=value) if (
-                target is stores[0] and value is not None
-            ):
-                return value
-        return None
+        return self.single_local_value(name)
 
-    def only_stores(self, call: ast.Call) -> bool:
-        """Whether the call constructs a value that only keeps what it is handed: a
-        class NRA reads, none of whose order writes its own `__new__`, `__init__` or
-        `__post_init__` and which names no metaclass, so `object` or the dataclass
-        decorator's generated `__init__` assigns each argument to a field. The class
-        is the one the function's module names, or the `cls` of a classmethod."""
-
-        owner = self.code.owner
-        if owner is None or not isinstance(call.func, ast.Name):
-            return False
-        constructed: CompactIndexedClass | None
-        if call.func.id == ClassCreationProof.first_parameter(self.code.node) and any(
-            isinstance(decorator, ast.Name) and decorator.id == "classmethod"
-            for decorator in self.code.node.decorator_list
-        ):
-            constructed = owner
-        else:
-            qualified = self.proof.resolved(owner, call.func, self.proof.module_end(owner))
-            constructed = (
-                None if qualified is None else self.proof.snapshot.class_overlap_verdicts.ancestor(qualified)
-            )
-        if constructed is None:
-            return False
-        pending, seen = [constructed], set()
-        while pending:
-            current = pending.pop()
-            if current.symbol in seen:
-                continue
-            seen.add(current.symbol)
-            node = self.proof.class_node(current)
-            if node.keywords or any(
-                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and statement.name in ("__new__", "__init__", "__post_init__")
-                for statement in node.body
-            ):
-                return False
-            for reference in current.base_references:
-                qualified_name = ".".join(reference.resolved_parts)
-                if native_root_type(qualified_name) is not None:
-                    continue
-                base = self.proof.snapshot.class_overlap_verdicts.ancestor(qualified_name)
-                if base is None:
-                    return False
-                pending.append(base)
-        return True
-
-    def require_namespace(self, node: ast.Name, parent: ast.AST | None) -> None:
+    def require_namespace(self, node: ast.AST, parent: ast.AST | None) -> None:
         """The namespace the class body filled is the same body's: creation adds the
         header's bases to it, as `__orig_bases__`, only when a base is subscripted."""
 
@@ -2267,6 +2671,9 @@ class BaseDropReads(CreationReads):
             return text != HEADER_BASES
         if not isinstance(key, ast.Name):
             return False
+        bound = self.single_local_value(key.id)
+        if bound is not None and self.joined_str_avoids(bound, (HEADER_BASES,)):
+            return True
         stores = [
             node for node in ast.walk(self.code.node)
             if isinstance(node, ast.Name) and node.id == key.id and isinstance(node.ctx, ast.Store)
@@ -2274,15 +2681,6 @@ class BaseDropReads(CreationReads):
         if len(stores) != 1:
             return False
         match self.parents.get(stores[0]):
-            case ast.Assign(targets=[target], value=ast.JoinedStr(values=[first, *_] as parts)) if (
-                target is stores[0]
-            ):
-                last = parts[-1]
-                prefix = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else ""
-                suffix = last.value if isinstance(last, ast.Constant) and isinstance(last.value, str) else ""
-                return bool(prefix or suffix) and not (
-                    HEADER_BASES.startswith(prefix) and HEADER_BASES.endswith(suffix)
-                )
             case ast.For(target=target, iter=ast.Tuple(elts=texts) | ast.List(elts=texts) | ast.Set(elts=texts)) | (
                 ast.comprehension(target=target, iter=ast.Tuple(elts=texts) | ast.List(elts=texts) | ast.Set(elts=texts))
             ) if target is stores[0]:
@@ -2346,75 +2744,9 @@ class BaseDropReads(CreationReads):
             case ast.Call(
                 func=ast.Attribute(value=ast.Name(id=tested), attr="startswith"), args=[prefix], keywords=[]
             ) if tested == key and owner is not None:
-                text = self.text(prefix)
-                if text is None and isinstance(prefix, ast.Name):
-                    bound = self.local_container(prefix.id)
-                    text = bound.value if isinstance(bound, ast.Constant) and isinstance(bound.value, str) else None
+                text = self._resolved_constant_str(prefix)
                 return text is not None and not HEADER_BASES.startswith(text)
         return False
-
-    def plain_class(self, kind: ast.expr) -> bool:
-        """Whether `kind` names a class NRA reads whose order names no metaclass:
-        `isinstance` then asks its real order, which no tuple is in."""
-
-        owner = self.code.owner
-        if owner is None:
-            return False
-        qualified = self.proof.resolved(owner, kind, self.proof.module_end(owner))
-        verdicts = self.proof.snapshot.class_overlap_verdicts
-        found = None if qualified is None else verdicts.ancestor(qualified)
-        if found is None:
-            return False
-        pending, seen = [found], set()
-        while pending:
-            current = pending.pop()
-            if current.symbol in seen:
-                continue
-            seen.add(current.symbol)
-            if any(keyword.arg == "metaclass" for keyword in self.proof.class_node(current).keywords):
-                return False
-            for reference in current.base_references:
-                qualified_name = ".".join(reference.resolved_parts)
-                if native_root_type(qualified_name) is not None:
-                    continue
-                base = verdicts.ancestor(qualified_name)
-                if base is None:
-                    return False
-                pending.append(base)
-        return True
-
-    def walked_by(self, order: ast.Attribute) -> ast.For | ast.comprehension | None:
-        """The loop that walks `<new class>.__mro__` one class at a time: straight,
-        `reversed`, or as one arm of a conditional that walks other classes otherwise."""
-
-        walked: ast.AST = order
-        around = self.parents.get(walked)
-        while True:
-            match around:
-                case ast.Call(func=ast.Name(id="reversed"), args=[only], keywords=[]) if only is walked:
-                    pass
-                case ast.IfExp(body=body, orelse=orelse) if walked is body or walked is orelse:
-                    pass
-                case _:
-                    break
-            walked, around = around, self.parents.get(around)
-        if isinstance(around, (ast.For, ast.comprehension)) and around.iter is walked and isinstance(
-            around.target, ast.Name
-        ):
-            return around
-        return None
-
-    def walked(self, iterable: ast.expr) -> Role | None:
-        """A class of the new class's order, which may be the new class itself."""
-
-        match iterable:
-            case ast.Call(func=ast.Name(id="reversed"), args=[inner], keywords=[]):
-                return self.walked(inner)
-            case ast.IfExp(body=body, orelse=orelse):
-                return self.walked(body) or self.walked(orelse)
-            case ast.Attribute(value=ast.Name(id=name), attr="__mro__") if self.roles.get(name) is NEW_CLASS:
-                return NEW_CLASS
-        return None
 
     def dropped_reach_empty_plain_answer(self, table: ast.ClassDef) -> bool:
         answer = self.plain_answer(table)

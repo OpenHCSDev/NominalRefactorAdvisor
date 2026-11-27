@@ -276,10 +276,7 @@ class RepositoryModuleBindingProof(
 
         if self.contains_module(module.module_name):
             return self.star_imports_exclude(module.module_name, name)
-        return not any(
-            isinstance(statement, ast.ImportFrom) and any(alias.name == "*" for alias in statement.names)
-            for statement in ast.walk(module.module)
-        )
+        return not module.has_star_import
 
     def unshadowed_builtin_witness(
         self,
