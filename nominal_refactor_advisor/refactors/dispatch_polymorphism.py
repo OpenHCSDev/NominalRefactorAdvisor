@@ -81,18 +81,220 @@ from nominal_refactor_advisor.source_index import (
 )
 
 
+def _unparsed_lines(statements: Iterable[ast.stmt]) -> tuple[str, ...]:
+    return tuple(
+        line
+        for statement in statements
+        for line in ast.unparse(statement).splitlines()
+    )
+
+
+def _bound_target_names_in_order(target: ast.AST) -> tuple[str, ...]:
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def collect(node: ast.AST) -> None:
+        match node:
+            case ast.Name(id=name):
+                if name not in seen:
+                    seen.add(name)
+                    names.append(name)
+            case ast.Tuple(elts=elts) | ast.List(elts=elts):
+                for element in elts:
+                    collect(element)
+            case ast.Starred(value=value):
+                collect(value)
+
+    collect(target)
+    return tuple(names)
+
+
+def _parameter_names_of_args(arguments: ast.arguments) -> tuple[str, ...]:
+    names = [
+        arg.arg
+        for arg in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+    ]
+    vararg = arguments.vararg
+    if vararg is not None:
+        names.append(vararg.arg)
+    kwarg = arguments.kwarg
+    if kwarg is not None:
+        names.append(kwarg.arg)
+    return tuple(names)
+
+
+def _free_loaded_names(statements: Iterable[ast.stmt]) -> frozenset[str]:
+    """Free variable loads within ``statements``, respecting inner Python scopes."""
+
+    loaded: set[str] = set()
+
+    def walk(node: ast.AST, masked: frozenset[str]) -> None:
+        match node:
+            case ast.Name(id=name, ctx=ast.Load()):
+                if name not in masked:
+                    loaded.add(name)
+            case ast.FunctionDef() | ast.AsyncFunctionDef():
+                for child in (
+                    *node.decorator_list,
+                    *node.args.defaults,
+                    *(item for item in node.args.kw_defaults if item is not None),
+                ):
+                    walk(child, masked)
+                for arg in (
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                ):
+                    annotation = arg.annotation
+                    if annotation is not None:
+                        walk(annotation, masked)
+                returns = node.returns
+                if returns is not None:
+                    walk(returns, masked)
+                inner_masked = (
+                    masked
+                    | frozenset(_parameter_names_of_args(node.args))
+                    | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+                )
+                for statement in node.body:
+                    walk(statement, inner_masked)
+            case ast.Lambda():
+                for child in (
+                    *node.args.defaults,
+                    *(item for item in node.args.kw_defaults if item is not None),
+                ):
+                    walk(child, masked)
+                inner_masked = masked | frozenset(_parameter_names_of_args(node.args))
+                walk(node.body, inner_masked)
+            case ast.ClassDef():
+                for child in (*node.bases, *node.keywords, *node.decorator_list):
+                    walk(child, masked)
+                inner_masked = masked | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                    node.body
+                )
+                for statement in node.body:
+                    walk(statement, inner_masked)
+            case ast.ListComp() | ast.SetComp() | ast.GeneratorExp() | ast.DictComp():
+                walk(node.generators[0].iter, masked)
+                comp_masked = set(masked)
+                for index, generator in enumerate(node.generators):
+                    if index > 0:
+                        walk(generator.iter, frozenset(comp_masked))
+                    comp_masked.update(_bound_target_names_in_order(generator.target))
+                    for condition in generator.ifs:
+                        walk(condition, frozenset(comp_masked))
+                frozen_comp = frozenset(comp_masked)
+                if isinstance(node, ast.DictComp):
+                    walk(node.key, frozen_comp)
+                    walk(node.value, frozen_comp)
+                else:
+                    walk(node.elt, frozen_comp)
+            case ast.ExceptHandler():
+                exc_type = node.type
+                if exc_type is not None:
+                    walk(exc_type, masked)
+                exc_name = node.name
+                handler_masked = (
+                    masked | frozenset((exc_name,)) if exc_name else masked
+                )
+                for statement in node.body:
+                    walk(statement, handler_masked)
+            case _:
+                for child in ast.iter_child_nodes(node):
+                    walk(child, masked)
+
+    empty = frozenset[str]()
+    for statement in statements:
+        walk(statement, empty)
+    return frozenset(loaded)
+
+
+def _merge_ordered(
+    first: Iterable[str],
+    second: Iterable[str],
+    *,
+    exclude: frozenset[str],
+) -> tuple[str, ...]:
+    ordered: list[str] = []
+    seen: set[str] = set(exclude)
+    for name in (*first, *second):
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return tuple(ordered)
+
+
+def _definitely_bound_names_in_order(
+    statements: Iterable[ast.stmt],
+) -> tuple[str, ...]:
+    """Locals unconditionally bound on every fall-through path through ``statements``."""
+
+    ordered: list[str] = []
+    bound: set[str] = set()
+
+    def record(names: Iterable[str]) -> None:
+        for name in names:
+            if name not in bound:
+                bound.add(name)
+                ordered.append(name)
+
+    for statement in statements:
+        match statement:
+            case ast.Assign(targets=targets):
+                for target in targets:
+                    record(_bound_target_names_in_order(target))
+            case ast.AnnAssign(target=target, value=value) if value is not None:
+                record(_bound_target_names_in_order(target))
+            case ast.With(items=items, body=body) | ast.AsyncWith(
+                items=items, body=body
+            ):
+                for item in items:
+                    optional_vars = item.optional_vars
+                    if optional_vars is not None:
+                        record(_bound_target_names_in_order(optional_vars))
+                record(_definitely_bound_names_in_order(body))
+            case ast.If(body=body, orelse=orelse):
+                body_terminal = _DispatchExtractor.terminal(body)
+                orelse_terminal = _DispatchExtractor.terminal(orelse)
+                if body_terminal and not orelse_terminal:
+                    record(_definitely_bound_names_in_order(orelse))
+                elif orelse_terminal and not body_terminal:
+                    record(_definitely_bound_names_in_order(body))
+                elif body and orelse:
+                    body_bound = _definitely_bound_names_in_order(body)
+                    orelse_bound = frozenset(_definitely_bound_names_in_order(orelse))
+                    record(name for name in body_bound if name in orelse_bound)
+            case ast.Delete(targets=targets):
+                removed = frozenset(
+                    name
+                    for target in targets
+                    for name in _bound_target_names_in_order(target)
+                )
+                if removed:
+                    bound.difference_update(removed)
+                    ordered = [name for name in ordered if name not in removed]
+    return tuple(ordered)
+
+
+def _has_control_escape(statements: Iterable[ast.stmt]) -> bool:
+    return any(
+        isinstance(node, (ast.Return, ast.Break, ast.Continue, ast.Yield, ast.YieldFrom))
+        for node in walk_function_body_nodes(statements)
+    )
+
+
 @dataclass(frozen=True)
 class DispatchAxis:
-    """Parameter-rooted chain of plain attribute loads that selects a dispatch case."""
+    """Bound-name-rooted chain of plain attribute loads that selects a dispatch case."""
 
-    parameter: ast.arg
+    root_name: str
     attribute_path: tuple[str, ...]
 
     @classmethod
     def decoded(
         cls,
         expression: ast.expr,
-        parameters: Iterable[ast.arg],
+        root_names: Iterable[str],
     ) -> DispatchAxis | None:
         attribute_path: list[str] = []
         current = expression
@@ -101,24 +303,21 @@ class DispatchAxis:
             current = current.value
         if not isinstance(current, ast.Name):
             return None
-        parameter = next(
-            (parameter for parameter in parameters if parameter.arg == current.id),
-            None,
+        allowed = (
+            root_names
+            if isinstance(root_names, frozenset)
+            else frozenset(root_names)
         )
-        if parameter is None:
+        if current.id not in allowed:
             return None
-        return cls(parameter, tuple(reversed(attribute_path)))
+        return cls(current.id, tuple(reversed(attribute_path)))
 
     def selects(self, expression: ast.expr) -> bool:
-        return self.decoded(expression, (self.parameter,)) == self
-
-    @property
-    def root_name(self) -> str:
-        return self.parameter.arg
+        return self.decoded(expression, frozenset((self.root_name,))) == self
 
     @property
     def expression(self) -> ast.expr:
-        expression: ast.expr = ast.Name(id=self.parameter.arg, ctx=ast.Load())
+        expression: ast.expr = ast.Name(id=self.root_name, ctx=ast.Load())
         for attribute in self.attribute_path:
             expression = ast.Attribute(value=expression, attr=attribute, ctx=ast.Load())
         return expression
@@ -177,46 +376,194 @@ DispatchPolymorphismCases: TypeAlias = tuple[DispatchPolymorphismCase, ...]
 
 
 @dataclass(frozen=True)
-class DispatchPolymorphismExtraction:
+class DispatchPolymorphismExtraction(ABC):
     """AST-derived dispatch data for one mechanically convertible function."""
 
     arms: tuple[DispatchPolymorphismArm, ...]
     fallback_statements: tuple[ast.stmt, ...]
+    replaced_statements: tuple[ast.stmt, ...]
+    captured_locals: tuple[str, ...]
 
     @property
     def cases(self) -> DispatchPolymorphismCases:
         return tuple(case for arm in self.arms for case in arm.cases)
 
+    def case_statement_lines(
+        self,
+        statements: tuple[ast.stmt, ...],
+    ) -> tuple[str, ...]:
+        return tuple(f"        {line}" for line in _unparsed_lines(statements))
+
+    @abstractmethod
+    def dispatch_call_lines(
+        self,
+        *,
+        case_type_binding: str,
+        base_name: str,
+        axis_source: str,
+        method_name: str,
+        call_arguments: str,
+    ) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class TerminalDispatchExtraction(DispatchPolymorphismExtraction):
+    """Terminal dispatch where every arm and the fallback return or raise."""
+
+    def dispatch_call_lines(
+        self,
+        *,
+        case_type_binding: str,
+        base_name: str,
+        axis_source: str,
+        method_name: str,
+        call_arguments: str,
+    ) -> tuple[str, ...]:
+        fallback_lines = _unparsed_lines(self.fallback_statements)
+        return (
+            f"{case_type_binding} = {base_name}.__registry__.get({axis_source})",
+            f"if {case_type_binding} is None:",
+            *(f"    {line}" for line in fallback_lines),
+            f"return {case_type_binding}().{method_name}({call_arguments})",
+        )
+
+
+@dataclass(frozen=True)
+class VoidDispatchExtraction(DispatchPolymorphismExtraction):
+    """Side-effect dispatch with no fallback and no local bindings escaping."""
+
+    def dispatch_call_lines(
+        self,
+        *,
+        case_type_binding: str,
+        base_name: str,
+        axis_source: str,
+        method_name: str,
+        call_arguments: str,
+    ) -> tuple[str, ...]:
+        return (
+            f"{case_type_binding} = {base_name}.__registry__.get({axis_source})",
+            f"if {case_type_binding} is not None:",
+            f"    {case_type_binding}().{method_name}({call_arguments})",
+        )
+
+
+@dataclass(frozen=True)
+class FallbackVoidDispatchExtraction(DispatchPolymorphismExtraction):
+    """Side-effect dispatch with an inline fallback branch and no escaping locals."""
+
+    def dispatch_call_lines(
+        self,
+        *,
+        case_type_binding: str,
+        base_name: str,
+        axis_source: str,
+        method_name: str,
+        call_arguments: str,
+    ) -> tuple[str, ...]:
+        fallback_lines = _unparsed_lines(self.fallback_statements)
+        return (
+            f"{case_type_binding} = {base_name}.__registry__.get({axis_source})",
+            f"if {case_type_binding} is None:",
+            *(f"    {line}" for line in fallback_lines),
+            "else:",
+            f"    {case_type_binding}().{method_name}({call_arguments})",
+        )
+
+
+@dataclass(frozen=True)
+class AssigningDispatchExtraction(DispatchPolymorphismExtraction, ABC):
+    """Non-terminal dispatch whose arms return one or more reassigned local targets."""
+
+    assigned_names: tuple[str, ...]
+
+    @property
+    def target_source(self) -> str:
+        return ", ".join(self.assigned_names)
+
+    @property
+    def return_expression_source(self) -> str:
+        if len(self.assigned_names) == 1:
+            return self.assigned_names[0]
+        return f"({self.target_source})"
+
+    def case_statement_lines(
+        self,
+        statements: tuple[ast.stmt, ...],
+    ) -> tuple[str, ...]:
+        return (
+            *super().case_statement_lines(statements),
+            f"        return {self.return_expression_source}",
+        )
+
+
+@dataclass(frozen=True)
+class GuardedAssigningDispatchExtraction(AssigningDispatchExtraction):
+    """Assigning dispatch with no fallback, updating already-bound targets on hit."""
+
+    def dispatch_call_lines(
+        self,
+        *,
+        case_type_binding: str,
+        base_name: str,
+        axis_source: str,
+        method_name: str,
+        call_arguments: str,
+    ) -> tuple[str, ...]:
+        return (
+            f"{case_type_binding} = {base_name}.__registry__.get({axis_source})",
+            f"if {case_type_binding} is not None:",
+            f"    {self.target_source} = {case_type_binding}().{method_name}({call_arguments})",
+        )
+
+
+@dataclass(frozen=True)
+class FallbackAssigningDispatchExtraction(AssigningDispatchExtraction):
+    """Assigning dispatch with an inline fallback binding the same targets."""
+
+    def dispatch_call_lines(
+        self,
+        *,
+        case_type_binding: str,
+        base_name: str,
+        axis_source: str,
+        method_name: str,
+        call_arguments: str,
+    ) -> tuple[str, ...]:
+        fallback_lines = _unparsed_lines(self.fallback_statements)
+        return (
+            f"{case_type_binding} = {base_name}.__registry__.get({axis_source})",
+            f"if {case_type_binding} is None:",
+            *(f"    {line}" for line in fallback_lines),
+            "else:",
+            f"    {self.target_source} = {case_type_binding}().{method_name}({call_arguments})",
+        )
+
+
+@dataclass(frozen=True)
+class _DispatchScope:
+    """One statement block (function top level or a top-level for loop) searched for a dispatch."""
+
+    statements: tuple[ast.stmt, ...]
+    enclosing_prefix_bound_order: tuple[str, ...]
+    enclosing_all_prefix_bound: frozenset[str]
+    enclosing_outside_statements: tuple[ast.stmt, ...]
+    enclosing_outside_loads: frozenset[str]
+    allows_terminal: bool
+
 
 @dataclass(frozen=True, kw_only=True)
-class DispatchPolymorphismFunction:
+class _DispatchExtractor:
     """Strict recognizer for literal branch functions convertible to strategies.
 
-    The dispatch is the first executable statement after binding-free terminal
-    guards. Each case body is terminal on every path and reads no function
-    local bound outside itself, so it executes unchanged as a strategy leaf.
+    Supports terminal, void, and assigning literal dispatches rooted at a
+    function parameter or a definitely-bound prefix local, either at function
+    top level or inside a single top-level ``for`` loop.
     """
 
     node: ast.FunctionDef
     axis: DispatchAxis
-
-    @classmethod
-    def derived_from_function(
-        cls,
-        node: ast.FunctionDef,
-    ) -> tuple[Self, ...]:
-        """Recover supported parameter-rooted dispatches from one function."""
-
-        axes = dict.fromkeys(
-            axis
-            for expression in cls.compared_expressions(node)
-            if (axis := DispatchAxis.decoded(expression, node.args.args)) is not None
-        )
-        return tuple(
-            candidate
-            for axis in axes
-            if (candidate := cls(node=node, axis=axis)).extraction is not None
-        )
 
     @classmethod
     def compared_expressions(cls, node: ast.FunctionDef) -> tuple[ast.expr, ...]:
@@ -240,41 +587,177 @@ class DispatchPolymorphismFunction:
             )
         )
 
-    @cached_property
-    def extraction(self) -> DispatchPolymorphismExtraction | None:
+    def extract(self) -> DispatchPolymorphismExtraction | None:
         if self.unsupported_signature:
             return None
-        extraction = self.branch_extraction()
-        if extraction is None:
-            extraction = self.match_extraction()
-        if extraction is None:
-            extraction = self.sequential_guard_extraction()
-        if extraction is None:
+        for scope in self._candidate_scopes():
+            extraction = self._extract_from_scope(scope)
+            if extraction is not None:
+                registry_keys = tuple(case.registry_key for case in extraction.cases)
+                if len(registry_keys) >= 2 and len(frozenset(registry_keys)) == len(
+                    registry_keys
+                ):
+                    return extraction
+        return None
+
+    def _candidate_scopes(self) -> tuple[_DispatchScope, ...]:
+        body = self.executable_body
+        scopes: list[_DispatchScope] = [
+            _DispatchScope(
+                statements=body,
+                enclosing_prefix_bound_order=(),
+                enclosing_all_prefix_bound=frozenset(),
+                enclosing_outside_statements=(),
+                enclosing_outside_loads=frozenset(),
+                allows_terminal=True,
+            )
+        ]
+        param_set = frozenset(self.parameter_names)
+        for index, statement in enumerate(body):
+            if not isinstance(statement, ast.For):
+                continue
+            before_loop = body[:index]
+            after_loop = (*body[index + 1 :], *statement.orelse)
+            loop_targets = _bound_target_names_in_order(statement.target)
+            prefix_order = _merge_ordered(
+                _definitely_bound_names_in_order(before_loop),
+                loop_targets,
+                exclude=param_set,
+            )
+            all_prefix_bound = (
+                LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(before_loop)
+                | frozenset(loop_targets)
+            ) - param_set
+            scopes.append(
+                _DispatchScope(
+                    statements=tuple(statement.body),
+                    enclosing_prefix_bound_order=prefix_order,
+                    enclosing_all_prefix_bound=all_prefix_bound,
+                    enclosing_outside_statements=(*before_loop, *after_loop),
+                    enclosing_outside_loads=_free_loaded_names(after_loop),
+                    allows_terminal=False,
+                )
+            )
+        return tuple(scopes)
+
+    def _dispatch_index_in(self, statements: tuple[ast.stmt, ...]) -> int | None:
+        for index, statement in enumerate(statements):
+            if isinstance(statement, ast.If) and (
+                self.test_literals(statement.test)
+                or self.negated_test_literals(statement.test)
+            ):
+                return index
+            if isinstance(statement, ast.Match) and self.axis.selects(
+                statement.subject
+            ):
+                return index
+        return None
+
+    def _extract_from_scope(
+        self,
+        scope: _DispatchScope,
+    ) -> DispatchPolymorphismExtraction | None:
+        dispatch_index = self._dispatch_index_in(scope.statements)
+        if dispatch_index is None:
             return None
-        registry_keys = tuple(case.registry_key for case in extraction.cases)
-        if len(registry_keys) < 2 or len(frozenset(registry_keys)) != len(
-            registry_keys
+        prefix_statements = scope.statements[:dispatch_index]
+        if self.selects_axis_within(scope.enclosing_outside_statements):
+            return None
+        if self.selects_axis_within(prefix_statements):
+            return None
+        param_set = frozenset(self.parameter_names)
+        prefix_bound_order = _merge_ordered(
+            scope.enclosing_prefix_bound_order,
+            _definitely_bound_names_in_order(prefix_statements),
+            exclude=param_set,
+        )
+        prefix_definitely_bound = frozenset(prefix_bound_order)
+        prefix_all_bound = scope.enclosing_all_prefix_bound | (
+            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(prefix_statements) - param_set
+        )
+        if (
+            self.axis.root_name not in param_set
+            and self.axis.root_name not in prefix_definitely_bound
         ):
             return None
-        return extraction
+        dispatch_body = scope.statements[dispatch_index:]
+        if scope.allows_terminal:
+            for extractor in (
+                self._terminal_branch_extraction,
+                self._terminal_match_extraction,
+                self._terminal_sequential_guard_extraction,
+            ):
+                extraction = extractor(
+                    dispatch_body,
+                    prefix_bound_order,
+                    prefix_definitely_bound,
+                    prefix_all_bound,
+                )
+                if extraction is not None:
+                    return extraction
+        loop_prefix_loads = (
+            frozenset[str]()
+            if scope.allows_terminal
+            else _free_loaded_names(prefix_statements)
+        )
+        outside_loads = scope.enclosing_outside_loads | loop_prefix_loads
+        for non_terminal_extractor in (
+            self._non_terminal_branch_extraction,
+            self._non_terminal_match_extraction,
+        ):
+            extraction = non_terminal_extractor(
+                dispatch_body,
+                prefix_bound_order,
+                prefix_definitely_bound,
+                prefix_all_bound,
+                outside_loads,
+            )
+            if extraction is not None:
+                return extraction
+        return None
 
     def selects_axis_within(self, statements: Iterable[ast.stmt]) -> bool:
-        """Whether a residual statement still compares or matches the axis."""
+        """Whether a residual statement still branches, matches, or literal-compares the axis."""
 
-        return any(
-            self.axis.selects(expression)
-            for statement in statements
-            for expression in self.compared_expressions_within(statement)
-        )
+        for statement in statements:
+            for child in walk_function_body_nodes([statement]):
+                match child:
+                    case ast.If(test=test):
+                        for node in ast.walk(test):
+                            if isinstance(node, ast.Compare) and any(
+                                self.axis.selects(expression)
+                                for expression in (node.left, *node.comparators)
+                            ):
+                                return True
+                    case ast.Match(subject=subject):
+                        subjects = (
+                            subject.elts
+                            if isinstance(subject, ast.Tuple)
+                            else (subject,)
+                        )
+                        if any(self.axis.selects(item) for item in subjects):
+                            return True
+                    case ast.Compare():
+                        if self.test_literals(child) or self.negated_test_literals(
+                            child
+                        ):
+                            return True
+                    case ast.Subscript(value=ast.Dict(), slice=slice_node):
+                        if self.axis.selects(slice_node):
+                            return True
+                    case ast.Call(
+                        func=ast.Attribute(value=ast.Dict(), attr="get"),
+                        args=[first_arg, *_],
+                    ):
+                        if self.axis.selects(first_arg):
+                            return True
+        return False
 
     @property
     def unsupported_signature(self) -> bool:
         return bool(
             self.node.args.vararg
             or self.node.args.kwarg
-            or self.node.args.kwonlyargs
-            or self.node.args.posonlyargs
-            or self.axis.parameter not in self.node.args.args
             or any(
                 isinstance(node, (ast.Yield, ast.YieldFrom, ast.Global, ast.Nonlocal))
                 for node in walk_function_body_nodes(self.node.body)
@@ -283,32 +766,18 @@ class DispatchPolymorphismFunction:
 
     @property
     def parameter_names(self) -> tuple[str, ...]:
-        return tuple(parameter.arg for parameter in self.node.args.args)
+        return tuple(
+            parameter.arg
+            for parameter in (
+                *self.node.args.posonlyargs,
+                *self.node.args.args,
+                *self.node.args.kwonlyargs,
+            )
+        )
 
     @property
     def executable_body(self) -> tuple[ast.stmt, ...]:
         return tuple(statements_without_docstring(self.node.body))
-
-    @cached_property
-    def guard_statements(self) -> tuple[ast.stmt, ...]:
-        """Leading terminal guards that bind nothing and stay in the dispatcher."""
-
-        guards: list[ast.stmt] = []
-        for statement in self.executable_body:
-            if not (
-                isinstance(statement, ast.If)
-                and not statement.orelse
-                and not self.test_literals(statement.test)
-                and self.terminal(statement.body)
-                and not LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((statement,))
-            ):
-                break
-            guards.append(statement)
-        return tuple(guards)
-
-    @property
-    def dispatch_body(self) -> tuple[ast.stmt, ...]:
-        return self.executable_body[len(self.guard_statements) :]
 
     @cached_property
     def function_locals(self) -> frozenset[str]:
@@ -316,8 +785,38 @@ class DispatchPolymorphismFunction:
             self.executable_body
         ) - frozenset(self.parameter_names)
 
-    def branch_extraction(self) -> DispatchPolymorphismExtraction | None:
-        body = self.dispatch_body
+    def _captured_locals_for(
+        self,
+        arms: Iterable[DispatchPolymorphismArm],
+        prefix_bound_order: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        arm_loaded = frozenset[str]().union(
+            *(_free_loaded_names(arm.statements) for arm in arms)
+        )
+        return tuple(name for name in prefix_bound_order if name in arm_loaded)
+
+    def _terminal_extraction(
+        self,
+        arms: list[DispatchPolymorphismArm],
+        fallback: tuple[ast.stmt, ...],
+        body: tuple[ast.stmt, ...],
+        prefix_bound_order: tuple[str, ...],
+    ) -> TerminalDispatchExtraction:
+        arm_tuple = tuple(arms)
+        return TerminalDispatchExtraction(
+            arms=arm_tuple,
+            fallback_statements=fallback,
+            replaced_statements=body,
+            captured_locals=self._captured_locals_for(arm_tuple, prefix_bound_order),
+        )
+
+    def _terminal_branch_extraction(
+        self,
+        body: tuple[ast.stmt, ...],
+        prefix_bound_order: tuple[str, ...],
+        prefix_definitely_bound: frozenset[str],
+        prefix_all_bound: frozenset[str],
+    ) -> DispatchPolymorphismExtraction | None:
         if not body or not isinstance(body[0], ast.If):
             return None
         arms: list[DispatchPolymorphismArm] = []
@@ -325,7 +824,9 @@ class DispatchPolymorphismFunction:
         fallback: tuple[ast.stmt, ...] = body[1:]
         while True:
             literals = self.test_literals(current.test)
-            statements = self.case_statements(current.body)
+            statements = self.case_statements(
+                current.body, prefix_definitely_bound, prefix_all_bound
+            )
             if not literals or statements is None:
                 return None
             arms.append(DispatchPolymorphismArm(literals, statements))
@@ -334,12 +835,19 @@ class DispatchPolymorphismFunction:
                 continue
             fallback = (*current.orelse, *fallback)
             break
-        if not self.is_preservable_fallback(fallback):
+        if not self.is_preservable_fallback(
+            fallback, prefix_definitely_bound, prefix_all_bound
+        ):
             return None
-        return DispatchPolymorphismExtraction(tuple(arms), fallback)
+        return self._terminal_extraction(arms, fallback, body, prefix_bound_order)
 
-    def match_extraction(self) -> DispatchPolymorphismExtraction | None:
-        body = self.dispatch_body
+    def _terminal_match_extraction(
+        self,
+        body: tuple[ast.stmt, ...],
+        prefix_bound_order: tuple[str, ...],
+        prefix_definitely_bound: frozenset[str],
+        prefix_all_bound: frozenset[str],
+    ) -> DispatchPolymorphismExtraction | None:
         if not body or not isinstance(body[0], ast.Match):
             return None
         match_node = body[0]
@@ -356,32 +864,226 @@ class DispatchPolymorphismFunction:
                 fallback = tuple(match_case.body)
                 continue
             literals = self.pattern_literals(match_case.pattern)
-            statements = self.case_statements(match_case.body)
+            statements = self.case_statements(
+                match_case.body, prefix_definitely_bound, prefix_all_bound
+            )
             if not literals or statements is None:
                 return None
             arms.append(DispatchPolymorphismArm(literals, statements))
-        if not self.is_preservable_fallback(fallback):
+        if not self.is_preservable_fallback(
+            fallback, prefix_definitely_bound, prefix_all_bound
+        ):
             return None
-        return DispatchPolymorphismExtraction(tuple(arms), fallback)
+        return self._terminal_extraction(arms, fallback, body, prefix_bound_order)
 
-    def sequential_guard_extraction(self) -> DispatchPolymorphismExtraction | None:
+    def _terminal_sequential_guard_extraction(
+        self,
+        body: tuple[ast.stmt, ...],
+        prefix_bound_order: tuple[str, ...],
+        prefix_definitely_bound: frozenset[str],
+        prefix_all_bound: frozenset[str],
+    ) -> DispatchPolymorphismExtraction | None:
         arms: list[DispatchPolymorphismArm] = []
-        body = self.dispatch_body
         index = 0
+        fallback: tuple[ast.stmt, ...] = ()
+        consumed_negated_final = False
         while index < len(body):
             statement = body[index]
             if not isinstance(statement, ast.If) or statement.orelse:
                 break
             literals = self.test_literals(statement.test)
-            statements = self.case_statements(statement.body)
-            if not literals or statements is None:
+            if literals:
+                statements = self.case_statements(
+                    statement.body, prefix_definitely_bound, prefix_all_bound
+                )
+                if statements is None:
+                    return None
+                arms.append(DispatchPolymorphismArm(literals, statements))
+                index += 1
+                continue
+            negated_literals = self.negated_test_literals(statement.test)
+            if negated_literals:
+                tail = body[index + 1 :]
+                negated_fallback = tuple(statement.body)
+                tail_statements = self.case_statements(
+                    list(tail), prefix_definitely_bound, prefix_all_bound
+                )
+                if (
+                    tail_statements is None
+                    or self.selects_axis_within(tail_statements)
+                    or not self.is_preservable_fallback(
+                        negated_fallback, prefix_definitely_bound, prefix_all_bound
+                    )
+                ):
+                    return None
+                arms.append(DispatchPolymorphismArm(negated_literals, tail_statements))
+                fallback = negated_fallback
+                consumed_negated_final = True
+                break
+            break
+        if not consumed_negated_final:
+            fallback = body[index:]
+            if not arms or not self.is_preservable_fallback(
+                fallback, prefix_definitely_bound, prefix_all_bound
+            ):
                 return None
-            arms.append(DispatchPolymorphismArm(literals, statements))
-            index += 1
-        fallback = body[index:]
-        if not arms or not self.is_preservable_fallback(fallback):
+        return self._terminal_extraction(arms, fallback, body, prefix_bound_order)
+
+    def _non_terminal_branch_extraction(
+        self,
+        body: tuple[ast.stmt, ...],
+        prefix_bound_order: tuple[str, ...],
+        prefix_definitely_bound: frozenset[str],
+        prefix_all_bound: frozenset[str],
+        outside_loads: frozenset[str],
+    ) -> DispatchPolymorphismExtraction | None:
+        if not body or not isinstance(body[0], ast.If):
             return None
-        return DispatchPolymorphismExtraction(tuple(arms), fallback)
+        dispatch_stmt = body[0]
+        post_statements = body[1:]
+        arms: list[DispatchPolymorphismArm] = []
+        current = dispatch_stmt
+        fallback: tuple[ast.stmt, ...] = ()
+        while True:
+            literals = self.test_literals(current.test)
+            if not literals or not current.body:
+                return None
+            arms.append(DispatchPolymorphismArm(literals, tuple(current.body)))
+            if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                current = current.orelse[0]
+                continue
+            fallback = tuple(current.orelse)
+            break
+        return self._finalize_non_terminal_extraction(
+            tuple(arms),
+            fallback,
+            dispatch_stmt,
+            post_statements,
+            prefix_bound_order,
+            prefix_definitely_bound,
+            prefix_all_bound,
+            outside_loads,
+        )
+
+    def _non_terminal_match_extraction(
+        self,
+        body: tuple[ast.stmt, ...],
+        prefix_bound_order: tuple[str, ...],
+        prefix_definitely_bound: frozenset[str],
+        prefix_all_bound: frozenset[str],
+        outside_loads: frozenset[str],
+    ) -> DispatchPolymorphismExtraction | None:
+        if not body or not isinstance(body[0], ast.Match):
+            return None
+        match_node = body[0]
+        if not self.axis.selects(match_node.subject):
+            return None
+        post_statements = body[1:]
+        arms: list[DispatchPolymorphismArm] = []
+        fallback: tuple[ast.stmt, ...] = ()
+        for index, match_case in enumerate(match_node.cases):
+            if match_guards(match_case):
+                return None
+            if self.is_default_match_pattern(match_case.pattern):
+                if index != len(match_node.cases) - 1:
+                    return None
+                fallback = tuple(match_case.body)
+                continue
+            literals = self.pattern_literals(match_case.pattern)
+            if not literals or not match_case.body:
+                return None
+            arms.append(DispatchPolymorphismArm(literals, tuple(match_case.body)))
+        if not arms:
+            return None
+        return self._finalize_non_terminal_extraction(
+            tuple(arms),
+            fallback,
+            match_node,
+            post_statements,
+            prefix_bound_order,
+            prefix_definitely_bound,
+            prefix_all_bound,
+            outside_loads,
+        )
+
+    def _finalize_non_terminal_extraction(
+        self,
+        arms: tuple[DispatchPolymorphismArm, ...],
+        fallback: tuple[ast.stmt, ...],
+        dispatch_stmt: ast.stmt,
+        post_statements: tuple[ast.stmt, ...],
+        prefix_bound_order: tuple[str, ...],
+        prefix_definitely_bound: frozenset[str],
+        prefix_all_bound: frozenset[str],
+        outside_loads: frozenset[str],
+    ) -> DispatchPolymorphismExtraction | None:
+        if self.selects_axis_within(post_statements):
+            return None
+        if fallback and (
+            _has_control_escape(fallback)
+            or self.selects_axis_within(fallback)
+            or not self.preserves_bindings(
+                fallback, prefix_definitely_bound, prefix_all_bound
+            )
+        ):
+            return None
+        for arm in arms:
+            if _has_control_escape(arm.statements) or not self.preserves_bindings(
+                arm.statements, prefix_definitely_bound, prefix_all_bound
+            ):
+                return None
+        post_loaded = _free_loaded_names(post_statements) | outside_loads
+        arm_bound = frozenset[str]().union(
+            *(
+                LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(arm.statements)
+                for arm in arms
+            )
+        )
+        escaped = arm_bound & post_loaded
+        captured_locals = self._captured_locals_for(arms, prefix_bound_order)
+        if not escaped:
+            if fallback:
+                return FallbackVoidDispatchExtraction(
+                    arms=arms,
+                    fallback_statements=fallback,
+                    replaced_statements=(dispatch_stmt,),
+                    captured_locals=captured_locals,
+                )
+            return VoidDispatchExtraction(
+                arms=arms,
+                fallback_statements=(),
+                replaced_statements=(dispatch_stmt,),
+                captured_locals=captured_locals,
+            )
+        first_arm_order = _definitely_bound_names_in_order(arms[0].statements)
+        if not escaped <= frozenset(first_arm_order):
+            return None
+        assigned_names = tuple(name for name in first_arm_order if name in escaped)
+        if any(
+            not escaped <= frozenset(_definitely_bound_names_in_order(arm.statements))
+            for arm in arms[1:]
+        ):
+            return None
+        if fallback:
+            if not escaped <= frozenset(_definitely_bound_names_in_order(fallback)):
+                return None
+            return FallbackAssigningDispatchExtraction(
+                arms=arms,
+                fallback_statements=fallback,
+                replaced_statements=(dispatch_stmt,),
+                captured_locals=captured_locals,
+                assigned_names=assigned_names,
+            )
+        already_bound = frozenset(self.parameter_names) | prefix_definitely_bound
+        if not escaped <= already_bound:
+            return None
+        return GuardedAssigningDispatchExtraction(
+            arms=arms,
+            fallback_statements=(),
+            replaced_statements=(dispatch_stmt,),
+            captured_locals=captured_locals,
+            assigned_names=assigned_names,
+        )
 
     def test_literals(self, test: ast.expr) -> tuple[ast.Constant, ...]:
         if not isinstance(test, ast.Compare) or len(test.ops) != 1:
@@ -398,6 +1100,25 @@ class DispatchPolymorphismFunction:
             )
             if literals:
                 return literals
+        return ()
+
+    def negated_test_literals(self, test: ast.expr) -> tuple[ast.Constant, ...]:
+        if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+            return ()
+        operator = test.ops[0]
+        comparator = test.comparators[0]
+        sides = ((test.left, comparator, True), (comparator, test.left, False))
+        for subject, candidate, allow_collection in sides:
+            if not self.axis.selects(subject):
+                continue
+            if (
+                isinstance(operator, ast.NotEq)
+                and isinstance(candidate, ast.Constant)
+                and self.is_literal(candidate)
+            ):
+                return (candidate,)
+            if allow_collection and isinstance(operator, ast.NotIn):
+                return self.collection_literals(candidate)
         return ()
 
     def dispatch_literals_for_side(
@@ -443,7 +1164,7 @@ class DispatchPolymorphismFunction:
             element for element in node.elts if isinstance(element, ast.Constant)
         )
         if not all(
-            DispatchPolymorphismFunction.is_literal(element) for element in node.elts
+            _DispatchExtractor.is_literal(element) for element in node.elts
         ) or len(literals) != len(node.elts):
             return ()
         return literals
@@ -451,26 +1172,36 @@ class DispatchPolymorphismFunction:
     def case_statements(
         self,
         statements: list[ast.stmt],
+        prefix_definitely_bound: frozenset[str],
+        prefix_all_bound: frozenset[str],
     ) -> tuple[ast.stmt, ...] | None:
         """Statements that execute unchanged as one strategy leaf's body."""
 
-        if not self.terminal(statements) or not self.preserves_bindings(statements):
+        if not self.terminal(statements) or not self.preserves_bindings(
+            statements, prefix_definitely_bound, prefix_all_bound
+        ):
             return None
         return tuple(statements)
 
-    def preserves_bindings(self, statements: Iterable[ast.stmt]) -> bool:
-        """Leave the axis root bound and read no local bound outside the statements."""
+    def preserves_bindings(
+        self,
+        statements: Iterable[ast.stmt],
+        prefix_definitely_bound: frozenset[str],
+        prefix_all_bound: frozenset[str],
+    ) -> bool:
+        """Leave the axis root bound and read only parameters, own locals, or definitely-bound prefix locals."""
 
         statements = tuple(statements)
         bound_here = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(statements)
-        loaded = frozenset(
-            node.id
-            for statement in statements
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        )
-        return self.axis.root_name not in bound_here and not (
-            loaded & (self.function_locals - bound_here)
+        loaded = _free_loaded_names(statements)
+        conditionally_bound_prefix = prefix_all_bound - prefix_definitely_bound
+        return (
+            self.axis.root_name not in bound_here
+            and not (loaded & conditionally_bound_prefix)
+            and not (
+                loaded
+                & (self.function_locals - bound_here - prefix_definitely_bound)
+            )
         )
 
     @staticmethod
@@ -482,15 +1213,22 @@ class DispatchPolymorphismFunction:
             return False
         last = statements[-1]
         if isinstance(last, ast.If):
-            return DispatchPolymorphismFunction.terminal(
+            return _DispatchExtractor.terminal(
                 last.body
-            ) and DispatchPolymorphismFunction.terminal(last.orelse)
+            ) and _DispatchExtractor.terminal(last.orelse)
         return isinstance(last, (ast.Return, ast.Raise))
 
-    def is_preservable_fallback(self, statements: tuple[ast.stmt, ...]) -> bool:
+    def is_preservable_fallback(
+        self,
+        statements: tuple[ast.stmt, ...],
+        prefix_definitely_bound: frozenset[str],
+        prefix_all_bound: frozenset[str],
+    ) -> bool:
         return (
             self.terminal(statements)
-            and self.preserves_bindings(statements)
+            and self.preserves_bindings(
+                statements, prefix_definitely_bound, prefix_all_bound
+            )
             and not self.selects_axis_within(statements)
         )
 
@@ -500,9 +1238,54 @@ class DispatchPolymorphismFunction:
 
     @staticmethod
     def is_literal(node: ast.AST) -> bool:
-        return isinstance(node, ast.Constant) and isinstance(
-            node.value,
-            (str, int, float),
+        return (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, (str, int, float))
+            and not isinstance(node.value, bool)
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DispatchPolymorphismFunction:
+    """One proved mechanically convertible literal dispatch function."""
+
+    node: ast.FunctionDef
+    axis: DispatchAxis
+    extraction: DispatchPolymorphismExtraction
+
+    @classmethod
+    def derived_from_function(
+        cls,
+        node: ast.FunctionDef,
+    ) -> tuple[Self, ...]:
+        """Recover supported literal dispatches from one function."""
+
+        executable_body = tuple(statements_without_docstring(node.body))
+        parameter_names = frozenset(_parameter_names_of_args(node.args))
+        root_names = parameter_names | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            executable_body
+        )
+        axes = dict.fromkeys(
+            axis
+            for expression in _DispatchExtractor.compared_expressions(node)
+            if (axis := DispatchAxis.decoded(expression, root_names)) is not None
+        )
+        candidates: list[Self] = []
+        for axis in axes:
+            extracted = _DispatchExtractor(node=node, axis=axis).extract()
+            if extracted is not None:
+                candidates.append(cls(node=node, axis=axis, extraction=extracted))
+        return tuple(candidates)
+
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        return tuple(
+            parameter.arg
+            for parameter in (
+                *self.node.args.posonlyargs,
+                *self.node.args.args,
+                *self.node.args.kwonlyargs,
+            )
         )
 
 
@@ -591,16 +1374,21 @@ class ModuleFunctionDispatchHost(DispatchPolymorphismHost):
 
 @dataclass(frozen=True)
 class ClassMethodDispatchHost(DispatchPolymorphismHost):
-    """A plain instance method of a top-level class; its family precedes the class.
+    """A method of a top-level class whose family precedes the class.
 
     The case bodies leave the class body, so the method may not depend on
-    class-body compilation: no decorator, no ``__class__`` cell (which any
-    ``super`` or ``__class__`` reference creates), and no private name that
-    the class would mangle.
+    class-body compilation: only standard descriptor decorators
+    (``staticmethod``, ``classmethod``, ``property``, ``cached_property``) that
+    leave the body semantics unchanged are allowed, with no ``__class__`` cell
+    (which any ``super`` or ``__class__`` reference creates) and no private
+    name that the class would mangle.
     """
 
     target_kind = AstTargetNodeKind.METHOD
     class_cell_names: ClassVar[frozenset[str]] = frozenset({"super", "__class__"})
+    builtin_descriptor_decorators: ClassVar[frozenset[str]] = frozenset(
+        {"staticmethod", "classmethod", "property"}
+    )
 
     owner: ast.ClassDef
 
@@ -622,10 +1410,12 @@ class ClassMethodDispatchHost(DispatchPolymorphismHost):
                 f"method target {target_digest.qualname!r} is not declared directly "
                 "on a top-level module class"
             )
-        if node.decorator_list:
+        if node.decorator_list and not cls._all_safe_descriptor_decorators(
+            node.decorator_list, module
+        ):
             raise ValueError(
                 f"method target {target_digest.qualname!r} is decorated; only plain "
-                "instance methods lift into a module strategy family"
+                "or standard descriptor methods lift into a module strategy family"
             )
         identifiers = cls.identifiers(node)
         if identifiers & cls.class_cell_names:
@@ -644,6 +1434,49 @@ class ClassMethodDispatchHost(DispatchPolymorphismHost):
                 f"{mangled!r}, which change meaning outside the class body"
             )
         return cls(node, owners[0])
+
+    @classmethod
+    def _all_safe_descriptor_decorators(
+        cls,
+        decorators: list[ast.expr],
+        module: ast.Module,
+    ) -> bool:
+        imported_sources: dict[str, str] = {}
+        non_import_bound: set[str] = set()
+        for statement in module.body:
+            if isinstance(statement, (ast.Import, ast.ImportFrom)):
+                if any(alias.name == "*" for alias in statement.names):
+                    return False
+                for name, source in ImportBoundNameProjection(statement).name_sources():
+                    imported_sources[name] = source
+            else:
+                non_import_bound.update(
+                    LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((statement,))
+                )
+        for decorator in decorators:
+            match decorator:
+                case ast.Name(id=name) if name in cls.builtin_descriptor_decorators:
+                    if name in imported_sources or name in non_import_bound:
+                        return False
+                case ast.Name(id=name):
+                    if (
+                        name in non_import_bound
+                        or imported_sources.get(name)
+                        != "from functools import cached_property\n"
+                    ):
+                        return False
+                case ast.Attribute(
+                    value=ast.Name(id=module_name),
+                    attr="cached_property",
+                ):
+                    if (
+                        module_name in non_import_bound
+                        or imported_sources.get(module_name) != "import functools\n"
+                    ):
+                        return False
+                case _:
+                    return False
+        return True
 
     @staticmethod
     def identifiers(node: ast.FunctionDef) -> frozenset[str]:
@@ -697,17 +1530,11 @@ class DispatchPolymorphismSource:
         candidates = DispatchPolymorphismFunction.derived_from_function(host.node)
         if len(candidates) != 1:
             return None
-        function = candidates[0]
-        if function.extraction is None:
-            return None
-        return cls(host=host, dispatch_function=function)
+        return cls(host=host, dispatch_function=candidates[0])
 
     @property
     def extraction(self) -> DispatchPolymorphismExtraction:
-        extraction = self.dispatch_function.extraction
-        if extraction is None:
-            raise ValueError("Dispatch source no longer has a supported extraction")
-        return extraction
+        return self.dispatch_function.extraction
 
     @property
     def base_name(self) -> str:
@@ -721,37 +1548,33 @@ class DispatchPolymorphismSource:
         )
 
     @property
+    def call_parameter_names(self) -> tuple[str, ...]:
+        return (
+            *self.dispatch_function.parameter_names,
+            *self.extraction.captured_locals,
+        )
+
+    @property
     def apply_signature(self) -> str:
         parameters = ", ".join(
             (
                 self.generated_binding_name("_dispatch_strategy"),
-                *self.dispatch_function.parameter_names,
+                *self.call_parameter_names,
             )
         )
         return f"def {self.method_name}({parameters})"
 
     @property
     def apply_call_arguments(self) -> str:
-        return ", ".join(self.dispatch_function.parameter_names)
+        return ", ".join(self.call_parameter_names)
 
     def dispatch_call_lines(self) -> tuple[str, ...]:
-        case_type_binding = self.generated_binding_name("_dispatch_case_type")
-        fallback_lines = tuple(
-            line
-            for statement in self.extraction.fallback_statements
-            for line in ast.unparse(statement).splitlines()
-        )
-        return (
-            (
-                f"{case_type_binding} = {self.base_name}.__registry__.get"
-                f"({self.dispatch_function.axis.source})"
-            ),
-            f"if {case_type_binding} is None:",
-            *(f"    {line}" for line in fallback_lines),
-            (
-                f"return {case_type_binding}().{self.method_name}"
-                f"({self.apply_call_arguments})"
-            ),
+        return self.extraction.dispatch_call_lines(
+            case_type_binding=self.generated_binding_name("_dispatch_case_type"),
+            base_name=self.base_name,
+            axis_source=self.dispatch_function.axis.source,
+            method_name=self.method_name,
+            call_arguments=self.apply_call_arguments,
         )
 
     @cached_property
@@ -849,16 +1672,8 @@ class DispatchPolymorphismSource:
                 *header,
                 "",
                 f"    {self.apply_signature}:",
-                *self.case_statement_lines(dispatch_case.arm.statements),
+                *self.extraction.case_statement_lines(dispatch_case.arm.statements),
             )
-        )
-
-    @staticmethod
-    def case_statement_lines(statements: tuple[ast.stmt, ...]) -> tuple[str, ...]:
-        return tuple(
-            f"        {line}"
-            for statement in statements
-            for line in ast.unparse(statement).splitlines()
         )
 
 
@@ -1036,11 +1851,11 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
         source: DispatchPolymorphismSource,
         source_by_path: Mapping[str, str],
     ) -> SourceSpanReplacement:
-        dispatch_body = source.dispatch_function.dispatch_body
-        if not dispatch_body:
+        replaced_statements = source.extraction.replaced_statements
+        if not replaced_statements:
             raise ValueError("dispatch function has no dispatch statements")
-        body_start = dispatch_body[0].lineno
-        body_end = dispatch_body[-1].end_lineno or dispatch_body[-1].lineno
+        body_start = replaced_statements[0].lineno
+        body_end = replaced_statements[-1].end_lineno or replaced_statements[-1].lineno
         body_indent = SourceTargetEditor(
             source_by_path,
             target_digest,
@@ -1158,7 +1973,7 @@ class LiteralDispatchFindingRecipeSynthesizer(
         evidence = finding.primary_evidence
         if evidence is None:
             return ()
-        if finding.metrics.plan_dispatch_axis is None:
+        if not finding.metrics.plan_dispatch_axis:
             return ()
         if not finding.metrics.plan_literal_cases:
             return ()

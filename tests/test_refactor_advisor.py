@@ -7398,6 +7398,213 @@ def test_dispatch_to_polymorphism_derives_unbound_generated_names(
     assert "_dispatch_case_type_2 = RenderDispatchCase.__registry__" in rewritten
 
 
+def test_dispatch_to_polymorphism_widens_local_axis_kwonly_decorators_and_negated_final_arm(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "from __future__ import annotations\n"
+        "from functools import cached_property\n\n\n"
+        "class Codec:\n"
+        "    @staticmethod\n"
+        "    def decode(message, /, *, strict=False):\n"
+        '        role = message["role"]\n'
+        '        content = message.get("content") or ""\n'
+        '        if role == "system":\n'
+        '            return ("sys", content, strict)\n'
+        '        if role == "user":\n'
+        '            return ("usr", content, strict)\n'
+        '        if role != "assistant":\n'
+        '            raise ValueError(f"unknown role: {role}")\n'
+        '        if content.startswith("!"):\n'
+        "            content = content[1:]\n"
+        '        return ("asst", content, strict)\n\n'
+        "    @cached_property\n"
+        "    def is_optional(self):\n"
+        "        text = self.raw.strip()\n"
+        '        if text == "str":\n'
+        "            return False\n"
+        '        if text in {"str | None", "Optional[str]"}:\n'
+        "            return True\n"
+        "        raise ValueError(text)\n\n"
+        "    def __init__(self, raw):\n"
+        "        self.raw = raw\n"
+    )
+    decode_path, decode_sim = _dispatch_simulation(tmp_path, source, "Codec.decode")
+    decode_rewritten = decode_sim.simulation.rewritten_sources[decode_path.as_posix()]
+    assert decode_sim.is_clean
+    assert "class AssistantCodecDecodeDispatchCase(CodecDecodeDispatchCase):" in decode_rewritten
+    assert "def apply(_dispatch_strategy, message, strict, content):" in decode_rewritten
+    assert "@staticmethod\n    def decode(message, /, *, strict=False):" in decode_rewritten
+
+    for namespace in (
+        _exec_namespace(source, decode_path),
+        _exec_namespace(decode_rewritten, decode_path),
+    ):
+        codec = namespace["Codec"]
+        assert codec.decode({"role": "system", "content": "hi"}, strict=True) == ("sys", "hi", True)
+        assert codec.decode({"role": "user", "content": "yo"}) == ("usr", "yo", False)
+        assert codec.decode({"role": "assistant", "content": "!ok"}, strict=True) == ("asst", "ok", True)
+        with pytest.raises(ValueError, match="unknown role: tool"):
+            codec.decode({"role": "tool"})
+
+    opt_path, opt_sim = _dispatch_simulation(tmp_path, source, "Codec.is_optional")
+    opt_rewritten = opt_sim.simulation.rewritten_sources[opt_path.as_posix()]
+    assert opt_sim.is_clean
+    assert "@cached_property\n    def is_optional(self):" in opt_rewritten
+    for namespace in (
+        _exec_namespace(source, opt_path),
+        _exec_namespace(opt_rewritten, opt_path),
+    ):
+        codec = namespace["Codec"]
+        assert codec("str").is_optional is False
+        assert codec("str | None").is_optional is True
+        assert codec("Optional[str]").is_optional is True
+        with pytest.raises(ValueError, match="int"):
+            _ = codec("int").is_optional
+
+
+def test_dispatch_to_polymorphism_lifts_void_loop_and_assigning_dispatches(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "def write_blob(out, ext, data):\n"
+        '    out.append("start")\n'
+        "    suffix = ext.lower()\n"
+        '    if suffix == ".bz2":\n'
+        '        out.append(("bz2", data))\n'
+        '    elif suffix == ".gz":\n'
+        '        out.append(("gz", data))\n'
+        "    else:\n"
+        '        out.append(("raw", data))\n'
+        "    return out\n\n\n"
+        "def sample_faces(faces):\n"
+        "    results = [None] * len(faces)\n"
+        "    for face in range(3):\n"
+        "        matches = [index for index, value in enumerate(faces) if value == face]\n"
+        "        if not matches:\n"
+        "            continue\n"
+        "        if face == 0:\n"
+        "            for index in matches:\n"
+        '                results[index] = "x"\n'
+        "        elif face == 1:\n"
+        "            for index in matches:\n"
+        '                results[index] = "y"\n'
+        "        else:\n"
+        "            for index in matches:\n"
+        '                results[index] = "z"\n'
+        "    return results\n\n\n"
+        "def build_pair(mode, seed):\n"
+        "    if mode == 0:\n"
+        "        left = seed + 1\n"
+        "        right = 0\n"
+        "    elif mode == 1:\n"
+        "        left = 0\n"
+        "        right = seed + 2\n"
+        "    else:\n"
+        "        left = seed\n"
+        "        right = seed * 2\n"
+        "    return (left, right)\n\n\n"
+        "def override_label(kind):\n"
+        '    label = "default"\n'
+        '    if kind == "a":\n'
+        '        label = "alpha"\n'
+        '    elif kind == "b":\n'
+        '        label = "beta"\n'
+        "    return label\n"
+    )
+    for qualname, check in (
+        (
+            "write_blob",
+            lambda ns: (
+                ns["write_blob"]([], ".BZ2", 1),
+                ns["write_blob"]([], ".gz", 2),
+                ns["write_blob"]([], ".bin", 3),
+            ),
+        ),
+        (
+            "sample_faces",
+            lambda ns: ns["sample_faces"]([2, 0, 1, 0, 2]),
+        ),
+        (
+            "build_pair",
+            lambda ns: (
+                ns["build_pair"](0, 5),
+                ns["build_pair"](1, 5),
+                ns["build_pair"](2, 5),
+            ),
+        ),
+        (
+            "override_label",
+            lambda ns: (
+                ns["override_label"]("a"),
+                ns["override_label"]("b"),
+                ns["override_label"]("c"),
+            ),
+        ),
+    ):
+        module_path, simulation = _dispatch_simulation(tmp_path, source, qualname)
+        rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+        assert simulation.is_clean
+        assert check(_exec_namespace(rewritten, module_path)) == check(
+            _exec_namespace(source, module_path)
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "qualname", "error_fragment"),
+    (
+        pytest.param(
+            "def f(kind, flag):\n"
+            "    if flag:\n"
+            "        extra = 1\n"
+            '    if kind == "a":\n'
+            "        return extra\n"
+            '    if kind == "b":\n'
+            "        return 2\n"
+            "    return 0\n",
+            "f",
+            "not a supported literal dispatch",
+            id="conditionally-bound-prefix-local",
+        ),
+        pytest.param(
+            "def f(kind):\n"
+            '    if kind == "a":\n'
+            "        out = 1\n"
+            '    elif kind == "b":\n'
+            "        other = 2\n"
+            "    else:\n"
+            "        out = 3\n"
+            "    return out\n",
+            "f",
+            "not a supported literal dispatch",
+            id="assigning-dispatch-missing-binding-in-one-arm",
+        ),
+        pytest.param(
+            "staticmethod = lambda fn: fn\n\n\n"
+            "class Store:\n"
+            "    @staticmethod\n"
+            "    def go(kind):\n"
+            '        if kind == "a":\n'
+            "            return 1\n"
+            '        if kind == "b":\n'
+            "            return 2\n"
+            "        return 0\n",
+            "Store.go",
+            "is decorated",
+            id="shadowed-staticmethod-decorator",
+        ),
+    ),
+)
+def test_dispatch_to_polymorphism_refuses_unsound_widened_shapes(
+    tmp_path: Path,
+    source: str,
+    qualname: str,
+    error_fragment: str,
+) -> None:
+    with pytest.raises(CodemodOperationPreflightError, match=error_fragment):
+        _dispatch_simulation(tmp_path, source, qualname)
+
+
 def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
     tmp_path: Path,
 ) -> None:
