@@ -1263,6 +1263,16 @@ def require_verdict(
             verdicts.requested_verdict(owner_symbol, symbol)
             for symbol in sorted(wanted)
         )
+        if not all(
+            candidate is not None
+            and candidate.move is move
+            and candidate.owner.symbol == owner_symbol
+            for candidate in requested
+        ):
+            requested = tuple(
+                verdicts.requested_as(owner_symbol, symbol, move)
+                for symbol in sorted(wanted)
+            )
         if all(
             candidate is not None
             and candidate.move is move
@@ -2212,12 +2222,15 @@ class ClassComposition:
         """The keyword-only proof a dataclass composer needs."""
 
         restating = self.restating
+        owner_fields = self.owner.resolved_dataclass_field_names(self.snapshot)
         before, after = composed_field_order(
             self.snapshot,
-            self.owner.resolved_dataclass_field_names(self.snapshot),
+            owner_fields,
             restating,
         )
-        if before == after and self.owner.option("kw_only") == restating.option("kw_only"):
+        if before == after and (
+            not owner_fields or self.owner.option("kw_only") == restating.option("kw_only")
+        ):
             return None
         if self.owner.option("kw_only") != "True":
             raise NeedsInput(

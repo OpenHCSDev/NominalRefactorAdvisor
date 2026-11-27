@@ -229,6 +229,17 @@ class ClassOverlapMove(Case):
         return tuple(receipts)
 
     @classmethod
+    def field_order_receipts(
+        cls,
+        owner: CompactIndexedClass,
+        restating: Sequence[CompactIndexedClass],
+        verdicts: ClassOverlapVerdicts,
+    ) -> tuple[Receipt, ...]:
+        """Field-order guards for composing an existing non-keyword-only dataclass owner."""
+        del owner, restating, verdicts
+        return ()
+
+    @classmethod
     def finish_ladder_candidate(cls, judged, overlap: ClassBodyOverlap, shape, extractable, members, shared_receipts, caller: ClassOverlapVerdicts, first, second, axis_receipts, differing_receipts) -> ClassOverlapCandidate | None:
         """Finish a ladder overlap candidate for this move."""
         extraction = caller._candidate(overlap, shape, PairRepair(ExtractMixin, first, second, None), extractable, members, shared_receipts, (*axis_receipts, *differing_receipts))
@@ -340,6 +351,15 @@ class ComposeExisting(ClassOverlapMove):
     @classmethod
     def _positional_construction_receipts(cls, classes, self):
         return ()
+
+    @classmethod
+    def field_order_receipts(
+        cls,
+        owner: CompactIndexedClass,
+        restating: Sequence[CompactIndexedClass],
+        verdicts: ClassOverlapVerdicts,
+    ) -> tuple[Receipt, ...]:
+        return verdicts._compose_existing_field_order_receipts(owner, restating)
 
 
 class PromoteToSharedBase(ClassOverlapMove):
@@ -2538,6 +2558,11 @@ class ClassOverlapVerdicts(DeclaredC3):
                     tuple(composer for composer in (restating, co_restating) if composer is not None),
                     frozenset(shared.name for shared in overlap.shared),
                 ),
+                *move.field_order_receipts(
+                    owner,
+                    tuple(composer for composer in (restating, co_restating) if composer is not None),
+                    self,
+                ),
                 *(
                     self._positional_construction_receipts(
                         move, (first, second)
@@ -3236,6 +3261,60 @@ class ClassOverlapVerdicts(DeclaredC3):
                 )
             if not gained and not conflicting:
                 self._append_external_supplied_member_receipt(owner, receiver, receipts)
+        return tuple(receipts)
+
+    def _compose_existing_field_order_receipts(
+        self,
+        owner: CompactIndexedClass,
+        restating: Sequence[CompactIndexedClass],
+    ) -> tuple[Receipt, ...]:
+        """Composing a non-keyword-only dataclass owner puts its fields ahead of
+        a composer's own: if that reorders a dataclass composer's fields,
+        `ComposeExisting` cannot run without changing the owner's API, so it is
+        refused here and the repair ladder offers `ExtractMixin` instead."""
+
+        owner_fields_list: list[str] = []
+        has_positional = False
+        for indexed in reversed(self.class_index.mro_authority.lookup_prefix(owner.symbol)):
+            own_names = indexed.own_dataclass_field_names
+            if own_names is None:
+                return ()
+            owner_fields_list.extend(own_names)
+            if indexed.dataclass_declaration.has_positional_init_field():
+                has_positional = True
+        owner_fields = tuple(dict.fromkeys(owner_fields_list))
+        if not owner_fields or not has_positional:
+            return ()
+        receipts: list[Receipt] = []
+        for receiver in restating:
+            inherited: set[str] = set()
+            unknown_ancestor = False
+            for anc_sym in self.class_index.ancestor_symbols(receiver.symbol):
+                anc = self.class_index.class_for(anc_sym)
+                if anc is None:
+                    continue
+                anc_names = anc.own_dataclass_field_names
+                if anc_names is None:
+                    unknown_ancestor = True
+                    break
+                inherited.update(anc_names)
+            if unknown_ancestor:
+                continue
+            reordered = receiver.dataclass_declaration.reordered_own_fields(
+                owner_fields,
+                frozenset(inherited),
+            )
+            if reordered is not None:
+                before, after = reordered
+                receipts.append(
+                    Receipt(
+                        OverlapReceiptKind.COMPOSED_FIELD_ORDER_CHANGED,
+                        f"composing `{owner.qualname}` reorders the fields of "
+                        f"`{receiver.qualname}`: {before} becomes {after}, and "
+                        f"`{owner.qualname}` is not keyword-only",
+                        (_location(owner), _location(receiver)),
+                    )
+                )
         return tuple(receipts)
 
     def _identity_receipts(
