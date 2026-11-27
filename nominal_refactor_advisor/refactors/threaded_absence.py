@@ -23,6 +23,7 @@ from nominal_refactor_advisor.ast_field_decoders import (
 )
 from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.audit.family import snake_case
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_payload import (
     OptionalStringPayloadValueCodec,
@@ -1567,11 +1568,38 @@ class _PassiveOverrideParamEdit:
 
 
 @dataclass(frozen=True)
+class _FamilyMethodSpec:
+    """One branching method (primary or concrete override) pushed onto the Held/Absent family."""
+
+    file_path: str
+    probe_line: int
+    function: FunctionNode
+    enclosure: FunctionEnclosure
+    param_name: str
+    param_annotations: tuple[ast.expr, ...]
+    default_exprs: tuple[ast.expr, ...]
+    site: ThreadedAbsenceBranchSite
+    method_name: str
+    method_docstring: str | None
+    absent_body: tuple[ast.stmt, ...]
+    held_body: tuple[ast.stmt, ...]
+    captured_args: tuple[CapturedArgument, ...]
+    is_async: bool
+    outer_receiver_aliases: tuple[OuterReceiverAlias, ...]
+
+    @property
+    def absent_is_noop(self) -> bool:
+        return _is_noop_body(self.absent_body)
+
+
+@dataclass(frozen=True)
 class _ResolvedThreadedHierarchy:
-    """Connected single-function or single-brancher overriding hierarchy for a threaded parameter."""
+    """Connected single-function or overriding hierarchy for a threaded parameter."""
 
     family_anchor_line: int
     passive_overrides: tuple[_PassiveOverrideParamEdit, ...]
+    branching_overrides: tuple[_FamilyMethodSpec, ...]
+    passthrough_super_args: frozenset[tuple[str, int, int]]
     reaching_symbols: frozenset[str]
     owner_qualnames_by_file: Mapping[str, frozenset[str]]
 
@@ -1585,6 +1613,12 @@ class _OverrideParamPlacement(ABC):
 
     @abstractmethod
     def require_keyword_only(self, func_name: str, param_name: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def extract_passthrough_arg(
+        self, call: ast.Call, param_name: str
+    ) -> ast.Name | None:
         raise NotImplementedError
 
 
@@ -1607,6 +1641,24 @@ class _PositionalPlacement(_OverrideParamPlacement):
             NeededInput.PROOF,
         )
 
+    def extract_passthrough_arg(
+        self, call: ast.Call, param_name: str
+    ) -> ast.Name | None:
+        for kw in call.keywords:
+            if kw.arg == param_name:
+                return (
+                    kw.value
+                    if isinstance(kw.value, ast.Name) and kw.value.id == param_name
+                    else None
+                )
+        if self.index < len(call.args):
+            if any(isinstance(a, ast.Starred) for a in call.args[: self.index + 1]):
+                return None
+            arg = call.args[self.index]
+            if isinstance(arg, ast.Name) and arg.id == param_name:
+                return arg
+        return None
+
 
 @dataclass(frozen=True)
 class _KeywordOnlyPlacement(_OverrideParamPlacement):
@@ -1621,6 +1673,179 @@ class _KeywordOnlyPlacement(_OverrideParamPlacement):
 
     def require_keyword_only(self, func_name: str, param_name: str) -> None:
         del func_name, param_name
+
+    def extract_passthrough_arg(
+        self, call: ast.Call, param_name: str
+    ) -> ast.Name | None:
+        for kw in call.keywords:
+            if kw.arg == param_name:
+                return (
+                    kw.value
+                    if isinstance(kw.value, ast.Name) and kw.value.id == param_name
+                    else None
+                )
+        return None
+
+
+def _collect_param_probe_lines(
+    function: FunctionNode, param_name: str
+) -> tuple[int, ...]:
+    """Return source-ordered lines in `function` probing `param_name is [not] None`."""
+
+    lines: list[int] = []
+    seen: set[int] = set()
+
+    def _visit(node: ast.AST) -> None:
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
+            return
+        if _parse_param_probe(node, param_name) is not None and isinstance(
+            node, ast.Compare
+        ):
+            if node.lineno not in seen:
+                seen.add(node.lineno)
+                lines.append(node.lineno)
+        for child in ast.iter_child_nodes(node):
+            _visit(child)
+
+    for stmt in function.body:
+        _visit(stmt)
+    return tuple(lines)
+
+
+def _prove_pushed_branch(
+    source_path: str,
+    enclosure: FunctionEnclosure,
+    function: FunctionNode,
+    parameter_name: str,
+    probe_line: int,
+) -> tuple[
+    ThreadedAbsenceBranchSite,
+    tuple[ast.stmt, ...],
+    tuple[ast.stmt, ...],
+    tuple[CapturedArgument, ...],
+    bool,
+    tuple[OuterReceiverAlias, ...],
+]:
+    """Prove `function`'s absence probe at `probe_line` can be pushed onto a Held/Absent family."""
+
+    site = find_threaded_absence_site(function, parameter_name, probe_line)
+    if site is None:
+        raise NeedsInput(
+            f"absence probe on `{parameter_name}` at {source_path}:{probe_line} is not a pushable branch shape",
+            NeededInput.SOURCE_CHANGE,
+        )
+
+    if site.checks_local_store_escapes:
+        stored = _names_stored_in((*site.absent_body, *site.held_body))
+        used_outside = _names_referenced_outside(function, site.replaced_ast_nodes())
+        escaping = sorted(stored & used_outside)
+        if escaping:
+            upgraded = _upgrade_threaded_to_assigning(function, site, escaping)
+            if upgraded is not None:
+                site = upgraded
+            else:
+                raise NeedsInput(
+                    f"`{function.name}` assigns outer local(s) {', '.join(escaping)} inside the absence branch",
+                    NeededInput.SOURCE_CHANGE,
+                )
+
+    # Soundness: `parameter_name` must not be referenced outside the replaced branch,
+    # must not be read in the absent arm, and must not be stored/deleted anywhere in `function`.
+    outside_names = _names_referenced_outside(function, site.replaced_ast_nodes())
+    if parameter_name in outside_names:
+        raise NeedsInput(
+            f"parameter `{parameter_name}` is still referenced outside the pushed absence branch",
+            NeededInput.SOURCE_CHANGE,
+        )
+    if _name_used_in(parameter_name, site.absent_body):
+        raise NeedsInput(
+            f"absent branch still reads `{parameter_name}`",
+            NeededInput.SOURCE_CHANGE,
+        )
+    if parameter_name in _names_stored_in(function.body):
+        raise NeedsInput(
+            f"`{function.name}` rebinds `{parameter_name}`",
+            NeededInput.SOURCE_CHANGE,
+        )
+
+    adapter = site.as_dispatch_adapter()
+    enclosing_locals = enclosure.enclosing_local_names()
+    outer_receiver_aliases = _outer_receiver_aliases(
+        function,
+        adapter,
+        (site.absent_body, site.held_body),
+        enclosing_locals=enclosing_locals,
+    )
+    rewritten_absent = _rewrite_outer_aliases_only(
+        site.absent_body, outer_receiver_aliases
+    )
+    rewritten_held = _rewrite_param_to_self_value(
+        site.held_body, parameter_name, outer_receiver_aliases
+    )
+    captured_args, is_async = _analyze_arm_bodies(
+        function,
+        adapter,
+        (rewritten_absent, rewritten_held),
+        outer_receiver_aliases=outer_receiver_aliases,
+        enclosing_locals=enclosing_locals,
+    )
+    return (
+        site,
+        rewritten_absent,
+        rewritten_held,
+        captured_args,
+        is_async,
+        outer_receiver_aliases,
+    )
+
+
+def _collect_super_passthrough_arg_nodes(
+    function: FunctionNode,
+    method_name: str,
+    param_name: str,
+    placement: _OverrideParamPlacement,
+) -> tuple[ast.Name, ...]:
+    """Return `super().<method_name>(..., param_name, ...)` argument nodes when
+    every load of `param_name` in `function` is a direct passthrough to `super()`."""
+
+    if param_name in _names_stored_in(function.body):
+        return ()
+
+    matched: list[ast.Name] = []
+    matched_ids: set[int] = set()
+    for stmt in function.body:
+        for node in ast.walk(stmt):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == method_name
+                and isinstance(func.value, ast.Call)
+                and isinstance(func.value.func, ast.Name)
+                and func.value.func.id == "super"
+            ):
+                continue
+            arg_node = placement.extract_passthrough_arg(node, param_name)
+            if arg_node is not None and id(arg_node) not in matched_ids:
+                matched_ids.add(id(arg_node))
+                matched.append(arg_node)
+
+    if not matched:
+        return ()
+
+    for stmt in function.body:
+        for node in ast.walk(stmt):
+            if (
+                isinstance(node, ast.Name)
+                and node.id == param_name
+                and isinstance(node.ctx, ast.Load)
+                and id(node) not in matched_ids
+            ):
+                return ()
+    return tuple(matched)
 
 
 def _locate_passive_override_param(
@@ -1692,15 +1917,20 @@ def _resolve_threaded_hierarchy(
     enclosure: FunctionEnclosure,
     function: FunctionNode,
     param_name: str,
+    inner_type: ast.expr,
+    method_name: str,
     placement: _OverrideParamPlacement,
 ) -> _ResolvedThreadedHierarchy:
-    """Resolve a standalone function or a single-brancher overriding hierarchy."""
+    """Resolve a standalone function or an overriding hierarchy (passive, `super()`-forwarding,
+    and same-module multi-brancher overrides sharing one Held/Absent family)."""
 
     owner_symbol = enclosure.declaring_class_symbol(snapshot)
     if owner_symbol is None:
         return _ResolvedThreadedHierarchy(
             family_anchor_line=function.lineno,
             passive_overrides=(),
+            branching_overrides=(),
+            passthrough_super_args=frozenset(),
             reaching_symbols=frozenset(),
             owner_qualnames_by_file={},
         )
@@ -1727,7 +1957,11 @@ def _resolve_threaded_hierarchy(
 
     is_async = isinstance(function, ast.AsyncFunctionDef)
     skip_first = enclosure.class_receiver_symbol(snapshot) is not None
+    primary_inner_src = ast.unparse(inner_type)
     passive_overrides: list[_PassiveOverrideParamEdit] = []
+    branching_overrides: list[_FamilyMethodSpec] = []
+    passthrough_super_args: set[tuple[str, int, int]] = set()
+    used_method_names: set[str] = {method_name, "from_optional"}
     anchor_lines: list[int] = [function.lineno]
     qualnames_by_file: dict[str, set[str]] = {
         source_path: {classes[owner_symbol].qualname}
@@ -1759,25 +1993,116 @@ def _resolve_threaded_hierarchy(
                 f"`{decl.qualname}.{function.name}` mixes staticmethod and bound-method overrides",
                 NeededInput.PROOF,
             )
-        if not _is_passive_override(other_fn, param_name):
-            raise NeedsInput(
-                f"`{decl.qualname}` also uses `{param_name}` in `{function.name}`; "
-                "overriding hierarchy is not rewritten",
-                NeededInput.PROOF,
-            )
         anns, defs = _locate_passive_override_param(
             other_fn,
             param_name,
             placement,
             skip_first_receiver=skip_first,
         )
-        passive_overrides.append(
-            _PassiveOverrideParamEdit(
-                file_path=decl.file_path,
-                param_annotations=anns,
-                default_exprs=defs,
+        if _is_passive_override(other_fn, param_name):
+            passive_overrides.append(
+                _PassiveOverrideParamEdit(
+                    file_path=decl.file_path,
+                    param_annotations=anns,
+                    default_exprs=defs,
+                )
             )
-        )
+        else:
+            passthrough = _collect_super_passthrough_arg_nodes(
+                other_fn, function.name, param_name, placement
+            )
+            if passthrough:
+                passive_overrides.append(
+                    _PassiveOverrideParamEdit(
+                        file_path=decl.file_path,
+                        param_annotations=anns,
+                        default_exprs=defs,
+                    )
+                )
+                for arg_node in passthrough:
+                    passthrough_super_args.add(
+                        (decl.file_path, arg_node.lineno, arg_node.col_offset)
+                    )
+            elif decl.file_path == source_path:
+                if anns:
+                    other_inner = _strip_none_from_annotation(anns[0])
+                    if other_inner is None or ast.unparse(other_inner) != primary_inner_src:
+                        raise NeedsInput(
+                            f"override `{decl.qualname}.{function.name}` parameter `{param_name}` inner type does not match `{primary_inner_src}`",
+                            NeededInput.PROOF,
+                        )
+                probe_lines = _collect_param_probe_lines(other_fn, param_name)
+                proved_override: _FamilyMethodSpec | None = None
+                for other_probe_line in probe_lines:
+                    try:
+                        _, other_enclosure, located_fn = TypeTestDispatchProof.locate_function(
+                            snapshot,
+                            SourceRewriteTarget(
+                                file_path=decl.file_path,
+                                qualname=f"{decl.qualname}.{function.name}",
+                            ),
+                            test_line=other_probe_line,
+                        )
+                        (
+                            other_site,
+                            other_absent,
+                            other_held,
+                            other_captured,
+                            other_is_async,
+                            other_aliases,
+                        ) = _prove_pushed_branch(
+                            decl.file_path,
+                            other_enclosure,
+                            located_fn,
+                            param_name,
+                            other_probe_line,
+                        )
+                    except NeedsInput:
+                        continue
+                    override_method_name = (
+                        f"{method_name}_for_{snake_case(decl.qualname.rsplit('.', 1)[-1])}"
+                    )
+                    if (
+                        not override_method_name.isidentifier()
+                        or keyword_module.iskeyword(override_method_name)
+                        or override_method_name in used_method_names
+                    ):
+                        raise NeedsInput(
+                            f"generated method name `{override_method_name}` collides on family",
+                            NeededInput.OWNER_PICK,
+                        )
+                    used_method_names.add(override_method_name)
+                    proved_override = _FamilyMethodSpec(
+                        file_path=decl.file_path,
+                        probe_line=other_probe_line,
+                        function=located_fn,
+                        enclosure=other_enclosure,
+                        param_name=param_name,
+                        param_annotations=anns,
+                        default_exprs=defs,
+                        site=other_site,
+                        method_name=override_method_name,
+                        method_docstring=None,
+                        absent_body=other_absent,
+                        held_body=other_held,
+                        captured_args=other_captured,
+                        is_async=other_is_async,
+                        outer_receiver_aliases=other_aliases,
+                    )
+                    break
+                if proved_override is None:
+                    raise NeedsInput(
+                        f"`{decl.qualname}` also uses `{param_name}` in `{function.name}`; "
+                        "overriding hierarchy is not rewritten",
+                        NeededInput.PROOF,
+                    )
+                branching_overrides.append(proved_override)
+            else:
+                raise NeedsInput(
+                    f"`{decl.qualname}` also uses `{param_name}` in `{function.name}`; "
+                    "overriding hierarchy is not rewritten",
+                    NeededInput.PROOF,
+                )
         qualnames_by_file.setdefault(decl.file_path, set()).add(decl.qualname)
         if decl.file_path == source_path:
             anchor_lines.append(cls_node.lineno)
@@ -1788,6 +2113,8 @@ def _resolve_threaded_hierarchy(
     return _ResolvedThreadedHierarchy(
         family_anchor_line=min(anchor_lines),
         passive_overrides=tuple(passive_overrides),
+        branching_overrides=tuple(branching_overrides),
+        passthrough_super_args=frozenset(passthrough_super_args),
         reaching_symbols=reaching_symbols,
         owner_qualnames_by_file={
             fp: frozenset(names) for fp, names in qualnames_by_file.items()
@@ -1906,7 +2233,15 @@ def _collect_closed_call_args(
             parent_call = (
                 parent if isinstance(parent, ast.Call) and parent.func is node else None
             )
-            if isinstance(node.value, ast.Name) and node.value.id in ("self", "cls"):
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id in ("self", "cls")
+                or (
+                    isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name)
+                    and node.value.func.id == "super"
+                )
+            ):
                 if any(lo <= node.lineno <= hi for lo, hi in reaching_class_ranges):
                     definite_hits.append((mod.file_path, node, parent_call))
                     continue
@@ -1964,6 +2299,12 @@ def _collect_closed_call_args(
             parent_call, param_name, call_pos, has_default
         )
         if arg_expr is not None:
+            if (
+                file_path,
+                arg_expr.lineno,
+                arg_expr.col_offset,
+            ) in hierarchy.passthrough_super_args:
+                continue
             raw_args.append((file_path, arg_expr))
 
     if not is_private and not raw_args:
@@ -1979,23 +2320,14 @@ class ThreadedAbsenceProof:
     """A threaded `T | None` parameter proved safe to replace with a Held/Absent family."""
 
     source_path: str
-    probe_line: int
     function: FunctionNode
-    enclosure: FunctionEnclosure
     param_arg: ast.arg
     param_annotation: ast.expr
     inner_type: ast.expr
-    default_expr: ast.expr | None
     site: ThreadedAbsenceBranchSite
     family_name: str
     family_docstring: str
-    method_name: str
-    method_docstring: str | None
-    absent_body: tuple[ast.stmt, ...]
-    held_body: tuple[ast.stmt, ...]
-    captured_args: tuple[CapturedArgument, ...]
-    is_async: bool
-    outer_receiver_aliases: tuple[OuterReceiverAlias, ...]
+    method_specs: tuple[_FamilyMethodSpec, ...]
     call_args: tuple[_RewrittenCallArg, ...]
     passive_overrides: tuple[_PassiveOverrideParamEdit, ...]
     insert_before_stmt: ast.stmt
@@ -2046,66 +2378,36 @@ class ThreadedAbsenceProof:
                 NeededInput.PROOF,
             )
 
-        site = find_threaded_absence_site(function, parameter_name, probe_line)
-        if site is None:
-            raise NeedsInput(
-                f"absence probe on `{parameter_name}` at {source_path}:{probe_line} is not a pushable branch shape",
-                NeededInput.SOURCE_CHANGE,
-            )
-
-        if site.checks_local_store_escapes:
-            stored = _names_stored_in((*site.absent_body, *site.held_body))
-            used_outside = _names_referenced_outside(function, site.replaced_ast_nodes())
-            escaping = sorted(stored & used_outside)
-            if escaping:
-                upgraded = _upgrade_threaded_to_assigning(function, site, escaping)
-                if upgraded is not None:
-                    site = upgraded
-                else:
-                    raise NeedsInput(
-                        f"`{function.name}` assigns outer local(s) {', '.join(escaping)} inside the absence branch",
-                        NeededInput.SOURCE_CHANGE,
-                    )
-
-        # Soundness: `parameter_name` must not be referenced outside the replaced branch,
-        # must not be read in the absent arm, and must not be stored/deleted anywhere in `function`.
-        outside_names = _names_referenced_outside(function, site.replaced_ast_nodes())
-        if parameter_name in outside_names:
-            raise NeedsInput(
-                f"parameter `{parameter_name}` is still referenced outside the pushed absence branch",
-                NeededInput.SOURCE_CHANGE,
-            )
-        if _name_used_in(parameter_name, site.absent_body):
-            raise NeedsInput(
-                f"absent branch still reads `{parameter_name}`",
-                NeededInput.SOURCE_CHANGE,
-            )
-        if parameter_name in _names_stored_in(function.body):
-            raise NeedsInput(
-                f"`{function.name}` rebinds `{parameter_name}`",
-                NeededInput.SOURCE_CHANGE,
-            )
-
-        adapter = site.as_dispatch_adapter()
-        enclosing_locals = enclosure.enclosing_local_names()
-        outer_receiver_aliases = _outer_receiver_aliases(
+        (
+            site,
+            rewritten_absent,
+            rewritten_held,
+            captured_args,
+            is_async,
+            outer_receiver_aliases,
+        ) = _prove_pushed_branch(
+            source_path,
+            enclosure,
             function,
-            adapter,
-            (site.absent_body, site.held_body),
-            enclosing_locals=enclosing_locals,
+            parameter_name,
+            probe_line,
         )
-        rewritten_absent = _rewrite_outer_aliases_only(
-            site.absent_body, outer_receiver_aliases
-        )
-        rewritten_held = _rewrite_param_to_self_value(
-            site.held_body, parameter_name, outer_receiver_aliases
-        )
-        captured_args, is_async = _analyze_arm_bodies(
-            function,
-            adapter,
-            (rewritten_absent, rewritten_held),
+        primary_spec = _FamilyMethodSpec(
+            file_path=source_path,
+            probe_line=probe_line,
+            function=function,
+            enclosure=enclosure,
+            param_name=parameter_name,
+            param_annotations=(param_ann,),
+            default_exprs=(default_expr,) if default_expr is not None else (),
+            site=site,
+            method_name=method_name,
+            method_docstring=method_docstring,
+            absent_body=rewritten_absent,
+            held_body=rewritten_held,
+            captured_args=captured_args,
+            is_async=is_async,
             outer_receiver_aliases=outer_receiver_aliases,
-            enclosing_locals=enclosing_locals,
         )
 
         source_module = snapshot.parsed_module_for_source_path(source_path)
@@ -2133,6 +2435,8 @@ class ThreadedAbsenceProof:
             enclosure,
             function,
             parameter_name,
+            inner_type,
+            method_name,
             placement,
         )
 
@@ -2188,23 +2492,14 @@ class ThreadedAbsenceProof:
 
         return cls(
             source_path=source_path,
-            probe_line=probe_line,
             function=function,
-            enclosure=enclosure,
             param_arg=param_arg,
             param_annotation=param_ann,
             inner_type=inner_type,
-            default_expr=default_expr,
             site=site,
             family_name=family_name,
             family_docstring=family_docstring,
-            method_name=method_name,
-            method_docstring=method_docstring,
-            absent_body=rewritten_absent,
-            held_body=rewritten_held,
-            captured_args=captured_args,
-            is_async=is_async,
-            outer_receiver_aliases=outer_receiver_aliases,
+            method_specs=(primary_spec, *hierarchy.branching_overrides),
             call_args=call_args,
             passive_overrides=hierarchy.passive_overrides,
             insert_before_stmt=insert_before,
@@ -2219,46 +2514,44 @@ class ThreadedAbsenceProof:
 
     def _render_family_classes(
         self,
-        snapshot: CodemodSourceSnapshot,
         source_module_future_ann: bool,
-        param_annotations: dict[str, ast.expr],
-        return_annotation: ast.expr | None,
+        rendered_specs: Sequence[tuple[_FamilyMethodSpec, ResolvedMethodAnnotations]],
     ) -> tuple[str, bool]:
-        params = tuple(arg.param_name for arg in self.captured_args)
-        absent_is_noop = _is_noop_body(self.absent_body)
-        needs_abstractmethod = not absent_is_noop
+        needs_abstractmethod = any(not spec.absent_is_noop for spec, _ in rendered_specs)
         needs_from_optional = any(item.wrapping.uses_from_optional for item in self.call_args)
 
         base_lines = [
             f"class {self.family_name}(ABC):",
             f'    """{self.family_docstring}"""',
-            "",
         ]
-        if absent_is_noop:
-            base_method = _render_method(
-                InstanceDispatchKind(),
-                self.method_name,
-                params,
-                (ast.Pass(),),
-                is_async=self.is_async,
-                docstring=self.method_docstring,
-                param_annotations=param_annotations,
-                return_annotation=return_annotation,
-            )
-        else:
-            base_lines.append("    @abstractmethod")
-            base_method = _render_method(
-                InstanceDispatchKind(),
-                self.method_name,
-                params,
-                (ast.Expr(value=ast.Constant(value=...)),),
-                is_async=self.is_async,
-                docstring=self.method_docstring,
-                param_annotations=param_annotations,
-                return_annotation=return_annotation,
-            )
-        for line in base_method.splitlines():
-            base_lines.append(f"    {line}" if line else "")
+        for spec, resolved in rendered_specs:
+            params = tuple(arg.param_name for arg in spec.captured_args)
+            base_lines.append("")
+            if spec.absent_is_noop:
+                base_method = _render_method(
+                    InstanceDispatchKind(),
+                    spec.method_name,
+                    params,
+                    (ast.Pass(),),
+                    is_async=spec.is_async,
+                    docstring=spec.method_docstring,
+                    param_annotations=resolved.param_map,
+                    return_annotation=resolved.return_annotation,
+                )
+            else:
+                base_lines.append("    @abstractmethod")
+                base_method = _render_method(
+                    InstanceDispatchKind(),
+                    spec.method_name,
+                    params,
+                    (ast.Expr(value=ast.Constant(value=...)),),
+                    is_async=spec.is_async,
+                    docstring=spec.method_docstring,
+                    param_annotations=resolved.param_map,
+                    return_annotation=resolved.return_annotation,
+                )
+            for line in base_method.splitlines():
+                base_lines.append(f"    {line}" if line else "")
 
         if needs_from_optional:
             orig_ann_src = ast.unparse(self.param_annotation)
@@ -2283,23 +2576,25 @@ class ThreadedAbsenceProof:
             f"class Absent{self.family_name}({self.family_name}):",
             f'    """Absent `{self.family_name}` carrying no value."""',
         ]
-        if not absent_is_noop:
+        for spec, resolved in rendered_specs:
+            if spec.absent_is_noop:
+                continue
+            params = tuple(arg.param_name for arg in spec.captured_args)
             absent_lines.append("")
             absent_method = _render_method(
                 InstanceDispatchKind(),
-                self.method_name,
+                spec.method_name,
                 params,
-                self.absent_body,
-                is_async=self.is_async,
+                spec.absent_body,
+                is_async=spec.is_async,
                 docstring=None,
-                param_annotations=param_annotations,
-                return_annotation=return_annotation,
+                param_annotations=resolved.param_map,
+                return_annotation=resolved.return_annotation,
             )
             for line in absent_method.splitlines():
                 absent_lines.append(f"    {line}" if line else "")
 
         inner_type_src = ast.unparse(self.inner_type)
-        held_body = self.held_body if self.held_body else (ast.Pass(),)
         held_lines = [
             "",
             "",
@@ -2308,22 +2603,24 @@ class ThreadedAbsenceProof:
             f'    """Held `{self.family_name}` carrying its present value."""',
             "",
             f"    value: {inner_type_src}",
-            "",
         ]
-        held_method = _render_method(
-            InstanceDispatchKind(),
-            self.method_name,
-            params,
-            held_body,
-            is_async=self.is_async,
-            docstring=None,
-            param_annotations=param_annotations,
-            return_annotation=return_annotation,
-        )
-        for line in held_method.splitlines():
-            held_lines.append(f"    {line}" if line else "")
+        for spec, resolved in rendered_specs:
+            params = tuple(arg.param_name for arg in spec.captured_args)
+            held_body = spec.held_body if spec.held_body else (ast.Pass(),)
+            held_lines.append("")
+            held_method = _render_method(
+                InstanceDispatchKind(),
+                spec.method_name,
+                params,
+                held_body,
+                is_async=spec.is_async,
+                docstring=None,
+                param_annotations=resolved.param_map,
+                return_annotation=resolved.return_annotation,
+            )
+            for line in held_method.splitlines():
+                held_lines.append(f"    {line}" if line else "")
 
-        del snapshot
         return "\n".join((*base_lines, *absent_lines, *held_lines)) + "\n\n\n", needs_abstractmethod
 
     def edits(
@@ -2334,24 +2631,28 @@ class ThreadedAbsenceProof:
         source_geometry = SourceTextGeometry(
             snapshot.sources_by_file_path[self.source_path]
         )
-        resolved_anns = ResolvedMethodAnnotations.for_push(
-            snapshot,
-            source_module,
-            self.probe_line,
-            self.enclosure,
-            self.function,
-            self.outer_receiver_aliases,
-            self.captured_args,
-            (),
-            propagates_function_return_type=self.site.propagates_function_return_type,
-            is_void_method=self.site.is_void_method,
-            rationale=rationale,
+        rendered_specs = tuple(
+            (
+                spec,
+                ResolvedMethodAnnotations.for_push(
+                    snapshot,
+                    source_module,
+                    spec.probe_line,
+                    spec.enclosure,
+                    spec.function,
+                    spec.outer_receiver_aliases,
+                    spec.captured_args,
+                    (),
+                    propagates_function_return_type=spec.site.propagates_function_return_type,
+                    is_void_method=spec.site.is_void_method,
+                    rationale=rationale,
+                ),
+            )
+            for spec in self.method_specs
         )
         family_block, needs_abstractmethod = self._render_family_classes(
-            snapshot,
             future_ann,
-            resolved_anns.param_map,
-            resolved_anns.return_annotation,
+            rendered_specs,
         )
 
         # Build non-overlapping replacements in `source_path`.
@@ -2376,43 +2677,43 @@ class ThreadedAbsenceProof:
             )
         )
 
-        # Rewrite parameter annotation `X | None` -> `FamilyName` (and `= None` -> `= AbsentFamilyName()`).
-        ann_start, ann_end = source_geometry.required_node_offsets(self.param_annotation)
-        replacements_by_file[self.source_path].append(
-            SourceTextSpanReplacement.from_offsets(
-                start_offset=ann_start,
-                end_offset=ann_end,
-                replacement_source=self.family_name,
-            )
-        )
-        if self.default_expr is not None:
-            def_start, def_end = source_geometry.required_node_offsets(self.default_expr)
+        # Rewrite parameter annotation/default and absence branch for every branching method.
+        for spec in self.method_specs:
+            for ann in spec.param_annotations:
+                ann_start, ann_end = source_geometry.required_node_offsets(ann)
+                replacements_by_file[self.source_path].append(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=ann_start,
+                        end_offset=ann_end,
+                        replacement_source=self.family_name,
+                    )
+                )
+            for default_expr in spec.default_exprs:
+                def_start, def_end = source_geometry.required_node_offsets(default_expr)
+                replacements_by_file[self.source_path].append(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=def_start,
+                        end_offset=def_end,
+                        replacement_source=f"Absent{self.family_name}()",
+                    )
+                )
+            call_args_str = ", ".join(arg.call_expr for arg in spec.captured_args)
+            raw_call = f"{spec.param_name}.{spec.method_name}({call_args_str})"
+            call_expr = f"await {raw_call}" if spec.is_async else raw_call
+            rep_start, rep_end = spec.site.replaced_offsets(source_geometry)
+            line_start = source_geometry.source.rfind("\n", 0, rep_start) + 1
+            line_indent = source_geometry.source[line_start:rep_start]
+            if not line_indent.isspace():
+                line_indent = ""
             replacements_by_file[self.source_path].append(
                 SourceTextSpanReplacement.from_offsets(
-                    start_offset=def_start,
-                    end_offset=def_end,
-                    replacement_source=f"Absent{self.family_name}()",
+                    start_offset=rep_start,
+                    end_offset=rep_end,
+                    replacement_source=spec.site.render_call_replacement(
+                        call_expr, line_indent
+                    ),
                 )
             )
-
-        # Rewrite the absence branch inside `function` into `param.method(...)`.
-        call_args_str = ", ".join(arg.call_expr for arg in self.captured_args)
-        raw_call = f"{self.param_arg.arg}.{self.method_name}({call_args_str})"
-        call_expr = f"await {raw_call}" if self.is_async else raw_call
-        rep_start, rep_end = self.site.replaced_offsets(source_geometry)
-        line_start = source_geometry.source.rfind("\n", 0, rep_start) + 1
-        line_indent = source_geometry.source[line_start:rep_start]
-        if not line_indent.isspace():
-            line_indent = ""
-        replacements_by_file[self.source_path].append(
-            SourceTextSpanReplacement.from_offsets(
-                start_offset=rep_start,
-                end_offset=rep_end,
-                replacement_source=self.site.render_call_replacement(
-                    call_expr, line_indent
-                ),
-            )
-        )
 
         # Rewrite every caller's argument expression and collect cross-module imports.
         needed_caller_imports: dict[tuple[str, str], ModuleImportMutation] = {}
