@@ -12,6 +12,9 @@ from nominal_refactor_advisor.refactors.constant_subtype_answer import (
     DeleteConstantSubtypeAnswerOperation,
     PushConstantSubtypeAnswerOperation,
 )
+from nominal_refactor_advisor.refactors.threaded_absence import (
+    ThreadedAbsenceToFamilyOperation,
+)
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 from relocation_excerpts import (
@@ -50,13 +53,14 @@ def test_every_finding_states_fact_owner_and_prescription(detector):
     assert spec.certification.value == "certified"
     assert detector.restated.fact in spec.why
     assert detector.restated.owner in spec.why
-    if detector is ConstantSubtypeAnswerDetector:
-        assert detector.restated.operations == (
+    expected_operations = {
+        ConstantSubtypeAnswerDetector: (
             PushConstantSubtypeAnswerOperation,
             DeleteConstantSubtypeAnswerOperation,
-        )
-    else:
-        assert not detector.restated.operations
+        ),
+        ThreadedAbsenceDetector: (ThreadedAbsenceToFamilyOperation,),
+    }
+    assert detector.restated.operations == expected_operations.get(detector, ())
 
 
 def test_relocation_patterns_continue_the_stable_sequence():
