@@ -3114,6 +3114,235 @@ def test_widened_in_membership_issubclass_type_impure_subject_elif_void_and_bool
     assert ns["filter_special_tags"]([SubB("ok")], {"ok"}, None) == []  # type: ignore[operator]
 
 
+def test_own_type_test_widened_shapes_loop_returns_and_same_line_disambiguation(
+    tmp_path: Path,
+) -> None:
+    """Exercise same-subject `or`, `with`-terminated tail, same-line multi-test
+    disambiguation, enclosing-block trivial fallback return, and proved loop
+    early-return sites (both `bool` and proved non-`None`) end-to-end."""
+
+    src = """\
+from __future__ import annotations
+
+from contextlib import nullcontext
+
+
+class Item:
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+
+
+class SubA(Item):
+    def maybe_none(self) -> str | None:
+        return None if self.tag == "empty" else self.tag
+
+
+class SubB(Item):
+    pass
+
+
+class SubC(Item):
+    pass
+
+
+class Inner:
+    pass
+
+
+class InnerHit(Inner):
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+
+class Box:
+    pass
+
+
+class FullBox(Box):
+    def __init__(self, inner: Inner) -> None:
+        self.inner = inner
+
+
+def zone_weight(zone: type[Item]) -> float:
+    if zone is SubA or zone is SubB:
+        return 0.0
+    return 1.0
+
+
+def with_tail_tag(item: Item, skip: bool) -> str | None:
+    if skip or not isinstance(item, SubA):
+        return None
+    with nullcontext():
+        return item.tag
+
+
+def nested_fallback_tag(item: Item, enabled: bool) -> str | None:
+    if enabled:
+        if isinstance(item, SubA):
+            return item.tag
+    return None
+
+
+def same_line_inner_hit(box: Box) -> int | None:
+    if isinstance(box, FullBox) and isinstance(box.inner, InnerHit):
+        return box.inner.value
+    return None
+
+
+def has_winner(items: list[Item]) -> bool:
+    for item in items:
+        if not isinstance(item, SubA):
+            continue
+        if item.tag == "skip":
+            continue
+        if item.tag == "win":
+            return True
+    return False
+
+
+def first_hit_tuple(items: list[Item]) -> tuple[str, ...]:
+    for item in items:
+        if not isinstance(item, SubA):
+            continue
+        if item.tag == "hit":
+            return (item.tag,)
+        if item.tag == "empty_hit":
+            return ()
+    return ("none",)
+
+
+def unsafe_maybe_none_loop(items: list[Item]) -> str | None:
+    for item in items:
+        if isinstance(item, SubA):
+            return item.maybe_none()
+    return "fallback"
+"""
+    _write(tmp_path, "pkg/widened.py", src)
+    _write(tmp_path, "pkg/__init__.py", "")
+
+    modules = parse_python_modules(tmp_path)
+    with ScanCache.scope():
+        findings = OwnTypeTestDetector().detect(modules, DetectorConfig())
+    snap = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    # Verify the potentially-None loop return stays soundly unpushable.
+    unsafe_findings = [
+        f
+        for f in findings
+        if f.evidence and f.evidence[0].symbol == "unsafe_maybe_none_loop"
+    ]
+    assert len(unsafe_findings) == 1
+    unsafe_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        unsafe_findings[0], snap
+    )
+    assert not hasattr(unsafe_eval, "executable_recipe") or unsafe_eval.executable_recipe is None
+
+    # Apply picks for the 5 embedded sites + automatic whole-function `zone_weight`.
+    # For `same_line_inner_hit`, target the SECOND test (`InnerHit` on `box.inner`).
+    target_findings = [
+        f
+        for f in findings
+        if f.evidence
+        and (
+            f.evidence[0].symbol
+            in (
+                "zone_weight",
+                "with_tail_tag",
+                "nested_fallback_tag",
+                "has_winner",
+                "first_hit_tuple",
+            )
+            or (
+                f.evidence[0].symbol == "same_line_inner_hit"
+                and any(
+                    sym.endswith(".InnerHit")
+                    for sym in getattr(f.metrics, "tested_symbols", ())
+                )
+            )
+        )
+    ]
+    assert len(target_findings) == 6
+
+    picks = (
+        OwnerPick(
+            owner="with_tail_tag",
+            name="tag_in_context",
+            judgement="Return the item tag inside the context.",
+        ),
+        OwnerPick(
+            owner="nested_fallback_tag",
+            name="nested_tag",
+            judgement="Return the item tag when enabled.",
+        ),
+        OwnerPick(
+            owner="same_line_inner_hit",
+            name="inner_hit_value",
+            judgement="Return the inner hit value when present.",
+        ),
+        OwnerPick(
+            owner="has_winner",
+            name="is_winner_item",
+            judgement="Whether this item satisfies the win condition.",
+        ),
+        OwnerPick(
+            owner="first_hit_tuple",
+            name="hit_tuple_or_none",
+            judgement="Return the matched tag tuple or None to continue.",
+        ),
+    )
+    picked, report = apply_owner_picks(target_findings, picks)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 6, plan.report
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "widened.py").read_text()
+    assert "return zone.zone_weight()" in after
+    assert "return item.tag_in_context()" in after
+    assert "return item.nested_tag()" in after
+    assert "return box.inner.inner_hit_value()" in after
+    assert "if item.is_winner_item():" in after
+    assert "if (_found := item.hit_tuple_or_none()) is not None:" in after
+
+    before_ns: dict[str, object] = {}
+    after_ns: dict[str, object] = {}
+    exec(compile(src, str(tmp_path / "pkg/widened.py"), "exec"), before_ns)
+    exec(compile(after, str(tmp_path / "pkg/widened.py"), "exec"), after_ns)
+
+    def probe(ns: dict[str, object]) -> tuple[object, ...]:
+        SubA = ns["SubA"]
+        SubB = ns["SubB"]
+        SubC = ns["SubC"]
+        Inner = ns["Inner"]
+        InnerHit = ns["InnerHit"]
+        Box = ns["Box"]
+        FullBox = ns["FullBox"]
+        return (
+            ns["zone_weight"](SubA),  # type: ignore[operator]
+            ns["zone_weight"](SubB),  # type: ignore[operator]
+            ns["zone_weight"](SubC),  # type: ignore[operator]
+            ns["with_tail_tag"](SubA("ok"), False),  # type: ignore[operator]
+            ns["with_tail_tag"](SubA("ok"), True),  # type: ignore[operator]
+            ns["with_tail_tag"](SubB("ok"), False),  # type: ignore[operator]
+            ns["nested_fallback_tag"](SubA("ok"), True),  # type: ignore[operator]
+            ns["nested_fallback_tag"](SubA("ok"), False),  # type: ignore[operator]
+            ns["nested_fallback_tag"](SubB("ok"), True),  # type: ignore[operator]
+            ns["same_line_inner_hit"](FullBox(InnerHit(7))),  # type: ignore[operator]
+            ns["same_line_inner_hit"](FullBox(Inner())),  # type: ignore[operator]
+            ns["same_line_inner_hit"](Box()),  # type: ignore[operator]
+            ns["has_winner"]([SubB("win"), SubA("skip"), SubA("win")]),  # type: ignore[operator]
+            ns["has_winner"]([SubB("win"), SubA("skip")]),  # type: ignore[operator]
+            ns["first_hit_tuple"]([SubB("hit"), SubA("other"), SubA("hit")]),  # type: ignore[operator]
+            ns["first_hit_tuple"]([SubB("hit"), SubA("empty_hit"), SubA("hit")]),  # type: ignore[operator]
+            ns["first_hit_tuple"]([SubB("hit"), SubA("other")]),  # type: ignore[operator]
+        )
+
+    assert probe(after_ns) == probe(before_ns)
+
+
+
 
 
 
