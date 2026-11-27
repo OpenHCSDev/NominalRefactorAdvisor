@@ -193,6 +193,10 @@ class OptionalAstFieldDecoderConcept(ClassFamilyAuthorityConcept):
     search_nice = 5
 
 
+class ThreadedAbsenceFamilyConcept(ClassFamilyAuthorityConcept):
+    """Replace a threaded optional parameter with a held/absent nominal family."""
+
+
 class ForeignAdapterBindChainConcept(ClassFamilyAuthorityConcept):
     """Fold per-class bindings of foreign nodes into one declared adapter family."""
 

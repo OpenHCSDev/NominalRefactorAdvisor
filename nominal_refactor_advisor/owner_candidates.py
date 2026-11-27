@@ -425,7 +425,15 @@ class OwnerPick(SemanticRecord):
             return (OwnerPickOutcome(finding.stable_id, 'rejected', f'`{self.owner}` is not the {owner_label} `{expected_owner}` for this finding'), None)
         if not self.name or not self.judgement:
             return (OwnerPickOutcome(finding.stable_id, 'rejected', 'a new base needs its class name and one-line judgement'), None)
-        return (OwnerPickOutcome(finding.stable_id, 'picked', f'base `{self.name}`'), DeclaredBasePick(self.name, self.judgement))
+        return (
+            OwnerPickOutcome(finding.stable_id, 'picked', f'base `{self.name}`'),
+            DeclaredBasePick(
+                self.name,
+                self.judgement,
+                hoisted_name=self.hoisted_name,
+                hoisted_judgement=self.hoisted_judgement,
+            ),
+        )
 
 
 class OwnerPickResolution(ABC):

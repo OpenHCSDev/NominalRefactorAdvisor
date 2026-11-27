@@ -777,6 +777,8 @@ class DeclaredBasePick(SemanticRecord):
 
     name: str
     judgement: str
+    hoisted_name: str | None = None
+    hoisted_judgement: str | None = None
 
 
 @dataclass(frozen=True)
@@ -884,6 +886,30 @@ class ForeignAbsenceProbeMetrics(DeclaredBasePickMetrics):
         if lines:
             return f"lines:{lines}"
         return self.subject_source or None
+
+
+@dataclass(frozen=True)
+class ThreadedAbsenceMetrics(DeclaredBasePickMetrics):
+    """One threaded optional parameter and its None-probe lines, ready for a family name pick."""
+
+    function_symbol: str
+    parameter_name: str
+    probe_lines: tuple[int, ...]
+
+    def base_pick_owner_name(
+        self, authority_evidence: SourceLocation | None
+    ) -> str | None:
+        del authority_evidence
+        return self.function_symbol
+
+    def base_pick_owner_label(self) -> str:
+        return "function"
+
+    def action_key_child_subject(self) -> str | None:
+        lines = ",".join(str(line) for line in self.probe_lines)
+        if lines:
+            return f"{self.parameter_name}@{lines}"
+        return self.parameter_name
 
 
 @dataclass(frozen=True)

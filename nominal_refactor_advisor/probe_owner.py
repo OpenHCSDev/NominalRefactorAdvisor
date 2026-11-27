@@ -13,6 +13,7 @@ says which step failed.
 from __future__ import annotations
 
 import ast
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -176,6 +177,25 @@ class ReceiverType(ABC):
         """Record this receiver's sole inferred class symbol when present."""
         pass
 
+    def is_provably_non_none(self) -> bool:
+        """Whether the type checker proved this receiver cannot be `None` or `Any`/`Unknown`."""
+        return False
+
+    def reaches_method_owner(
+        self,
+        reaching_symbols: frozenset[str],
+        *,
+        file_path: str,
+        line: int,
+        method_name: str,
+    ) -> bool:
+        """Whether this receiver can bind to a method on `reaching_symbols`, or raise `NeedsInput` if unproved."""
+        del reaching_symbols
+        raise NeedsInput(
+            f"{file_path}:{line} accesses `.{method_name}` on an unproved receiver",
+            NeededInput.PROOF,
+        )
+
 
 @dataclass(frozen=True)
 class InferredReceiverType(ReceiverType):
@@ -229,6 +249,29 @@ class InferredReceiverType(ReceiverType):
     def record_single_inferred_class(self, candidate_symbols):
         if len(self.classes) == 1:
             candidate_symbols.add(self.classes[0])
+
+    def is_provably_non_none(self) -> bool:
+        return bool(self.spelled) and not re.search(
+            r"\b(?:None|Any|Unknown)\b", self.spelled
+        )
+
+    def reaches_method_owner(
+        self,
+        reaching_symbols: frozenset[str],
+        *,
+        file_path: str,
+        line: int,
+        method_name: str,
+    ) -> bool:
+        candidates = (*self.classes, *self.families)
+        if not candidates and re.search(
+            r"\b(?:Any|Unknown|object)\b", self.spelled
+        ):
+            raise NeedsInput(
+                f"{file_path}:{line} accesses `.{method_name}` on `{self.spelled}`",
+                NeededInput.PROOF,
+            )
+        return any(sym in reaching_symbols for sym in candidates)
 
 
 @dataclass(frozen=True)

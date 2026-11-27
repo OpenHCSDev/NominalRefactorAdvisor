@@ -30,12 +30,17 @@ from nominal_refactor_advisor.models import (
     FindingMetrics,
     RefactorFinding,
     SourceLocation,
+    ThreadedAbsenceMetrics,
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.constant_subtype_answer import (
     ConstantSubtypeAnswerFindingRecipeSynthesizer,
     DeleteConstantSubtypeAnswerOperation,
     PushConstantSubtypeAnswerOperation,
+)
+from nominal_refactor_advisor.refactors.threaded_absence import (
+    ThreadedAbsenceFindingRecipeSynthesizer,
+    ThreadedAbsenceToFamilyOperation,
 )
 from nominal_refactor_advisor.relocation_observations import (
     BranchRead,
@@ -574,7 +579,10 @@ class ZeroOneTupleDetector(SingleFamilyRestatedFactDetector):
         return f"`{sites[0].symbol}` encodes absence as a 0/1 tuple: it returns `()` on one path and `(x,)` on another."
 
 
-class ThreadedAbsenceDetector(JoinedRestatedFactDetector[frozenset[str], RestatingSite]):
+class ThreadedAbsenceDetector(
+    JoinedRestatedFactDetector[frozenset[str], RestatingSite],
+    ThreadedAbsenceFindingRecipeSynthesizer,
+):
     """An undefaulted `X | None` parameter compared with None in its own body, or
     the `None` default its private callees are passed."""
 
@@ -584,6 +592,7 @@ class ThreadedAbsenceDetector(JoinedRestatedFactDetector[frozenset[str], Restati
         fact="The caller already knows whether the value is there, yet passes it as `X | None` and the callee asks again, so absence is restated at every function the value is threaded through.",
         owner="The owner is the value's type: a holding family (a held member and an absent member) that the caller builds once.",
         factoring="Pass a member of a held/absent family instead of `X | None`; the callee calls one method on it whose overrides hold the two branch bodies, and the parameter's `is None` probes are deleted.",
+        operations=(ThreadedAbsenceToFamilyOperation,),
     )
     finding_spec = restated.spec(
         PatternId.THREADED_ABSENCE,
@@ -598,6 +607,19 @@ class ThreadedAbsenceDetector(JoinedRestatedFactDetector[frozenset[str], Restati
         """A probe whose None branch answers with a family class is that family's decoder."""
 
         return site.detail[1] not in context
+
+    def finding_context(
+        self, sites: Sequence[RestatingSite], context: frozenset[str]
+    ) -> dict[str, object]:
+        del context
+        primary = sites[0]
+        return {
+            "metrics": ThreadedAbsenceMetrics(
+                function_symbol=primary.symbol,
+                parameter_name=primary.group,
+                probe_lines=tuple(sorted({site.lineno for site in sites})),
+            )
+        }
 
     def describe(self, sites: Sequence[RestatingSite], context: frozenset[str]) -> str:
         probes = _listed(f"line {site.lineno} `{site.group} {site.detail[0]}`" for site in sites)
