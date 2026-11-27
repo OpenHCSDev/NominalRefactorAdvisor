@@ -5504,7 +5504,8 @@ class TargetBaseSelection(ABC):
         self,
         snapshot: CodemodSourceSnapshot,
         subject_roots: tuple[tuple[str, ...], ...],
-        tested_symbols: Sequence[str],
+        arms: Sequence[TypeTestArm],
+        resolved_arm_symbols: Sequence[tuple[str, ...]],
         spelled_subject: str,
     ) -> tuple[ResolvedClassTarget, str]:
         raise NotImplementedError
@@ -5543,17 +5544,20 @@ class ExplicitBaseSelection(TargetBaseSelection):
         self,
         snapshot: CodemodSourceSnapshot,
         subject_roots: tuple[tuple[str, ...], ...],
-        tested_symbols: Sequence[str],
+        arms: Sequence[TypeTestArm],
+        resolved_arm_symbols: Sequence[tuple[str, ...]],
         spelled_subject: str,
     ) -> tuple[ResolvedClassTarget, str]:
-        del subject_roots, tested_symbols, spelled_subject
+        del subject_roots, arms, resolved_arm_symbols, spelled_subject
         resolved = self.resolver_class(snapshot)
         return resolved, resolved.required_symbol(snapshot)
 
 
 @dataclass(frozen=True)
 class SharedAncestorBaseSelection(TargetBaseSelection):
-    """Nearest scanned ancestor shared by the subject's family and every tested class."""
+    """Nearest scanned ancestor shared by the subject's family and every tested class,
+    or the unique default base of a closed scanned union whose other branches are
+    completely covered by the tested arms."""
 
     def resolver_class(self, snapshot: CodemodSourceSnapshot) -> ResolvedClassTarget:
         classes_by_symbol = snapshot.required_class_family_index.classes_by_symbol
@@ -5570,9 +5574,13 @@ class SharedAncestorBaseSelection(TargetBaseSelection):
         self,
         snapshot: CodemodSourceSnapshot,
         subject_roots: tuple[tuple[str, ...], ...],
-        tested_symbols: Sequence[str],
+        arms: Sequence[TypeTestArm],
+        resolved_arm_symbols: Sequence[tuple[str, ...]],
         spelled_subject: str,
     ) -> tuple[ResolvedClassTarget, str]:
+        tested_symbols = tuple(
+            symbol for arm_syms in resolved_arm_symbols for symbol in arm_syms
+        )
         shared_base = _nearest_shared_ancestor(
             snapshot, (*subject_roots, *((symbol,) for symbol in tested_symbols))
         )
@@ -5594,6 +5602,51 @@ class SharedAncestorBaseSelection(TargetBaseSelection):
                     for tested in tested_symbols
                 ):
                     shared_base = subject_base
+        if shared_base is None and len(subject_roots) >= 2 and tested_symbols:
+            # Closed multi-root scanned union dispatch: when every branch outside the
+            # default arm is completely covered by tested arms and all uncovered
+            # branches share one scanned base class, place the default method on that
+            # base and each tested arm on its tested class (zero duplicated defaults).
+            index = snapshot.required_class_family_index
+            branch_families = [
+                frozenset.intersection(
+                    *(
+                        frozenset((symbol, *index.descendant_symbols(symbol)))
+                        for symbol in branch
+                    )
+                )
+                for branch in subject_roots
+            ]
+            subject_family = frozenset().union(*branch_families)
+            if all(
+                any(
+                    tested in (member, *index.ancestor_symbols(member))
+                    for member in subject_family
+                )
+                for tested in tested_symbols
+            ):
+                uncovered_roots = [
+                    branch
+                    for branch, members in zip(
+                        subject_roots, branch_families, strict=True
+                    )
+                    if not all(
+                        any(
+                            member in arm_syms
+                            if arm.exact
+                            else any(
+                                tested in (member, *index.ancestor_symbols(member))
+                                for tested in arm_syms
+                            )
+                            for arm, arm_syms in zip(
+                                arms, resolved_arm_symbols, strict=True
+                            )
+                        )
+                        for member in members
+                    )
+                ]
+                if uncovered_roots:
+                    shared_base = _nearest_shared_ancestor(snapshot, uncovered_roots)
         if shared_base is None:
             raise NeedsInput(
                 f"`{spelled_subject}` and its tested classes share no scanned base class",
@@ -6791,7 +6844,11 @@ class TypeTestDispatchProof:
         )
 
         base, base_symbol = base_selection.select_base(
-            snapshot, subject_roots, all_tested_symbols, ast.unparse(site.subject)
+            snapshot,
+            subject_roots,
+            site.arms,
+            resolved_arm_symbols,
+            ast.unparse(site.subject),
         )
 
         # When the sole non-exact arm tests `base_symbol` itself AND already embeds

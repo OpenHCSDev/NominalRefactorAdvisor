@@ -3438,6 +3438,153 @@ def test_reaching_bound_once_pushes_first_sequential_for_loop_and_refuses_second
     assert remaining == {"second_loop_refused"}
 
 
+def test_closed_multi_root_scanned_union_pushes_whole_and_embedded_and_guards_uncovered(
+    tmp_path: Path,
+) -> None:
+    src = (
+        "class Message:\n"
+        "    def __init__(self, text: str) -> None:\n"
+        "        self.text = text\n\n\n"
+        "class Assistant(Message):\n"
+        "    pass\n\n\n"
+        "class Barrier:\n"
+        "    def __init__(self, reason: str) -> None:\n"
+        "        self.reason = reason\n\n\n"
+        "class SubBarrier(Barrier):\n"
+        "    pass\n\n\n"
+        "class Common:\n"
+        "    def __init__(self, value: int) -> None:\n"
+        "        self.value = value\n\n\n"
+        "class BranchA(Common):\n"
+        "    pass\n\n\n"
+        "class BranchB(Common):\n"
+        "    pass\n\n\n"
+        "class Sentinel:\n"
+        "    pass\n\n\n"
+        "class Ghost:\n"
+        "    pass\n\n\n"
+        "Entry = Message | Barrier\n\n\n"
+        "def format_entry(entry: Entry, prefix: str) -> str:\n"
+        "    if isinstance(entry, Barrier):\n"
+        "        return f'{prefix}:barrier:{entry.reason}'\n"
+        "    return f'{prefix}:msg:{entry.text}'\n\n\n"
+        "def unwrap_or_zero(item: BranchA | BranchB | Sentinel, scale: int) -> int:\n"
+        "    if isinstance(item, Sentinel):\n"
+        "        return 0\n"
+        "    return item.value * scale\n\n\n"
+        "def embedded_entry(entry: Entry, flag: bool) -> str:\n"
+        "    if not flag:\n"
+        "        return 'off'\n"
+        "    if isinstance(entry, Barrier):\n"
+        "        return f'B:{entry.reason}'\n"
+        "    return f'M:{entry.text}'\n\n\n"
+        "def two_uncovered_roots_refused(entry: Entry) -> str:\n"
+        "    if isinstance(entry, Assistant):\n"
+        "        return 'assistant'\n"
+        "    return 'other'\n\n\n"
+        "def exact_leaves_subclass_uncovered_refused(entry: Entry) -> str:\n"
+        "    if type(entry) is Barrier:\n"
+        "        return 'exact-barrier'\n"
+        "    return 'other'\n\n\n"
+        "def unrelated_tested_class_refused(entry: Entry) -> str:\n"
+        "    if isinstance(entry, Ghost):\n"
+        "        return 'ghost'\n"
+        "    return 'other'\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/unions.py": src})
+    findings = _findings(tmp_path)
+    by_fn = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_fn) == {
+        "format_entry",
+        "unwrap_or_zero",
+        "embedded_entry",
+        "two_uncovered_roots_refused",
+        "exact_leaves_subclass_uncovered_refused",
+        "unrelated_tested_class_refused",
+    }
+
+    snap = _snapshot(tmp_path)
+    detector = OwnTypeTestDetector()
+
+    # Negative soundness checks: all 3 stay refused with no duplicated default method.
+    for refused_name in (
+        "two_uncovered_roots_refused",
+        "exact_leaves_subclass_uncovered_refused",
+        "unrelated_tested_class_refused",
+    ):
+        ev = detector.evaluate_recipe_for_finding(by_fn[refused_name], snap)
+        assert NeededInput.SOURCE_CHANGE in ev.needs
+        assert "share no scanned base class" in ev.rejection_reason
+
+    # Whole-function dispatches are directly executable; embedded asks for OWNER_PICK on Message.
+    assert detector.evaluate_recipe_for_finding(by_fn["format_entry"], snap).rejection_reason == ""
+    assert detector.evaluate_recipe_for_finding(by_fn["unwrap_or_zero"], snap).rejection_reason == ""
+    emb_ev = detector.evaluate_recipe_for_finding(by_fn["embedded_entry"], snap)
+    assert NeededInput.OWNER_PICK in emb_ev.needs
+    assert "`Message`" in emb_ev.rejection_reason
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_fn["embedded_entry"].stable_id,
+                owner="embedded_entry",
+                because="Entry members own their formatted tag.",
+                name="entry_tag",
+                judgement="Format this entry's short tag.",
+            ),
+        ),
+    )
+    targets = (by_fn["format_entry"], by_fn["unwrap_or_zero"], by_fn["embedded_entry"])
+    picked, report = picks.applied(targets)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 3, plan.report
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after = (tmp_path / "pkg/unions.py").read_text(encoding="utf-8")
+    assert "return entry.format_entry(prefix)" in after
+    assert "return item.unwrap_or_zero(scale)" in after
+    assert "return entry.entry_tag()" in after
+
+    before_ns: dict[str, object] = {}
+    after_ns: dict[str, object] = {}
+    exec(compile(src, str(tmp_path / "pkg/unions.py"), "exec"), before_ns)
+    exec(compile(after, str(tmp_path / "pkg/unions.py"), "exec"), after_ns)
+
+    def probe(ns: dict[str, object]) -> tuple[object, ...]:
+        Message = ns["Message"]
+        Assistant = ns["Assistant"]
+        Barrier = ns["Barrier"]
+        SubBarrier = ns["SubBarrier"]
+        BranchA = ns["BranchA"]
+        BranchB = ns["BranchB"]
+        Sentinel = ns["Sentinel"]
+        return (
+            ns["format_entry"](Message("hi"), "p"),  # type: ignore[operator]
+            ns["format_entry"](Assistant("yo"), "p"),  # type: ignore[operator]
+            ns["format_entry"](Barrier("cut"), "p"),  # type: ignore[operator]
+            ns["format_entry"](SubBarrier("sub"), "p"),  # type: ignore[operator]
+            ns["unwrap_or_zero"](BranchA(3), 4),  # type: ignore[operator]
+            ns["unwrap_or_zero"](BranchB(5), 4),  # type: ignore[operator]
+            ns["unwrap_or_zero"](Sentinel(), 4),  # type: ignore[operator]
+            ns["embedded_entry"](Message("hi"), False),  # type: ignore[operator]
+            ns["embedded_entry"](Message("hi"), True),  # type: ignore[operator]
+            ns["embedded_entry"](Barrier("cut"), True),  # type: ignore[operator]
+        )
+
+    assert probe(after_ns) == probe(before_ns)
+    remaining = {f.primary_evidence.symbol for f in _findings(tmp_path)}
+    assert remaining == {
+        "two_uncovered_roots_refused",
+        "exact_leaves_subclass_uncovered_refused",
+        "unrelated_tested_class_refused",
+    }
+
+
 
 
 
