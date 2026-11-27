@@ -542,7 +542,45 @@ def _extract_compound_answer_if(
                     ),
                     (matched.tested_value,),
                 )
-            if stmt.orelse or _has_any_return(stmt.body):
+            if stmt.orelse:
+                if (
+                    _is_pure_subject(matched.subject)
+                    and (root_name := _subject_root_name(matched.subject)) is not None
+                    and all(
+                        _is_pure_independent_guard(val, root_name)
+                        for val in prefix_values
+                    )
+                ):
+                    other_values = [*prefix_values, *suffix_values]
+                    other_expr: ast.expr = (
+                        other_values[0]
+                        if len(other_values) == 1
+                        else ast.BoolOp(op=ast.Or(), values=other_values)
+                    )
+                    cond_body: tuple[ast.stmt, ...] = (
+                        ast.If(
+                            test=other_expr,
+                            body=list(stmt.body),
+                            orelse=list(stmt.orelse),
+                        ),
+                    )
+                    arm_body = cond_body if matched.negated else tuple(stmt.body)
+                    default_body = tuple(stmt.body) if matched.negated else cond_body
+                    return _build_answer_statement_site(
+                        matched,
+                        kind,
+                        (_dummy_arm(arm_body),),
+                        (matched.tested_value,),
+                        default_body,
+                        (stmt,),
+                        container is whole_fn_body and len(whole_fn_body) == 1,
+                        (matched.test_node,),
+                        container=container,
+                        index=index,
+                        whole_fn_body=whole_fn_body,
+                    )
+                return None
+            if _has_any_return(stmt.body):
                 return None
         if isinstance(stmt.test.op, ast.And):
             if stmt.orelse:
@@ -578,6 +616,42 @@ def _extract_compound_answer_if(
                             fallback_return=fallback,
                         ),
                         (matched.tested_value,),
+                    )
+                if (
+                    _is_pure_subject(matched.subject)
+                    and (root_name := _subject_root_name(matched.subject)) is not None
+                    and all(
+                        _is_pure_independent_guard(val, root_name)
+                        for val in prefix_values
+                    )
+                ):
+                    other_values = [*prefix_values, *suffix_values]
+                    other_expr: ast.expr = (
+                        other_values[0]
+                        if len(other_values) == 1
+                        else ast.BoolOp(op=ast.And(), values=other_values)
+                    )
+                    cond_body: tuple[ast.stmt, ...] = (
+                        ast.If(
+                            test=other_expr,
+                            body=list(stmt.body),
+                            orelse=list(stmt.orelse),
+                        ),
+                    )
+                    arm_body = tuple(stmt.orelse) if matched.negated else cond_body
+                    default_body = cond_body if matched.negated else tuple(stmt.orelse)
+                    return _build_answer_statement_site(
+                        matched,
+                        kind,
+                        (_dummy_arm(arm_body),),
+                        (matched.tested_value,),
+                        default_body,
+                        (stmt,),
+                        container is whole_fn_body and len(whole_fn_body) == 1,
+                        (matched.test_node,),
+                        container=container,
+                        index=index,
+                        whole_fn_body=whole_fn_body,
                     )
                 return None
             tail = container[index + 1 :]

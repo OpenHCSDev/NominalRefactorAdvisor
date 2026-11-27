@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import (
     PythonSourcePathPolicy,
     parse_python_modules,
@@ -1540,3 +1542,90 @@ def test_assigning_absence_branch_sites_push_with_runtime_parity(
 
 
 
+
+
+def test_pushing_call_and_subscript_subjects_with_single_eval_guard(tmp_path: Path):
+    """Foreign absence branches on single-occurrence `Call` subjects and pure
+    `Subscript` subjects push cleanly onto the owner class, while repeated `Call`
+    subjects stay refused so side effects are never collapsed."""
+
+    _write(
+        tmp_path,
+        {
+            "refs/__init__.py": "",
+            "refs/probe.py": (
+                "from dataclasses import dataclass\n\n"
+                "CALLS: list[str] = []\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Ref:\n"
+                "    name: str | None\n\n"
+                "    @classmethod\n"
+                "    def decoded(cls, raw: str) -> 'Ref':\n"
+                "        CALLS.append(raw)\n"
+                "        return cls(name=raw if raw else None)\n\n\n"
+                "def normalize_raw(raw: str) -> str:\n"
+                "    if Ref.decoded(raw).name is None:\n"
+                "        return 'missing'\n"
+                "    return raw.upper()\n\n\n"
+                "def require_single_name(items: tuple[Ref, ...]) -> str:\n"
+                "    if len(items) != 1 or items[0].name is None:\n"
+                "        raise ValueError('bad')\n"
+                "    return items[0].name.upper()\n\n\n"
+                "def repeated_call_probe(raw: str) -> str:\n"
+                "    if Ref.decoded(raw).name is None:\n"
+                "        return 'missing'\n"
+                "    return Ref.decoded(raw).name.upper()\n"
+            ),
+        },
+    )
+
+    _modules, snap, findings = _scan(tmp_path)
+    by_sym = {f.evidence[0].symbol: f for f in findings}
+    detector = ForeignAbsenceProbeDetector()
+
+    # Repeated `Call` subject must stay refused so two calls are not merged into one.
+    rep_ev = detector.evaluate_recipe_for_finding(by_sym["repeated_call_probe"], snap)
+    assert rep_ev.recipe is None
+    assert "not a pushable branch shape" in rep_ev.reason
+
+    # Single-occurrence `Call` (whole function -> direct EXEC) and pure `Subscript` (prefix-guarded -> OWNER_PICK).
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["require_single_name"].stable_id,
+                owner="require_single_name",
+                because="Ref owns its required uppercased name",
+                name="required_upper_name",
+                judgement="Raise when name is absent, else return uppercased name.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(
+        (by_sym["normalize_raw"], by_sym["require_single_name"])
+    )
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after = (tmp_path / "refs" / "probe.py").read_text()
+    assert "return Ref.decoded(raw).normalize_raw(raw)" in after
+    assert "return items[0].required_upper_name()" in after
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "refs/probe.py"), "exec"), ns)
+    calls: list[str] = ns["CALLS"]  # type: ignore[assignment]
+    assert ns["normalize_raw"]("") == "missing"  # type: ignore[operator]
+    assert ns["normalize_raw"]("abc") == "ABC"  # type: ignore[operator]
+    assert calls == ["", "abc"]
+
+    Ref = ns["Ref"]
+    assert ns["require_single_name"]((Ref("hi"),)) == "HI"  # type: ignore[operator]
+    with pytest.raises(ValueError, match="bad"):
+        ns["require_single_name"](())  # type: ignore[operator]
+    with pytest.raises(ValueError, match="bad"):
+        ns["require_single_name"]((Ref(None),))  # type: ignore[operator]

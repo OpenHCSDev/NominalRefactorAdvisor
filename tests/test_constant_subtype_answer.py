@@ -907,3 +907,105 @@ def test_pushes_unrelated_elif_partial_return_and_prefix_guarded_returning(
     assert _findings(tmp_path) == []
 
 
+def test_pushing_cross_module_external_import_and_prefix_guarded_else_assign(
+    tmp_path: Path,
+):
+    """Pushing a branch across modules forwards top-level external/stdlib imports
+    (e.g. `import math`), and `if PREFIX and subject.flag: target = ... else: target = ...`
+    with a pure independent `PREFIX` upgrades to an assigning polymorphic call."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/policy.py": (
+                "from typing import ClassVar\n\n\n"
+                "class Policy:\n"
+                "    is_active: ClassVar[bool] = False\n\n\n"
+                "class ActivePolicy(Policy):\n"
+                "    is_active: ClassVar[bool] = True\n\n\n"
+                "class TwinRun:\n"
+                "    needs_taps: ClassVar[bool] = False\n\n\n"
+                "class EnabledTwinRun(TwinRun):\n"
+                "    needs_taps: ClassVar[bool] = True\n"
+            ),
+            "pkg/runner.py": (
+                "import math\n\n"
+                "from pkg.policy import Policy, TwinRun\n\n\n"
+                "def score_policy(policy: Policy, value: float) -> int:\n"
+                "    if policy.is_active:\n"
+                "        return math.floor(value * 10)\n"
+                "    return 0\n\n\n"
+                "def accumulate_loss(\n"
+                "    twin_ids: tuple[int, ...] | None, run: TwinRun, base: int\n"
+                ") -> int:\n"
+                "    total = base\n"
+                "    if twin_ids is not None and run.needs_taps:\n"
+                "        total = total + len(twin_ids) * 10\n"
+                "    else:\n"
+                "        total = total + 1\n"
+                "    return total\n"
+            ),
+        },
+    )
+
+    for member_name, consumer, method_name in (
+        ("is_active", "score_policy", "score_value"),
+        ("needs_taps", "accumulate_loss", "add_twin_loss"),
+    ):
+        findings = _findings(tmp_path)
+        target = next(f for f in findings if f.metrics.member_name == member_name)
+        ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            target, _snapshot(tmp_path)
+        )
+        if ev.recipe is None:
+            assert NeededInput.OWNER_PICK in ev.needs, (member_name, ev.reason)
+            picks = OwnerPicks(
+                "picks.json",
+                "",
+                (
+                    OwnerPick(
+                        finding=target.stable_id,
+                        owner=consumer,
+                        because="family owns branch behavior",
+                        name=method_name,
+                        judgement="Push constant answer branch onto the family.",
+                    ),
+                ),
+            )
+            picked, _ = picks.applied((target,))
+            ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+                picked[0], _snapshot(tmp_path)
+            )
+        _apply(tmp_path, ev.executable_recipe)
+
+    policy_after = (tmp_path / "pkg" / "policy.py").read_text()
+    runner_after = (tmp_path / "pkg" / "runner.py").read_text()
+    assert "import math" in policy_after
+    assert "is_active" not in policy_after
+    assert "needs_taps" not in policy_after
+    assert "total = run.add_twin_loss(" in runner_after
+
+    policy_ns: dict[str, object] = {}
+    exec(policy_after, policy_ns)
+    runner_ns: dict[str, object] = {
+        "Policy": policy_ns["Policy"],
+        "TwinRun": policy_ns["TwinRun"],
+    }
+    runner_exec = "\n".join(
+        line
+        for line in runner_after.splitlines()
+        if not line.startswith("from pkg.policy import")
+    )
+    exec(runner_exec, runner_ns)
+
+    assert runner_ns["score_policy"](policy_ns["Policy"](), 3.7) == 0  # type: ignore[operator]
+    assert runner_ns["score_policy"](policy_ns["ActivePolicy"](), 3.7) == 37  # type: ignore[operator]
+    assert runner_ns["accumulate_loss"](None, policy_ns["TwinRun"](), 5) == 6  # type: ignore[operator]
+    assert runner_ns["accumulate_loss"]((1, 2), policy_ns["TwinRun"](), 5) == 6  # type: ignore[operator]
+    assert runner_ns["accumulate_loss"](None, policy_ns["EnabledTwinRun"](), 5) == 6  # type: ignore[operator]
+    assert runner_ns["accumulate_loss"]((1, 2), policy_ns["EnabledTwinRun"](), 5) == 25  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+
