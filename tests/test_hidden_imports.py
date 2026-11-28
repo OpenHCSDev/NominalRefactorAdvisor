@@ -481,11 +481,11 @@ def test_declared_forbidden_import_edges_block_direct_and_transitive_promotion(
     for refusal in by_mod.values():
         assert isinstance(refusal, CrossesForbiddenImportEdge)
         assert NeededInput.SOURCE_CHANGE in refusal.need.needs
-    assert by_mod[("pkg.client.details", 6)].loaded == "pkg.widgets.view"
+    assert by_mod[("pkg.client.details", 6)].loaded == "pkg.widgets"
     assert by_mod[("pkg.client.details", 10)].loaded == "textual.app"
     shared_refusal = by_mod[("pkg.shared", 2)]
     assert shared_refusal.importer == "pkg.client.entry"
-    assert shared_refusal.loaded == "pkg.widgets.view"
+    assert shared_refusal.loaded == "pkg.widgets"
     findings = _findings(tmp_path)
     assert [finding.title for finding in findings] == ["pkg.app hides 1 import(s) that close no cycle"] or [
         finding.summary for finding in findings
