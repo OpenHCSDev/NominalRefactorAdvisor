@@ -833,6 +833,7 @@ class HiddenImportCutFindingRecipeSynthesizer(
 ):
     """One relocation of the declarations the finding's hub holds too high."""
 
+    action_key_child_subject = "hidden_import_cycle"
     prefers_parallel_synthesis = True
 
     @classmethod
