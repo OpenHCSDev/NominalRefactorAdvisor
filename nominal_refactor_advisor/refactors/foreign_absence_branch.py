@@ -71,6 +71,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     FunctionNode,
     InstanceDispatchKind,
     ModuleEnclosure,
+    NestedFunctionEnclosure,
     OuterReceiverAlias,
     ResolvedMethodAnnotations,
     TypeTestDispatchProof,
@@ -2160,6 +2161,186 @@ def _resolve_scanned_instance_owner(
     return ResolvedClassTarget.from_rewrite_target(snapshot, source_rewrite_target(owner_indexed))
 
 
+def _subject_probed_attributes(site: AbsenceBranchSite) -> frozenset[str]:
+    """Attribute names read directly off `site.subject` inside its absence guard(s)."""
+
+    subject_dump = ast.dump(site.subject)
+    attrs: set[str] = set()
+    for expr in site.guard_exprs():
+        for node in ast.walk(expr):
+            match node:
+                case ast.Attribute(value=value, attr=attr) if ast.dump(value) == subject_dump:
+                    attrs.add(attr)
+    return frozenset(attrs)
+
+
+def _call_argument_for_parameter(
+    call: ast.Call,
+    param_name: str,
+    positional_indices: tuple[int, ...],
+) -> ast.expr | None:
+    """The argument expression `call` passes for `param_name`, or None if omitted/unpacked."""
+
+    for kw in call.keywords:
+        if kw.arg == param_name:
+            return kw.value
+    for positional_index in positional_indices:
+        if positional_index >= len(call.args):
+            return None
+        if any(isinstance(arg, ast.Starred) for arg in call.args[: positional_index + 1]):
+            return None
+        return call.args[positional_index]
+    return None
+
+
+def _require_parameter_callers_within_owner(
+    snapshot: CodemodSourceSnapshot,
+    source_path: str,
+    enclosure: FunctionEnclosure,
+    function: FunctionNode,
+    site: AbsenceBranchSite,
+    owner_symbol: str,
+    owner_qualname: str,
+) -> None:
+    """Verify no scanned caller passes a supertype or unrelated instance to the
+    probed parameter. Python does not enforce parameter annotations at runtime, so
+    moving a branch onto a narrowed subclass (e.g. `EvidencedFragment` when callers
+    pass `HistoryFragment`, which also owns the probed attribute) raises
+    `AttributeError` on every non-subclass instance."""
+
+    match site.subject:
+        case ast.Name(id=param_name):
+            pass
+        case _:
+            return
+
+    all_positional = (*function.args.posonlyargs, *function.args.args)
+    has_bound_receiver = (
+        enclosure.receiver_symbol(snapshot) is not None
+        or enclosure.class_receiver_symbol(snapshot) is not None
+    )
+    call_positional = all_positional[1:] if has_bound_receiver else all_positional
+    kwonly_names = {arg.arg for arg in function.args.kwonlyargs}
+    positional_indices = tuple(
+        idx for idx, arg in enumerate(call_positional) if arg.arg == param_name
+    )
+    if not positional_indices and param_name not in kwonly_names:
+        return
+
+    index = snapshot.compact_class_index
+    classes = index.classes_by_symbol
+    owner_family = frozenset((owner_symbol, *index.descendant_symbols(owner_symbol)))
+    typing = DeclaredReceiverTyping.from_projections(
+        snapshot.compact_class_projections, index
+    )
+    probed_attrs = _subject_probed_attributes(site)
+    ancestors_with_attr = tuple(
+        anc
+        for anc in index.ancestor_symbols(owner_symbol)
+        if (decl := classes.get(anc)) is not None
+        and any(attr in decl.member_binding_names for attr in probed_attrs)
+    )
+
+    declaring_class = enclosure.declaring_class_symbol(snapshot)
+    callee_family: frozenset[str] = (
+        frozenset(
+            (
+                declaring_class,
+                *index.descendant_symbols(declaring_class),
+                *index.ancestor_symbols(declaring_class),
+            )
+        )
+        if declaring_class is not None
+        else frozenset()
+    )
+    source_module = snapshot.parsed_module_for_source_path(source_path)
+    bindings = snapshot.module_binding_proof
+    expected_fn_qualified = f"{source_module.module_name}.{function.name}"
+
+    if isinstance(enclosure, NestedFunctionEnclosure):
+        outer_fn = enclosure.enclosing_function_chain()[0]
+        candidate_modules = (
+            (source_module, tuple(n for n in ast.walk(outer_fn) if isinstance(n, ast.Call))),
+        )
+    else:
+        candidate_modules = tuple(
+            (parsed, parsed.syntax_index.instances_of(ast.Call))
+            for parsed in snapshot.parsed_modules
+            if function.name in parsed.source
+        )
+
+    unproved_calls: list[tuple[str, int, ast.expr]] = []
+    for parsed, calls in candidate_modules:
+        resolver = ProbeOwnerResolver.of(parsed)
+        for call in calls:
+            if declaring_class is not None:
+                match call.func:
+                    case ast.Attribute(value=recv, attr=attr) if attr == function.name:
+                        recv_syms = resolver.owner(recv).path.declared(typing).class_symbols()
+                        if recv_syms and all(
+                            sym in classes
+                            and sym not in callee_family
+                            and callee_family.isdisjoint(index.descendant_symbols(sym))
+                            for sym in recv_syms
+                        ):
+                            continue
+                    case _:
+                        continue
+            else:
+                match call.func:
+                    case ast.Name(id=fn_name) | ast.Attribute(attr=fn_name) if fn_name == function.name:
+                        witness = bindings.reference_or_builtin_witness_at(
+                            parsed, call.func, line=call.lineno
+                        )
+                        if witness is not None and witness.qualified_name != expected_fn_qualified:
+                            continue
+                    case _:
+                        continue
+
+            arg_expr = _call_argument_for_parameter(call, param_name, positional_indices)
+            if arg_expr is None:
+                continue
+            match arg_expr:
+                case ast.Constant(value=None):
+                    raise NeedsInput(
+                        f"{parsed.file_path}:{call.lineno} passes `None` to "
+                        f"`{function.name}({param_name}: {owner_qualname})`; "
+                        f"pushing onto `{owner_qualname}` would raise `AttributeError` at runtime",
+                        NeededInput.SOURCE_CHANGE,
+                    )
+            path_owner = resolver.owner(arg_expr)
+            declared_syms = path_owner.path.declared(typing).instance_symbols()
+            if declared_syms:
+                outside = path_owner.outside_family_symbols(typing, owner_family)
+                if outside:
+                    raise NeedsInput(
+                        f"{parsed.file_path}:{call.lineno} passes `{ast.unparse(arg_expr)}` of type "
+                        f"`{outside[0]}` to `{function.name}({param_name}: {owner_qualname})`, "
+                        f"outside `{owner_qualname}`'s hierarchy; widen `{function.name}`'s parameter "
+                        "annotation or narrow the caller before pushing",
+                        NeededInput.SOURCE_CHANGE,
+                    )
+                continue
+            if ancestors_with_attr:
+                unproved_calls.append((parsed.file_path, call.lineno, arg_expr))
+
+    if unproved_calls:
+        spans = tuple(ReceiverSpan.of(fp, expr) for fp, _, expr in unproved_calls)
+        inferred = snapshot.type_checker.receiver_types(spans)
+        for (fp, lineno, arg_expr), span in zip(unproved_calls, spans):
+            answer = inferred.get(span)
+            if isinstance(answer, InferredReceiverType) and answer.classes:
+                outside = tuple(sym for sym in answer.classes if sym not in owner_family)
+                if outside:
+                    raise NeedsInput(
+                        f"{fp}:{lineno} passes `{ast.unparse(arg_expr)}` of inferred type "
+                        f"`{answer.spelled}` to `{function.name}({param_name}: {owner_qualname})`, "
+                        f"outside `{owner_qualname}`'s hierarchy; widen `{function.name}`'s parameter "
+                        "annotation or narrow the caller before pushing",
+                        NeededInput.SOURCE_CHANGE,
+                    )
+
+
 def _matching_existing_method_names(
     owner_node: ast.ClassDef,
     index: object,
@@ -2517,6 +2698,15 @@ class ForeignAbsenceBranchProof:
 
         resolved_owner = _resolve_scanned_instance_owner(snapshot, source_path, site.subject)
         resolved_symbol = resolved_owner.required_symbol(snapshot)
+        _require_parameter_callers_within_owner(
+            snapshot,
+            source_path,
+            enclosure,
+            function,
+            site,
+            resolved_symbol,
+            resolved_owner.qualname,
+        )
         if owner_target is not None:
             explicit = ResolvedClassTarget.from_rewrite_target(snapshot, owner_target)
             if explicit.required_symbol(snapshot) != resolved_symbol:

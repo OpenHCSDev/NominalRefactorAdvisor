@@ -63,8 +63,10 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
+from nominal_refactor_advisor.declared_receivers import DeclaredReceiverTyping
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.probe_owner import ProbeOwnerResolver
 from nominal_refactor_advisor.refactors.function_operations import (
     imports_only_read_by,
     method_deletion_offsets,
@@ -547,6 +549,33 @@ class DestinationInstanceMethod(DestinationMember):
             return PassedArgument(passed, passed)
         raise ValueError(f"{call.where} passes no {self.parameter.arg!r} to {self.moved.name!r}")
 
+    @cached_property
+    def _destination_typing(self) -> tuple[DeclaredReceiverTyping, frozenset[str]]:
+        snapshot = self.moved.snapshot
+        index = snapshot.compact_class_index
+        dest_symbol = self.moved.destination.required_symbol(snapshot)
+        dest_family = frozenset((dest_symbol, *index.descendant_symbols(dest_symbol)))
+        typing = DeclaredReceiverTyping.from_projections(
+            snapshot.compact_class_projections, index
+        )
+        return typing, dest_family
+
+    def _require_argument_within_destination(self, call: MethodCall, value: ast.expr) -> None:
+        """Refuse moving a method onto a destination class when a caller passes a
+        supertype or unrelated instance whose declared type lies outside the
+        destination's hierarchy."""
+
+        typing, dest_family = self._destination_typing
+        parsed = self.moved.snapshot.parsed_module_for_source_path(call.file_path)
+        outside = ProbeOwnerResolver.of(parsed).owner(value).outside_family_symbols(
+            typing, dest_family
+        )
+        if outside:
+            raise ValueError(
+                f"{call.where} passes `{ast.unparse(value)}` of type `{outside[0]}`, "
+                f"outside destination `{self.moved.destination.qualname}`'s hierarchy"
+            )
+
     def replacement(
         self, geometry: SourceTextGeometry, call: MethodCall,
     ) -> tuple[SourceTextSpanReplacement, ...]:
@@ -554,6 +583,7 @@ class DestinationInstanceMethod(DestinationMember):
         receiver = call.attribute.value
         argument = self.argument(call)
         value = argument.value
+        self._require_argument_within_destination(call, value)
         passed: list[ast.AST] = sorted(
             (*call.call.args, *call.call.keywords),
             key=lambda each: geometry.required_node_offsets(each)[0],

@@ -346,6 +346,17 @@ class DeclaredPathProbeOwner(ProbeOwner):
     def resolved_in(self, context: ProbeOwnerContext) -> ProbeOwner:
         return self.resolved(context.typing).resolved_in(context)
 
+    def outside_family_symbols(
+        self, typing: DeclaredReceiverTyping, family: frozenset[str]
+    ) -> tuple[str, ...]:
+        """Declared scanned instance symbols of this expression that lie outside `family`."""
+
+        return tuple(
+            symbol
+            for symbol in self.path.declared(typing).instance_symbols()
+            if symbol not in family
+        )
+
 
 @dataclass(frozen=True)
 class ProbeOwnerResolver(ParsedModuleFact):

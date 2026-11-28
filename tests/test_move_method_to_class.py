@@ -428,3 +428,48 @@ def test_a_module_the_method_reads_is_imported_into_the_destination_as_the_sourc
     moved = _source(tmp_path, result, "requests")
     assert binding in moved
     assert "from pkg.threads import json" not in moved and "from pkg.threads import osp" not in moved
+
+
+@pytest.mark.native_proof
+def test_move_method_to_parameter_refuses_caller_passing_supertype(tmp_path: Path) -> None:
+    """Moving a method onto a narrowed parameter subclass must refuse when a caller
+    passes a supertype instance whose declared type lies outside the destination."""
+
+    _write(
+        tmp_path,
+        {
+            "fragments": (
+                "class HistoryFragment:\n"
+                "    evidence = None\n\n\n"
+                "class EvidencedFragment(HistoryFragment):\n"
+                "    pass\n"
+            ),
+            "history": (
+                "from pkg.fragments import EvidencedFragment\n\n\n"
+                "class ReadMarkedHistory:\n"
+                "    def retain_painted(self, fragment: EvidencedFragment) -> object:\n"
+                "        return fragment.evidence\n"
+            ),
+            "view": (
+                "from pkg.fragments import HistoryFragment\n"
+                "from pkg.history import ReadMarkedHistory\n\n\n"
+                "def row_painted(history: ReadMarkedHistory, fragment: HistoryFragment) -> object:\n"
+                "    return history.retain_painted(fragment)\n"
+            ),
+        },
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path, use_parse_cache=False))
+    operation = MoveMethodToClassOperation(
+        target=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/history.py").as_posix(),
+            qualname="ReadMarkedHistory.retain_painted",
+        ),
+        destination=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/fragments.py").as_posix(),
+            qualname="EvidencedFragment",
+        ),
+        receiver_parameter="history",
+    )
+    with pytest.raises(CodemodOperationPreflightError, match="outside destination `EvidencedFragment`'s hierarchy"):
+        RefactorRecipe(recipe_id="test", reason="test").with_operation(operation).simulate(snapshot)
+

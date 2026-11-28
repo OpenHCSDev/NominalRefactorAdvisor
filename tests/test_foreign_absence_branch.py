@@ -2077,4 +2077,60 @@ def test_cross_module_push_preserves_aliased_module_and_symbol_imports(
             del sys.modules[mod_name]
 
 
+def test_push_refuses_when_caller_passes_supertype_to_narrowed_parameter(
+    tmp_path: Path,
+) -> None:
+    """Reproduces Toad `6358df80a` (`ReadMarkedHistory.retain_painted`): when a method's
+    parameter annotation is narrowed to `EvidencedFragment` while `HistoryFragment` owns
+    `evidence = None` and callers pass `HistoryFragment`, pushing onto `EvidencedFragment`
+    alone would raise `AttributeError` at runtime on non-evidenced subclasses."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/fragments.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass\n"
+                "class HistoryFragment:\n"
+                "    key: str\n"
+                "    evidence: str | None = None\n\n\n"
+                "@dataclass\n"
+                "class EvidencedFragment(HistoryFragment):\n"
+                "    evidence: str | None = None\n\n\n"
+                "@dataclass\n"
+                "class ToolFragment(HistoryFragment):\n"
+                "    pass\n"
+            ),
+            "pkg/history.py": (
+                "from pkg.fragments import EvidencedFragment, HistoryFragment\n\n\n"
+                "class ReadMarkedHistory:\n"
+                "    def __init__(self) -> None:\n"
+                "        self._painted: dict[str, HistoryFragment] = {}\n\n"
+                "    def retain_painted(self, fragment: EvidencedFragment) -> None:\n"
+                "        if fragment.evidence is not None:\n"
+                "            self._painted[fragment.key] = fragment\n"
+            ),
+            "pkg/qt_view.py": (
+                "from pkg.fragments import HistoryFragment\n"
+                "from pkg.history import ReadMarkedHistory\n\n\n"
+                "class QtHistoryView:\n"
+                "    history: ReadMarkedHistory\n\n"
+                "    def row_painted(self, fragment: HistoryFragment) -> None:\n"
+                "        self.history.retain_painted(fragment)\n"
+            ),
+        },
+    )
+
+    _mods, snap, findings = _scan(tmp_path)
+    (finding,) = [
+        f for f in findings if f.primary_evidence.symbol == "ReadMarkedHistory.retain_painted"
+    ]
+    ev = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(finding, snap)
+    assert ev.needs == (NeededInput.SOURCE_CHANGE,)
+    assert "pkg.fragments.HistoryFragment" in ev.rejection_reason
+    assert "outside `EvidencedFragment`'s hierarchy" in ev.rejection_reason
+
+
+
 
