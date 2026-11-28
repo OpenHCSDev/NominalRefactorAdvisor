@@ -1327,6 +1327,24 @@ def test_a_member_overriding_an_inherited_one_is_dispatch_not_a_forward(tmp_path
     assert _findings(tmp_path, ForwardingFacadeDetector, {"m": source}) == []
 
 
+def test_a_base_member_overridden_two_hops_down_is_dispatch_not_a_forward(tmp_path: Path):
+    """Reproduces Toad `WireCut.older()` overridden by `AfterSequence(AfterMessage)`:
+    a base method overridden anywhere in its subclass hierarchy is polymorphic default
+    dispatch, never a forwarding facade member."""
+
+    source = (
+        "class WireCut:\n"
+        "    def __init__(self, cursor):\n        self.cursor = cursor\n"
+        "    def older(self):\n        return self.cursor.older()\n"
+        "    def newer(self):\n        return self.cursor.newer()\n\n\n"
+        "class AfterMessage(WireCut):\n"
+        "    pass\n\n\n"
+        "class AfterSequence(AfterMessage):\n"
+        "    def older(self):\n        return ('custom', self.cursor)\n"
+    )
+    assert _findings(tmp_path, ForwardingFacadeDetector, {"m": source}) == []
+
+
 def test_a_cooperative_mi_mixin_implementing_a_sibling_base_is_not_a_facade(tmp_path: Path):
     source = (
         "from abc import ABC, abstractmethod\n\n\n"

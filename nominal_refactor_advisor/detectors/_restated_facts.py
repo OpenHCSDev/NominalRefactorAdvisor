@@ -1045,12 +1045,13 @@ class ForwardingFacadeDetector(
         ]
 
     def restates(self, site: RestatingSite, context: CompactClassFamilyIndex) -> bool:
-        """A member that overrides what an ancestor declares is the family's dispatch,
-        not a forward: a receiver typed as the ancestor reaches it through the MRO."""
+        """A member that overrides an ancestor or is overridden by any descendant
+        is the family's polymorphic dispatch, not a pure forward: a receiver typed
+        as the family reaches the overriding subclass through the MRO."""
 
         if site.detail[0] == ForwardingFacadeSiteFamily.CLASS_SITE:
             return True
-        return not _overrides_inherited(context, site.file_path, site.symbol, site.detail[0])
+        return not _participates_in_dispatch(context, site.file_path, site.symbol, site.detail[0])
 
     def admits(self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex) -> bool:
         return len(self.forwards(sites)) >= ForwardingFacadeSiteFamily.MIN_FORWARDS
@@ -1091,14 +1092,24 @@ class ForwardingFacadeDetector(
         return {"metrics": ForwardingFacadeMetrics(len(self.forwards(sites)))}
 
 
-def _overrides_inherited(
+def _participates_in_dispatch(
     index: CompactClassFamilyIndex, file_path: str, qualname: str, member: str
 ) -> bool:
-    """Whether the member overrides a declaration the class inherits; a class the
-    index does not know is not proven free of one."""
+    """Whether the member overrides a declaration the class inherits or is
+    overridden by any descendant in its subclass hierarchy; a class the index
+    does not know is not proven free of dispatch."""
 
     symbol = index.symbol_for(file_path=file_path, qualname=qualname)
-    return symbol is None or bool(index.overridden_declarations(symbol, member))
+    if symbol is None:
+        return True
+    if index.overridden_declarations(symbol, member):
+        return True
+    classes = index.classes_by_symbol
+    return any(
+        (descendant := classes.get(desc_symbol)) is not None
+        and member in descendant.member_binding_names
+        for desc_symbol in index.descendant_symbols(symbol)
+    )
 
 
 class DeadModuleDetector(
