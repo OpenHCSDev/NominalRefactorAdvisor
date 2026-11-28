@@ -637,14 +637,36 @@ class ClassCreationProof:
         self, indexed: CompactIndexedClass, statement: ast.stmt, filter_symbol: str
     ) -> bool:
         """Whether `statement` may bind an instance of `filter_symbol` (non-builtin
-        classes cannot match plain functions/descriptors or primitive literals)."""
+        classes cannot match plain functions/descriptors, primitive or container
+        literals, or class objects whose metaclass does not subclass `filter_symbol`)."""
 
         if not filter_symbol.startswith("builtins."):
             if self._statement_is_plain_callable(indexed, statement):
                 return False
+            value: ast.expr | None = None
             match statement:
-                case ast.Assign(value=ast.Constant()) | ast.AnnAssign(value=ast.Constant()):
+                case ast.Assign(value=assigned) | ast.AnnAssign(value=assigned):
+                    value = assigned
+            if value is not None:
+                if isinstance(
+                    value, (ast.Constant, ast.Tuple, ast.List, ast.Dict, ast.Set)
+                ):
                     return False
+                if isinstance(value, (ast.Name, ast.Attribute)):
+                    resolved = self.resolved(indexed, value, statement.lineno)
+                    if resolved is not None and (
+                        target := self.snapshot.class_overlap_verdicts.ancestor(resolved)
+                    ) is not None:
+                        if not target.metaclass_names:
+                            return False
+                        try:
+                            if all(
+                                not self.is_subclass_of(meta, filter_symbol)
+                                for meta in target.metaclass_names
+                            ):
+                                return False
+                        except NeedsInput:
+                            pass
         return True
 
     def _type_filtered_bindings(
@@ -1737,6 +1759,13 @@ class CreationReads:
                 return
             case ast.Call(func=ast.Name(id="cast" | "issubclass" | "isinstance")):
                 return
+            case ast.Call(func=ast.Name() as func, args=[value, _, _], keywords=[]) if (
+                value is node
+                and self.is_builtin(func, "builtins.setattr")
+                and self.plain_class_setattr()
+            ):
+                # A store on the class, whatever the name: it reads nothing of it.
+                return
             case ast.Call(func=ast.Name(id="getattr" | "hasattr" | "setattr"), args=[value, key, *_]) if (
                 value is node and isinstance(key, ast.Constant) and key.value not in INTROSPECTION
             ):
@@ -1753,6 +1782,15 @@ class CreationReads:
                 self.follow(parent, node, NEW_CLASS)
                 return
         self.refuse(parent or node, "uses the new class")
+
+    def plain_class_setattr(self) -> bool:
+        """Whether no metaclass along the ancestry overrides `__setattr__`."""
+
+        return not any(
+            self.proof.method(indexed, "__setattr__") is not None
+            for metaclass in self.proof.metaclasses()
+            for indexed in self.proof.metaclass_ancestry(metaclass)
+        )
 
     def called(self, call: ast.Call, attr: str) -> tuple[CreationCode, ...]:
         """The functions a call of `attr` on the new class may run: the one its
@@ -2489,13 +2527,6 @@ class OrderPreservingReads(CreationReads):
             case ast.GeneratorExp(elt=kept) | ast.ListComp(elt=kept) | ast.SetComp(elt=kept) if kept is node:
                 # Kept in what the comprehension builds: the classes of the order it selects.
                 return
-            case ast.Call(func=ast.Name() as func, args=[value, _, _], keywords=[]) if (
-                value is node
-                and self.is_builtin(func, "builtins.setattr")
-                and self.plain_class_setattr()
-            ):
-                # A store on the class, whatever the name: it reads nothing of it.
-                return
             case ast.keyword(value=value) if value is node and isinstance(
                 call := self.parents.get(parent), ast.Call
             ) and self.only_stores(call):
@@ -2503,15 +2534,6 @@ class OrderPreservingReads(CreationReads):
             case ast.Call() if node in parent.args and self.only_stores(parent):
                 return
         super().require_new_class(node, parent)
-
-    def plain_class_setattr(self) -> bool:
-        """Whether no metaclass along the ancestry overrides `__setattr__`."""
-
-        return not any(
-            self.proof.method(indexed, "__setattr__") is not None
-            for metaclass in self.proof.metaclasses()
-            for indexed in self.proof.metaclass_ancestry(metaclass)
-        )
 
     def only_stores(self, call: ast.Call) -> bool:
         """Whether the call constructs a value that only keeps what it is handed: a

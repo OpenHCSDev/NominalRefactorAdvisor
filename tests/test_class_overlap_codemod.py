@@ -1889,3 +1889,84 @@ def test_installed_classvar_list_append_and_inspect_isabstract_creation_proof(
         ),
     )
     assert "class OpenHintsAction(SharedHintMixin, BaseAction):" in Path(path).read_text()
+
+
+def test_plain_class_setattr_allowed_when_composing_new_mixin(tmp_path: Path) -> None:
+    """Reproduces `toad/widget_actions.py:188`: `setattr(cls, dynamic_name, ...)` in
+    `__init_subclass__` writes to the class without reading it when no metaclass
+    overrides `__setattr__`, so composing a mixin into `cls` is safe."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/widgets.py": (
+                "class DeclaredWidget:\n"
+                "    own_actions = ()\n\n"
+                "    def __init_subclass__(cls, **kwargs):\n"
+                "        super().__init_subclass__(**kwargs)\n"
+                "        for name in cls.own_actions:\n"
+                "            setattr(cls, f'action_{name}', lambda self: None)\n\n\n"
+                "class SharedLayout:\n"
+                "    def apply_layout(self) -> int:\n"
+                "        return 1\n\n\n"
+                "class TeamTable(DeclaredWidget):\n"
+                "    def apply_layout(self) -> int:\n"
+                "        return 1\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/widgets.py").as_posix()
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="TeamTable"),
+            owner=SourceRewriteTarget(file_path=path, qualname="SharedLayout"),
+        ),
+    )
+    assert "class TeamTable(SharedLayout, DeclaredWidget):" in Path(path).read_text()
+
+
+def test_reversed_type_filtered_dict_walk_ignores_class_references_and_container_literals(
+    tmp_path: Path,
+) -> None:
+    """Reproduces `textual/dom.py:1016` on `ObjectFieldView.field_type = ObjectSettingField`:
+    a class reference (whose metaclass does not subclass `Marker`) and a builtin
+    container literal cannot satisfy `isinstance(v, Marker)` for non-builtin `Marker`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/dom.py": (
+                "class Marker:\n"
+                "    pass\n\n\n"
+                "class SettingField:\n"
+                "    pass\n\n\n"
+                "class DOMNode:\n"
+                "    def __init_subclass__(cls) -> None:\n"
+                "        super().__init_subclass__()\n"
+                "        found = cls._found = {}\n"
+                "        for base in reversed(cls.__mro__):\n"
+                "            found.update({\n"
+                "                k: v for k, v in base.__dict__.items()\n"
+                "                if isinstance(v, Marker)\n"
+                "            })\n\n\n"
+                "class SharedFieldType:\n"
+                "    field_type = SettingField\n"
+                "    tags = ()\n\n\n"
+                "class FieldView(DOMNode):\n"
+                "    field_type = SettingField\n"
+                "    tags = ()\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/dom.py").as_posix()
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="FieldView"),
+            owner=SourceRewriteTarget(file_path=path, qualname="SharedFieldType"),
+        ),
+    )
+    assert "class FieldView(SharedFieldType, DOMNode):" in Path(path).read_text()
