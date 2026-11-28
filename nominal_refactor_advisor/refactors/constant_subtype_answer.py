@@ -2715,12 +2715,35 @@ class ConstantSubtypeAnswerFindingRecipeSynthesizer(
                 (consumer, consumer_target, function, raw_site, needs_pick)
             )
 
-        embedded_count = sum(1 for _c, _t, _f, _s, needs_pick in resolved_consumers if needs_pick)
+        embedded_consumers = [
+            consumer for consumer, _t, _f, _s, needs_pick in resolved_consumers if needs_pick
+        ]
+        embedded_count = len(embedded_consumers)
         consumers: list[ConstantAnswerPushConsumer] = []
         for consumer, consumer_target, function, _raw_site, needs_pick in resolved_consumers:
             if not needs_pick:
                 method_name = function.name
                 docstring: str | None = ast.get_docstring(function)
+            elif pick is not None and pick.consumer_methods:
+                matched = [
+                    entry
+                    for entry in pick.consumer_methods
+                    if entry.line == consumer.line
+                    and (entry.symbol is None or entry.symbol == consumer.symbol)
+                ]
+                if len(matched) == 1:
+                    method_name = matched[0].name
+                    docstring = matched[0].judgement
+                else:
+                    return self.stopped_evaluation(
+                        NeedsInput(
+                            f"embedded branch on `{metrics.member_name}` at "
+                            f"{consumer.symbol}:{consumer.line} needs one matching entry in "
+                            "`consumer_methods` (found "
+                            f"{len(matched)})",
+                            NeededInput.OWNER_PICK,
+                        )
+                    )
             elif pick is not None and embedded_count == 1:
                 method_name = pick.name
                 docstring = pick.judgement
@@ -2740,11 +2763,16 @@ class ConstantSubtypeAnswerFindingRecipeSynthesizer(
                 except ValueError as error:
                     return self.stopped_evaluation(error)
                 if embedded_count > 1:
+                    sites = ", ".join(
+                        f"{site.symbol}:{site.line}" for site in embedded_consumers
+                    )
                     return self.stopped_evaluation(
                         NeedsInput(
                             f"multiple embedded branches ({embedded_count}) on `{metrics.member_name}` "
-                            f"can push onto `{base_indexed.qualname}` but need distinct method names",
-                            NeededInput.SOURCE_CHANGE,
+                            f"can push onto `{base_indexed.qualname}` ({sites}); supply `owner` "
+                            f"`{metrics.consumer_symbol}` with `consumer_methods` entries "
+                            "(`line`, `name`, `judgement`) in `--codemod-owner-picks`",
+                            NeededInput.OWNER_PICK,
                         )
                     )
                 return self.stopped_evaluation(
@@ -2762,6 +2790,15 @@ class ConstantSubtypeAnswerFindingRecipeSynthesizer(
                     test_line=consumer.line,
                     method_name=method_name,
                     docstring=docstring,
+                )
+            )
+        chosen_names = [entry.method_name for entry in consumers]
+        if len(set(chosen_names)) != len(chosen_names):
+            return self.stopped_evaluation(
+                NeedsInput(
+                    f"pushed method names for `{metrics.member_name}` on `{base_indexed.qualname}` "
+                    f"must be distinct (got {chosen_names})",
+                    NeededInput.OWNER_PICK,
                 )
             )
 

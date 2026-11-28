@@ -39,6 +39,7 @@ from pathlib import Path
 from nominal_refactor_advisor.class_overlap import ClassOverlapMetrics, ExtractMixin
 from nominal_refactor_advisor.json_reports import SemanticRecord
 from nominal_refactor_advisor.models import (
+    ConsumerMethodPick,
     DeclaredBasePick,
     DeclaredBasePickMetrics,
     RefactorFinding,
@@ -92,6 +93,17 @@ class OwnerPicks:
                         None
                         if item.get("hoisted_judgement") is None
                         else str(item["hoisted_judgement"])
+                    ),
+                    consumer_methods=tuple(
+                        ConsumerMethodPick(
+                            line=int(entry["line"]),
+                            name=str(entry["name"]),
+                            judgement=str(entry["judgement"]),
+                            symbol=(
+                                None if entry.get("symbol") is None else str(entry["symbol"])
+                            ),
+                        )
+                        for entry in (item.get("consumer_methods") or ())
                     ),
                 )
                 for item in payload["picks"]

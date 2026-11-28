@@ -14,6 +14,7 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._relocations import ConstantSubtypeAnswerDetector
 from nominal_refactor_advisor.needed_input import NeededInput
+from nominal_refactor_advisor.models import ConsumerMethodPick
 from nominal_refactor_advisor.owner_picks import OwnerPick, OwnerPicks
 from nominal_refactor_advisor.refactors.constant_subtype_answer import (
     PushConstantSubtypeAnswerOperation,
@@ -1061,6 +1062,129 @@ def test_in_place_classmethod_ternary_return_does_not_double_return(tmp_path: Pa
     assert kb.hover_or_pressed("QPushButton") == "QPushButton:hover, QPushButton:pressed"  # type: ignore[attr-defined]
     assert touch.hover_or_pressed("QPushButton") == "QPushButton:pressed"  # type: ignore[attr-defined]
     assert _findings(tmp_path) == []
+
+
+def test_pushes_multiple_embedded_branches_with_consumer_method_picks(tmp_path: Path) -> None:
+    """Reproduces `LogView.newest_first` (`comms-tui` `acp_log.py:205,207,211`):
+    multiple embedded branches on one constant subtype answer report
+    `NeededInput.OWNER_PICK` naming each site, refuse duplicate method names, and
+    push every branch cleanly via `consumer_methods` in `--codemod-owner-picks`."""
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/views.py": (
+                "from typing import ClassVar\n\n\n"
+                "class LogView:\n"
+                "    newest_first: ClassVar[bool] = False\n\n\n"
+                "class ErrorsLogView(LogView):\n"
+                "    newest_first: ClassVar[bool] = True\n"
+            ),
+            "pkg/preview.py": (
+                "from pkg.views import LogView\n\n\n"
+                "class FakeArea:\n"
+                "    def __init__(self, scroll_y: int, max_scroll_y: int) -> None:\n"
+                "        self.scroll_y = scroll_y\n"
+                "        self.max_scroll_y = max_scroll_y\n"
+                "        self.cursor = (-1, -1)\n"
+                "        self.scrolled = ''\n\n"
+                "    def move_cursor(self, pos: tuple[int, int]) -> None:\n"
+                "        self.cursor = pos\n\n"
+                "    def scroll_home(self, *, animate: bool = True) -> None:\n"
+                "        self.scrolled = f'home:{animate}'\n\n"
+                "    def scroll_end(self, *, animate: bool = True) -> None:\n"
+                "        self.scrolled = f'end:{animate}'\n\n\n"
+                "class Preview:\n"
+                "    view: LogView\n\n"
+                "    def __init__(self, view: LogView) -> None:\n"
+                "        self.view = view\n\n"
+                "    def draw(self, area: FakeArea) -> None:\n"
+                "        area.move_cursor((0, 0) if self.view.newest_first else (9, 9))\n"
+                "        (area.scroll_home if self.view.newest_first else area.scroll_end)(animate=False)\n\n"
+                "    def at_newest(self, area: FakeArea) -> bool:\n"
+                "        return area.scroll_y <= 0 if self.view.newest_first else area.scroll_y >= area.max_scroll_y\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    snap = _snapshot(tmp_path)
+
+    # Without picks: reports OWNER_PICK (not SOURCE_CHANGE) naming every embedded site.
+    # (`Preview.at_newest` is whole-function so it takes its own name automatically.)
+    ev0 = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(finding, snap)
+    assert ev0.recipe is None
+    assert NeededInput.OWNER_PICK in ev0.needs
+    assert "consumer_methods" in ev0.rejection_reason
+    assert "Preview.draw:28" in ev0.rejection_reason
+    assert "Preview.draw:29" in ev0.rejection_reason
+    assert "Preview.at_newest" not in ev0.rejection_reason
+
+    # Duplicate method names refuse cleanly.
+    dup_picks = OwnerPicks(
+        "dup.json",
+        "",
+        (
+            OwnerPick(
+                finding=finding.stable_id,
+                owner=finding.metrics.consumer_symbol,
+                because="LogView owns ordering",
+                consumer_methods=(
+                    ConsumerMethodPick(line=28, name="same_name", judgement="First."),
+                    ConsumerMethodPick(line=29, name="same_name", judgement="Second."),
+                ),
+            ),
+        ),
+    )
+    (dup_finding,), _ = dup_picks.applied((finding,))
+    ev_dup = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(dup_finding, snap)
+    assert ev_dup.recipe is None
+    assert "must be distinct" in ev_dup.rejection_reason
+
+    # Read from JSON file to verify OwnerPicks.read parsing end-to-end.
+    picks_file = tmp_path / "picks.json"
+    picks_file.write_text(
+        '{"picks": [{"finding": "' + finding.stable_id + '", '
+        '"owner": "' + finding.metrics.consumer_symbol + '", '
+        '"because": "LogView owns newest-end positioning", '
+        '"consumer_methods": ['
+        '{"line": 28, "symbol": "Preview.draw", "name": "newest_cursor", "judgement": "Cursor position for newest log entry."},'
+        '{"line": 29, "symbol": "Preview.draw", "name": "scroll_to_newest", "judgement": "Scroll area to newest log entry."}'
+        ']}]}\n',
+        encoding="utf-8",
+    )
+    loaded = OwnerPicks.read(picks_file)
+    (picked_finding,), report = loaded.applied((finding,))
+    assert report.unmatched == ()
+    ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(picked_finding, snap)
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    views_after = (tmp_path / "pkg" / "views.py").read_text()
+    preview_after = (tmp_path / "pkg" / "preview.py").read_text()
+    assert "newest_first" not in views_after
+    assert "newest_first" not in preview_after
+    assert "def newest_cursor" in views_after
+    assert "def scroll_to_newest" in views_after
+    assert "def at_newest" in views_after
+
+    ns: dict[str, object] = {}
+    exec(views_after, ns)
+    exec(preview_after.replace("from pkg.views import LogView\n", ""), ns)
+    a_log = ns["FakeArea"](10, 10)  # type: ignore[operator]
+    p_log = ns["Preview"](ns["LogView"]())  # type: ignore[operator]
+    p_log.draw(a_log)
+    assert a_log.cursor == (9, 9)
+    assert a_log.scrolled == "end:False"
+    assert p_log.at_newest(a_log) is True
+
+    a_err = ns["FakeArea"](0, 10)  # type: ignore[operator]
+    p_err = ns["Preview"](ns["ErrorsLogView"]())  # type: ignore[operator]
+    p_err.draw(a_err)
+    assert a_err.cursor == (0, 0)
+    assert a_err.scrolled == "home:False"
+    assert p_err.at_newest(a_err) is True
+    assert _findings(tmp_path) == []
+
 
 
 
