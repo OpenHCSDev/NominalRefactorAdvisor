@@ -709,6 +709,49 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.MRO_ORDERING,),
     )
+    EMBEDDED_CODE_LITERAL = _pattern(
+        stable_id=60,
+        display_name="Embedded Code Literal",
+        required_relation=(
+            "A non-docstring multiline string literal embeds substantial foreign "
+            "source code (HTML/CSS/JS, JavaScript, shell, or SQL DDL) inside a "
+            "Python module instead of a checked source asset owned on disk."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    SILENT_MISSING_PATH_FALLBACK = _pattern(
+        stable_id=61,
+        display_name="Silent Missing Path Fallback",
+        required_relation=(
+            "A positive path-existence guard (`.is_file()`, `.exists()`, `.is_dir()`) "
+            "silently drops missing entries from a declared collection or substitutes "
+            "an empty container or default fallback object instead of failing loud."
+        ),
+        witness_capabilities=(CapabilityTag.FAIL_LOUD_CONTRACTS,),
+    )
+    SILENT_EXCEPTION_FALLBACK = _pattern(
+        stable_id=62,
+        display_name="Silent Exception Fallback",
+        required_relation=(
+            "An exception handler catches `AttributeError` (EAFP `BOUND-7` bypass) "
+            "or broad `Exception`/`BaseException`/bare `except` and silently swallows "
+            "the failure into a constant, empty container, `None`, `pass`, or `continue`."
+        ),
+        witness_capabilities=(CapabilityTag.FAIL_LOUD_CONTRACTS,),
+    )
+    CLONED_DECLARED_FAMILY = _pattern(
+        stable_id=63,
+        display_name="Cloned Declared Family",
+        required_relation=(
+            "Two unrelated modules declare distinct `DeclaredFamily` roots with the "
+            "same name, splitting one closed family's members and metadata across "
+            "drifting parallel registries."
+        ),
+        witness_capabilities=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+    )
 
     def __new__(
         cls,
