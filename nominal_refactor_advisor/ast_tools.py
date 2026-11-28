@@ -207,7 +207,7 @@ semantic_hash_payload_unavailable = SemanticHashCachePayloadUnavailable()
 class CollectedFamilyCacheSchema:
     """Schema identity for persisted collected-family item projections."""
 
-    version: int = 36
+    version: int = 37
     max_payload_bytes: int = 100_000
 
 
@@ -3001,8 +3001,15 @@ class CollectedFamilyCacheContext:
 
     @cached_property
     def relocation(self) -> CheckoutRelocation | None:
-        """The checkout this module's derived state is relative to, if any."""
+        """The checkout this module's derived state is relative to, if any.
 
+        Relative module paths keep their relative `file_path` spellings inside
+        collected items, so they cannot share a checkout-relocated cache slot
+        whose loader rebases absolute checkout-root prefixes.
+        """
+
+        if not self.path.is_absolute():
+            return None
         return CheckoutRelocation.containing(self.path)
 
     @cached_property
@@ -3010,6 +3017,8 @@ class CollectedFamilyCacheContext:
         """Where the module sits in its checkout: entries are shared by every
         checkout of the same content, never keyed by where it is checked out."""
 
+        if not self.path.is_absolute():
+            return f"relative:{self.path.as_posix()}"
         if self.relocation is None:
             return self.resolved_path_text
         return self.relocation.relative_text(self.path)
