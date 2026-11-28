@@ -284,3 +284,86 @@ def test_a_metaclass_handing_its_bases_on_keeps_the_order(tmp_path: Path):
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": _rebasing("bases")})
     (finding,) = _findings(tmp_path)
     assert finding.primary_evidence.symbol == "Member"
+
+
+DECLARED_FAMILY_MODEL = (
+    "from abc import ABC, ABCMeta\n\n\n"
+    "def handles(kind):\n    def mark(function):\n        function.handled = kind\n        return function\n\n    return mark\n\n\n"
+    "class Dispatch:\n    @classmethod\n    def handler_for(cls, kind):\n"
+    "        for ancestor in kind.__mro__:\n            for value in vars(cls).values():\n"
+    "                if getattr(value, 'handled', None) is ancestor:\n                    return value.__func__\n"
+    "        raise TypeError(kind)\n\n\n"
+    "class FamilyMeta(ABCMeta):\n"
+    "    def __new__(mcs, name, bases, namespace, *, affix=None, **kwargs):\n"
+    "        family_bases = FamilyBases.of(bases)\n"
+    "        roots = {base.family_root for base in family_bases if base is not DeclaredFamily}\n"
+    "        if len(roots) > 1:\n"
+    "            raise TypeError('two families')\n"
+    "        is_root = affix is not None or '__registry__' in namespace or (not roots and bool(family_bases))\n"
+    "        if is_root:\n"
+    "            namespace['__registry__'] = {}\n"
+    "        cls = super().__new__(mcs, name, bases, namespace, **kwargs)\n"
+    "        if is_root:\n"
+    "            cls.family_root = cls\n"
+    "        else:\n"
+    "            for family_root in roots:\n"
+    "                cls.family_root = family_root\n"
+    "        return cls\n\n\n"
+    "class FamilyBases(Dispatch):\n"
+    "    @handles(FamilyMeta)\n    @staticmethod\n    def declared(base):\n        return (base,)\n\n"
+    "    @handles(type)\n    @staticmethod\n    def plain(base):\n        return ()\n\n"
+    "    @classmethod\n    def of(cls, bases):\n"
+    "        return tuple(family for base in bases for family in cls.handler_for(type(base))(base))\n\n\n"
+    "class DeclaredFamily(ABC, metaclass=FamilyMeta):\n    pass\n\n\n"
+    "class Outcome(DeclaredFamily, affix='Outcome'):\n    pass\n\n\n"
+    "class UnsuccessfulOutcome(Outcome):\n    pass\n\n\n"
+    "class FailedOutcome(UnsuccessfulOutcome, Outcome):\n    pass\n"
+)
+
+
+def test_a_restated_family_base_drops_when_metaclass_reads_only_set_root_and_truthiness(tmp_path: Path):
+    main = (
+        "from pkg.families import FailedOutcome, Outcome\n"
+        "print([k.__name__ for k in FailedOutcome.__mro__], FailedOutcome.family_root is Outcome)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": DECLARED_FAMILY_MODEL, "main.py": main})
+    expected = _run(tmp_path)
+    (finding,) = _findings(tmp_path)
+    assert finding.primary_evidence.symbol == "FailedOutcome"
+    snapshot = _snapshot(tmp_path)
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, snapshot)
+    assert evaluation.rejection_reason == ""
+    simulation = CodemodPlanSequence.from_operations(evaluation.required_recipe.operations).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    assert (tmp_path / "pkg/families.py").read_text() == DECLARED_FAMILY_MODEL.replace(
+        "class FailedOutcome(UnsuccessfulOutcome, Outcome):",
+        "class FailedOutcome(UnsuccessfulOutcome):",
+    )
+    assert _run(tmp_path) == expected
+
+
+def test_a_restated_family_base_refuses_when_intermediate_redeclares_child_root(tmp_path: Path):
+    child_root_model = DECLARED_FAMILY_MODEL.replace(
+        "class UnsuccessfulOutcome(Outcome):",
+        "class UnsuccessfulOutcome(Outcome, affix='Unsuccessful'):",
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": child_root_model})
+    (finding,) = _findings(tmp_path)
+    assert finding.primary_evidence.symbol == "FailedOutcome"
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert evaluation.rejection_reason != ""
+    assert NeededInput.PROOF in evaluation.needs
+
+
+def test_a_restated_family_base_refuses_when_metaclass_stores_filtered_tuple(tmp_path: Path):
+    stored_tuple = FAMILIES.replace(
+        "class Member(Root, ABC):",
+        "class Mid(Root):\n    pass\n\n\nclass Member(Mid, Root):",
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": stored_tuple})
+    (finding,) = _findings(tmp_path)
+    assert finding.primary_evidence.symbol == "Member"
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert evaluation.rejection_reason != ""
+    assert NeededInput.PROOF in evaluation.needs
