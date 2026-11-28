@@ -2387,6 +2387,30 @@ class CliArguments:
             auto_context=self.args.auto_context_root,
         )
 
+    @cached_property
+    def source_policy(self) -> PythonSourcePathPolicy:
+        """Include tests when asked, when a test path was passed directly, or when
+        executing an explicit recipe plan without finding analysis or guards."""
+
+        explicit_roots = (
+            *(Path(path) for path in self.args.paths),
+            *self.args.context_roots,
+        )
+        include_tests = (
+            self.args.include_tests
+            or any(
+                PythonSourcePathPolicy.is_test_path(root) for root in explicit_roots
+            )
+            or (
+                self.selected_command_type is None
+                and self.execution_mode.exact_recipe_execution(
+                    self.codemod_plan_sequence,
+                    projects_findings=self.args.codemod_project_findings,
+                )
+            )
+        )
+        return PythonSourcePathPolicy(include_tests=include_tests)
+
     @property
     def cache_root(self) -> Path:
         return self.path_scope.primary_analysis_root
@@ -4629,7 +4653,7 @@ def _scan_main(
         parse_cache_dir,
         args.use_parse_cache,
     )
-    source_policy = PythonSourcePathPolicy(include_tests=args.include_tests)
+    source_policy = invocation.source_policy
     if selected_command_type is not None:
         source_policy = selected_command_type.scan_policy(args, source_policy, roots, config)
     semantic_descent_cache_context = SemanticDescentGraphCacheContext.from_parse_cache(

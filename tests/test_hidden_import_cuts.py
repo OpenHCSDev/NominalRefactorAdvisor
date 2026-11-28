@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_python_modules
+from nominal_refactor_advisor.cli import CliArguments, main as cli_main
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
@@ -627,3 +628,117 @@ def test_same_module_hidden_import_promotion_and_cycle_cut_compose_without_nomin
     assert _run(tmp_path) == expected
     assert HiddenImportPlan.derive(_modules(tmp_path)).refused == ()
     assert HiddenImportPlan.derive(_modules(tmp_path)).accepted == ()
+
+
+def test_cli_codemod_plan_execution_rewrites_test_imports_without_include_tests_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Reproduces Toad `--codemod-simulate src tests` / `--codemod-apply .`:
+    executing a cut_hidden_cycle plan must rewrite importers under `tests/`
+    without requiring `--include-tests` (and without hoisting unrelated local
+    imports in tests)."""
+
+    _write(
+        tmp_path,
+        {
+            "src/pkg/__init__.py": "",
+            "src/pkg/base.py": "LIMIT = 7\n",
+            "src/pkg/a.py": READER.format(name="a_value"),
+            "src/pkg/b.py": READER.format(name="b_value"),
+            "src/pkg/hub.py": HUB,
+            "tests/unit/test_hub.py": (
+                "from pkg.hub import Record, total\n\n"
+                "def check() -> tuple[int, int]:\n"
+                "    return (Record.size, total())\n"
+            ),
+            "tests/test_local.py": (
+                "def check_local() -> int:\n"
+                "    from pkg.hub import Record\n\n"
+                "    return Record.size\n"
+            ),
+        },
+    )
+    # Remove the top-level pkg/__init__.py written by _write so src/pkg is the sole pkg.
+    (tmp_path / "pkg" / "__init__.py").unlink()
+    (tmp_path / "pkg").rmdir()
+
+    # Plain production scan still excludes tests unless tests are named explicitly.
+    assert not CliArguments.from_argv((str(tmp_path / "src"),)).source_policy.include_tests
+    assert CliArguments.from_argv(
+        (str(tmp_path / "src"), str(tmp_path / "tests"))
+    ).source_policy.include_tests
+
+    plan_path = tmp_path / "plan.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nominal-refactor-advisor",
+            "--no-cache",
+            "--codemod-synthesize-plan",
+            "--codemod-plan-out",
+            str(plan_path),
+            str(tmp_path / "src"),
+        ],
+    )
+    assert cli_main() == 0
+    capsys.readouterr()
+    assert plan_path.exists()
+
+    # 1. `--codemod-simulate src tests` (no `--include-tests`): both test files rewritten.
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nominal-refactor-advisor",
+            "--no-cache",
+            "--codemod-plan",
+            str(plan_path),
+            "--codemod-simulate",
+            str(tmp_path / "src"),
+            str(tmp_path / "tests"),
+        ],
+    )
+    assert cli_main() == 0
+    sim_out = capsys.readouterr().out
+    assert "tests/unit/test_hub.py" in sim_out
+    assert "tests/test_local.py" in sim_out
+
+    # 2. `--codemod-apply <repo_root>` (no `--include-tests`): updates both src/ and tests/.
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nominal-refactor-advisor",
+            "--no-cache",
+            "--codemod-plan",
+            str(plan_path),
+            "--codemod-apply",
+            str(tmp_path),
+        ],
+    )
+    assert cli_main() == 0
+    capsys.readouterr()
+    assert "from pkg.record import Record" in (tmp_path / "tests/unit/test_hub.py").read_text()
+    assert "from pkg.hub import total" in (tmp_path / "tests/unit/test_hub.py").read_text()
+    # Local import inside test function is retargeted in place, not gratuitously hoisted.
+    local_text = (tmp_path / "tests/test_local.py").read_text()
+    assert "    from pkg.record import Record\n" in local_text
+    assert not local_text.startswith("from pkg.record import Record")
+    out = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; sys.path.insert(0, 'src'); "
+                "from tests.unit.test_hub import check; "
+                "from tests.test_local import check_local; "
+                "print(check(), check_local())"
+            ),
+        ],
+        cwd=tmp_path,
+        text=True,
+    )
+    assert out.strip() == "(7, 14) 7"
