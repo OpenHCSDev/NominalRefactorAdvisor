@@ -1804,3 +1804,142 @@ def test_replace_home_stub_refuses_when_ancestor_abstract_methods_are_implemente
     assert "concrete" in evaluation.rejection_reason
     assert "AutoRegisterMeta" in evaluation.rejection_reason
 
+
+def test_pydantic_basemodel_plain_method_sibling_override_is_proved(tmp_path: Path):
+    """Reproduces `CheckpointRecord.begins_history` / `MonitorShown.delivered` / `AssistantRecord.tally`
+    under `pydantic.BaseModel`: lifting a plain non-field method onto a new intermediate base is
+    proved, while lifting a `@field_validator` method still refuses."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/records.py": (
+                "from pydantic import BaseModel, field_validator\n\n\n"
+                "class HistoryRecord(BaseModel):\n"
+                "    seq: int\n\n"
+                "    def begins_history(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class CheckpointRecord(HistoryRecord):\n"
+                "    def begins_history(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class CompactedRecord(HistoryRecord):\n"
+                "    def begins_history(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class PlainRecord(HistoryRecord):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="HistoryRecord",
+                because="history boundary records",
+                name="HistoryBoundaryRecord",
+                judgement="A history record that starts a new visible segment.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    snap = _snapshot(tmp_path)
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(picked[0], snap)
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.executable_recipe.simulate(snap)
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    after = (tmp_path / "pkg/records.py").read_text()
+    assert "class HistoryBoundaryRecord(HistoryRecord):" in after
+    assert "class CheckpointRecord(HistoryBoundaryRecord):" in after
+    assert "class CompactedRecord(HistoryBoundaryRecord):" in after
+    assert _findings(tmp_path) == []
+
+
+def test_match_vars_constant_key_mapping_allows_unrelated_sibling_override_lift(tmp_path: Path):
+    """Reproduces `tools/stored_formats.py:65` (`match vars(record): case {'version': declared}:`):
+    a mapping pattern without `**rest` querying only constant string keys disjoint from the moved
+    member proves `NamespaceReaders` stays unaffected, while matching the moved name or binding
+    `**rest` still refuses."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/reader.py": (
+                "def read_version(record: type) -> object:\n"
+                "    match vars(record):\n"
+                "        case {'version': declared}:\n"
+                "            return declared\n"
+                "    return None\n"
+            ),
+            "pkg/items.py": (
+                "class Item:\n"
+                "    def label(self) -> str:\n"
+                "        return 'item'\n\n\n"
+                "class SpecialA(Item):\n"
+                "    def label(self) -> str:\n"
+                "        return 'special'\n\n\n"
+                "class SpecialB(Item):\n"
+                "    def label(self) -> str:\n"
+                "        return 'special'\n\n\n"
+                "class Plain(Item):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="Item",
+                because="special items",
+                name="SpecialItem",
+                judgement="Items carrying the special label.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(picked[0], _snapshot(tmp_path))
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+
+    _write(
+        tmp_path,
+        {
+            "pkg/reader.py": (
+                "def read_version(record: type) -> object:\n"
+                "    match vars(record):\n"
+                "        case {'version': declared, **rest}:\n"
+                "            return rest\n"
+                "    return None\n"
+            ),
+        },
+    )
+    findings2 = _findings(tmp_path)
+    picked2, _ = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings2[0].stable_id,
+                owner="Item",
+                because="special items",
+                name="SpecialItem",
+                judgement="Items carrying the special label.",
+            ),
+        ),
+    ).applied(tuple(findings2))
+    evaluation2 = SiblingOverrideDetector().evaluate_recipe_for_finding(picked2[0], _snapshot(tmp_path))
+    assert evaluation2.recipe is None
+    assert "reads a class namespace" in evaluation2.rejection_reason
+
+
+

@@ -4238,7 +4238,10 @@ def movable_members(
             raise NeedsInput(
                 f"`{source.qualname}` line {statement.lineno} is no movable member", NeededInput.OPERATION
             )
-        member.require_safe_move(context)
+        try:
+            member.require_safe_move(context)
+        except ValueError as exc:
+            raise NeedsInput(str(exc), NeededInput.PROOF) from exc
 
 
 @dataclass(frozen=True)

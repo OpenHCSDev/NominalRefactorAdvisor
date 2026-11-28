@@ -382,3 +382,79 @@ def test_family_bases_refuses_drop_across_rerooted_child_family(tmp_path: Path):
     evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
     assert evaluation.rejection_reason != ""
     assert NeededInput.PROOF in evaluation.needs
+
+
+def test_imported_string_constant_key_in_namespace_setdefault_proves_drop(tmp_path: Path):
+    """Reproduces `served_declaration.py:46` (`namespace.setdefault(REPLACES_REGISTERED_ATTRIBUTE, ...)`):
+    a single-assigned imported string constant proves the namespace key is never `__orig_bases__`
+    or a moved name, while a rebound global constant still refuses."""
+
+    const_mod = "KEY_ATTR = '__replaces_registered__'\n"
+    meta_mod = (
+        "from abc import ABC, ABCMeta\n"
+        "from typing import Generic, TypeVar\n"
+        "from pkg.consts import KEY_ATTR\n\n"
+        "T = TypeVar('T')\n\n\n"
+        "class ServingMeta(ABCMeta):\n"
+        "    def __new__(mcs, name, bases, namespace, **kwargs):\n"
+        "        namespace.setdefault(KEY_ATTR, None)\n"
+        "        return super().__new__(mcs, name, bases, namespace, **kwargs)\n\n\n"
+        "class Base(ABC, Generic[T], metaclass=ServingMeta):\n    pass\n\n\n"
+        "class Mid(Base[int]):\n    pass\n\n\n"
+        "class Leaf(Mid, Base[int], ABC):\n    pass\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/consts.py": const_mod, "pkg/meta.py": meta_mod})
+    (finding,) = _findings(tmp_path)
+    assert finding.primary_evidence.symbol == "Leaf"
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert evaluation.rejection_reason == ""
+
+    _write(tmp_path, {"pkg/consts.py": const_mod + "KEY_ATTR = '__orig_bases__'\n"})
+    (finding,) = _findings(tmp_path)
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert evaluation.rejection_reason != ""
+    assert NeededInput.PROOF in evaluation.needs
+
+
+def test_pydantic_basemodel_dropping_restated_abc_is_proved_and_config_drop_refused(tmp_path: Path):
+    """Reproduces the 30 `agent-comms` pydantic `P51`s (`class TaggedWire(BaseModel, ABC)`
+    descendants restating `ABC`): dropping a non-`BaseModel`, non-`Generic` base with no
+    `model_config` is proved, while dropping a `model_config`-carrying base or a `BaseModel`
+    subclass still refuses."""
+
+    source = (
+        "from abc import ABC\n"
+        "from pydantic import BaseModel, ConfigDict\n\n\n"
+        "class WireRoot(BaseModel, ABC):\n"
+        "    kind: str\n\n\n"
+        "class WireLeaf(WireRoot, ABC):\n"
+        "    value: int\n\n\n"
+        "class ConfigMixin:\n"
+        "    model_config = ConfigDict(frozen=True)\n\n\n"
+        "class ConfiguredRoot(BaseModel, ConfigMixin):\n"
+        "    kind: str\n\n\n"
+        "class ConfiguredLeaf(ConfiguredRoot, ConfigMixin):\n"
+        "    value: int\n"
+    )
+    main = (
+        "from pkg.wires import WireLeaf\n"
+        "item = WireLeaf(kind='a', value=1)\n"
+        "print(item.model_dump(), [c.__name__ for c in WireLeaf.__mro__])\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/wires.py": source, "main.py": main})
+    expected = _run(tmp_path)
+    findings = {f.primary_evidence.symbol: f for f in _findings(tmp_path)}
+    assert {"WireLeaf", "ConfiguredLeaf"} <= set(findings)
+    snapshot = _snapshot(tmp_path)
+    wire_eval = RestatedBaseDetector().evaluate_recipe_for_finding(findings["WireLeaf"], snapshot)
+    assert wire_eval.rejection_reason == "", wire_eval.rejection_reason
+    simulation = CodemodPlanSequence.from_operations(wire_eval.required_recipe.operations).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    assert "class WireLeaf(WireRoot):" in (tmp_path / "pkg/wires.py").read_text()
+    assert _run(tmp_path) == expected
+
+    cfg_eval = RestatedBaseDetector().evaluate_recipe_for_finding(findings["ConfiguredLeaf"], _snapshot(tmp_path))
+    assert cfg_eval.rejection_reason != ""
+    assert NeededInput.PROOF in cfg_eval.needs
+

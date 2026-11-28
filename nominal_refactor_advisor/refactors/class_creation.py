@@ -64,9 +64,47 @@ HEADER_BASES = "__orig_bases__"
 """The one name under which a class's own namespace holds its header's bases:
 creation sets it when a base is subscripted."""
 
-ORDER_READERS = frozenset(("dataclasses.dataclass", "builtins.dir"))
+ORDER_READERS = frozenset(
+    (
+        "dataclasses.dataclass",
+        "builtins.dir",
+        "inspect.get_annotations",
+        "annotationlib.get_annotations",
+    )
+)
 """Functions of a class that read the classes of its order and their own bodies,
 never the bases its header lists."""
+
+PYDANTIC_MODEL_METACLASS = "pydantic._internal._model_construction.ModelMetaclass"
+PYDANTIC_BASE_MODEL = "pydantic.main.BaseModel"
+PYDANTIC_RESERVED_NAMES = frozenset(
+    (
+        "model_config",
+        "Config",
+        "model_post_init",
+        "__hash__",
+        "__init__",
+        "__new__",
+        "__annotations__",
+        "__annotate__",
+        "__class_vars__",
+        "__private_attributes__",
+        "__pydantic_fields__",
+        "__pydantic_decorators__",
+        "__pydantic_computed_fields__",
+        "__pydantic_generic_metadata__",
+        "__pydantic_parent_namespace__",
+        "__pydantic_complete__",
+        "__pydantic_custom_init__",
+        "__pydantic_post_init__",
+        "__pydantic_setattr_handlers__",
+        "__pydantic_init_subclass__",
+        "__pydantic_on_complete__",
+        "model_fields",
+        "model_computed_fields",
+        "__slots__",
+    )
+)
 
 INTROSPECTION = frozenset(
     ("__mro__", "__bases__", "__orig_bases__", "__dict__", "__annotations__", "__annotate__", "mro")
@@ -386,7 +424,137 @@ class ClassCreationProof:
                 NeededInput.PROOF,
             )
         for code, roles in self.creation_code():
-            self.reads(code, roles).require()
+            if code.owner is not None and code.owner.symbol == PYDANTIC_MODEL_METACLASS:
+                self.require_pydantic_model_metaclass_unchanged(code)
+            else:
+                self.reads(code, roles).require()
+
+    def require_pydantic_model_metaclass_unchanged(self, code: CreationCode) -> None:
+        """Prove `pydantic.ModelMetaclass.__new__` / `__prepare__` produces the same
+        model class when moving plain non-field methods onto a plain intermediate base."""
+
+        if code.node.name not in ("__new__", "__prepare__"):
+            self.reads(code, self.metaclass_roles(code.node)).require()
+            return
+        if code.node.name == "__prepare__":
+            return
+        if any(isinstance(base, ast.Subscript) for base in self.class_node(self.composer).bases):
+            raise NeedsInput(
+                f"{code.location} `{self.composer.qualname}` subscripts a base under "
+                "`ModelMetaclass`: NRA needs a proof that generic metadata stays unchanged",
+                NeededInput.PROOF,
+            )
+        for indexed in self.ancestry:
+            if indexed.symbol == PYDANTIC_BASE_MODEL:
+                continue
+            for hook_name in ("__pydantic_init_subclass__", "__pydantic_on_complete__"):
+                hook = self.method(indexed, hook_name)
+                if hook is not None:
+                    self.reads(hook, {self.first_parameter(hook.node): NEW_CLASS}).require()
+        if not self.moved:
+            raise NeedsInput(
+                f"{code.location} `ModelMetaclass.__new__` runs on `{self.composer.qualname}`: "
+                f"NRA needs a proof that `{self.owner_name}` leaves it unchanged",
+                NeededInput.PROOF,
+            )
+        bad_moved = sorted(
+            name
+            for name in self.moved
+            if name in PYDANTIC_RESERVED_NAMES or name.startswith("_")
+        )
+        if bad_moved:
+            raise NeedsInput(
+                f"{code.location} moving {bad_moved} from `{self.composer.qualname}` may "
+                "affect `ModelMetaclass` fields, config, or private attributes",
+                NeededInput.PROOF,
+            )
+        for name, statement in self.own_bindings(self.composer.symbol, composed=False):
+            if name not in self.moved:
+                continue
+            if not self._statement_is_plain_callable(self.composer, statement):
+                raise NeedsInput(
+                    f"{code.location} moving non-callable or custom-decorated `{name}` from "
+                    f"`{self.composer.qualname}` may change `ModelMetaclass` schema or decorators",
+                    NeededInput.PROOF,
+                )
+        for statement in self.runtime_body(self.composer, self.class_node(self.composer).body):
+            if isinstance(statement, ast.AnnAssign) and declared_names(statement) & self.moved:
+                raise NeedsInput(
+                    f"{code.location} moving annotated field `{sorted(declared_names(statement) & self.moved)}` "
+                    f"from `{self.composer.qualname}` may change `ModelMetaclass` fields",
+                    NeededInput.PROOF,
+                )
+        before_set = frozenset(self.walk.before)
+        after_set = frozenset(self.walk.after)
+        if not before_set.issubset(after_set):
+            raise NeedsInput(
+                f"{code.location} `{self.composer.qualname}` drops bases from MRO under `ModelMetaclass`",
+                NeededInput.PROOF,
+            )
+        for symbol in self.walk.after:
+            if symbol in before_set:
+                continue
+            if symbol == "typing.Generic" or native_root_type(symbol) is not None:
+                raise NeedsInput(
+                    f"{code.location} gaining `{symbol}` on `{self.composer.qualname}` may "
+                    "change `ModelMetaclass` metadata",
+                    NeededInput.PROOF,
+                )
+            gained = self.walked(symbol)
+            gained_node = self.class_node(gained)
+            if gained_node.decorator_list:
+                raise NeedsInput(
+                    f"{code.location} gained base `{gained.qualname}` has decorators under `ModelMetaclass`",
+                    NeededInput.PROOF,
+                )
+            for keyword in gained_node.keywords:
+                if keyword.arg not in ("declared_name", "affix", "discovery_package"):
+                    raise NeedsInput(
+                        f"{code.location} gained base `{gained.qualname}` passes `{keyword.arg}` "
+                        "keyword to `ModelMetaclass`",
+                        NeededInput.PROOF,
+                    )
+            if not gained.base_references_are_complete:
+                raise NeedsInput(
+                    f"{code.location} gained base `{gained.qualname}` has unresolved bases under `ModelMetaclass`",
+                    NeededInput.PROOF,
+                )
+            for ref in gained.base_references:
+                ref_sym = ref.qualified_name
+                if ref_sym in before_set:
+                    continue
+                if (native := native_root_type(ref_sym)) is not None and ref_sym != "typing.Generic":
+                    if "model_config" not in vars(native) and "Config" not in vars(native):
+                        continue
+                raise NeedsInput(
+                    f"{code.location} gained base `{gained.qualname}` adds base `{ref_sym}` "
+                    "outside existing MRO under `ModelMetaclass`",
+                    NeededInput.PROOF,
+                )
+            for statement in self.runtime_body(gained, gained_node.body):
+                if isinstance(statement, ast.AnnAssign):
+                    raise NeedsInput(
+                        f"{code.location} gained base `{gained.qualname}` declares annotated "
+                        "field under `ModelMetaclass`",
+                        NeededInput.PROOF,
+                    )
+                if isinstance(statement, ast.Pass) or (
+                    isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant)
+                ):
+                    continue
+                if not self._statement_is_plain_callable(gained, statement):
+                    raise NeedsInput(
+                        f"{code.location} gained base `{gained.qualname}` binds non-callable "
+                        "member under `ModelMetaclass`",
+                        NeededInput.PROOF,
+                    )
+                bound_names = declared_names(statement)
+                if any(n in PYDANTIC_RESERVED_NAMES or n.startswith("_") for n in bound_names):
+                    raise NeedsInput(
+                        f"{code.location} gained base `{gained.qualname}` binds reserved/private "
+                        f"{sorted(bound_names)} under `ModelMetaclass`",
+                        NeededInput.PROOF,
+                    )
 
     def reads(self, code: CreationCode, roles: dict[str, Role]) -> CreationReads:
         """How one creation function's reads are judged: here, a new owner joins the bases."""
@@ -1132,6 +1300,65 @@ class ClassCreationProof:
             )
         return parsed
 
+    def module_by_name(self, module_name: str) -> ParsedModule | None:
+        """A module's parse by dotted name: scanned first, then installed source."""
+
+        for parsed in self.snapshot.parsed_modules:
+            if parsed.module_name == module_name:
+                return parsed
+        return InstalledModule.parsed(module_name)
+
+    def module_constant_str(self, owner: CompactIndexedClass, expr: ast.Name) -> str | None:
+        """The string literal a module-level or imported constant holds when its defining
+        module binds it once at top level to a string literal and never rebinds or deletes it."""
+
+        qualified = self.resolved(owner, expr, self.module_end(owner))
+        if qualified is None or "." not in qualified:
+            return None
+        module_name, _, attr_name = qualified.rpartition(".")
+        parsed = self.module_by_name(module_name)
+        if parsed is None:
+            return None
+        if any(
+            isinstance(node, ast.Global) and attr_name in node.names
+            for node in ast.walk(parsed.module)
+        ):
+            return None
+        found: str | None = None
+        for statement in parsed.module.body:
+            match statement:
+                case ast.Assign(targets=[ast.Name(id=target)], value=ast.Constant(value=str() as text)) if (
+                    target == attr_name
+                ):
+                    if found is not None:
+                        return None
+                    found = text
+                case ast.AnnAssign(target=ast.Name(id=target), value=ast.Constant(value=str() as text)) if (
+                    target == attr_name
+                ):
+                    if found is not None:
+                        return None
+                    found = text
+                case _:
+                    for child in ast.walk(statement):
+                        match child:
+                            case ast.Name(id=name, ctx=ast.Store() | ast.Del()) if name == attr_name:
+                                if isinstance(
+                                    statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                                ):
+                                    break
+                                return None
+                            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(
+                                name=name
+                            ) if name == attr_name and child is statement:
+                                return None
+                            case ast.alias(name=imported, asname=renamed) if (
+                                (renamed or imported.partition(".")[0]) == attr_name
+                                and isinstance(statement, (ast.Import, ast.ImportFrom))
+                            ):
+                                return None
+        return found
+
     def installed_packages(self) -> frozenset[str]:
         """The installed packages that declare a class of the ancestry or of its
         metaclasses' ancestry: the code outside the scan that runs as the class is
@@ -1428,7 +1655,30 @@ class CreationReads:
         if not isinstance(expr, ast.Name):
             return None
         bound = self.single_local_value(expr.id)
-        return bound.value if isinstance(bound, ast.Constant) and isinstance(bound.value, str) else None
+        if isinstance(bound, ast.Constant) and isinstance(bound.value, str):
+            return bound.value
+        if self.code.owner is None:
+            return None
+        params = {
+            arg.arg
+            for arg in (
+                *self.code.node.args.posonlyargs,
+                *self.code.node.args.args,
+                *self.code.node.args.kwonlyargs,
+            )
+        }
+        if self.code.node.args.vararg is not None:
+            params.add(self.code.node.args.vararg.arg)
+        if self.code.node.args.kwarg is not None:
+            params.add(self.code.node.args.kwarg.arg)
+        if expr.id in params or any(
+            isinstance(node, ast.Name)
+            and node.id == expr.id
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            for node in ast.walk(self.code.node)
+        ):
+            return None
+        return self.proof.module_constant_str(self.code.owner, expr)
 
     def _namespace_mutated_outside(self, ns_name: str, inside: frozenset[ast.AST]) -> bool:
         """Whether `ns_name` is mutated (subscript write, update, setdefault) or passed to
@@ -1553,12 +1803,10 @@ class CreationReads:
         return None
 
     def constant_key(self, node: ast.AST | None) -> bool:
-        if (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and node.value not in self.proof.moved
-        ):
-            return True
+        if isinstance(node, ast.expr):
+            resolved = self._resolved_constant_str(node)
+            if resolved is not None and resolved not in self.proof.moved:
+                return True
         if isinstance(node, ast.Name):
             if self.constant_loop_key(node):
                 return True
@@ -2606,6 +2854,72 @@ class BaseDropCreationProof(ClassCreationProof):
     def reads(self, code: CreationCode, roles: dict[str, Role]) -> CreationReads:
         return BaseDropReads(self, code, roles)
 
+    def require_pydantic_model_metaclass_unchanged(self, code: CreationCode) -> None:
+        """Dropping a redundant non-`BaseModel`, non-`Generic` base that binds no
+        `model_config` / `Config` leaves `ModelMetaclass.__new__` unchanged when the
+        class header is unsubscripted and its MRO stays identical."""
+
+        if code.node.name not in ("__new__", "__prepare__"):
+            self.reads(code, self.metaclass_roles(code.node)).require()
+            return
+        if code.node.name == "__prepare__":
+            return
+        if self.header_is_subscripted:
+            raise NeedsInput(
+                f"{code.location} `{self.composer.qualname}` subscripts a base under "
+                "`ModelMetaclass`: NRA needs a proof that dropping "
+                f"{self.owner_name} leaves generic metadata unchanged",
+                NeededInput.PROOF,
+            )
+        for indexed in self.ancestry:
+            if indexed.symbol == PYDANTIC_BASE_MODEL:
+                continue
+            for hook_name in ("__pydantic_init_subclass__", "__pydantic_on_complete__"):
+                hook = self.method(indexed, hook_name)
+                if hook is not None:
+                    self.reads(hook, {self.first_parameter(hook.node): NEW_CLASS}).require()
+        verdicts = self.snapshot.class_overlap_verdicts
+        for dropped_symbol in self.dropped:
+            if dropped_symbol == "typing.Generic":
+                raise NeedsInput(
+                    f"{code.location} dropping `typing.Generic` from `{self.composer.qualname}` "
+                    "changes `ModelMetaclass` generic checks",
+                    NeededInput.PROOF,
+                )
+            if self.is_subclass_of(dropped_symbol, PYDANTIC_BASE_MODEL):
+                raise NeedsInput(
+                    f"{code.location} dropping `BaseModel` subclass `{dropped_symbol}` from "
+                    f"`{self.composer.qualname}` may change `_collect_bases_data`",
+                    NeededInput.PROOF,
+                )
+            if (native := native_root_type(dropped_symbol)) is not None:
+                if any(
+                    "model_config" in vars(anc) or "Config" in vars(anc)
+                    for anc in inspect.getmro(native)
+                ):
+                    raise NeedsInput(
+                        f"{code.location} dropped base `{dropped_symbol}` carries `model_config`",
+                        NeededInput.PROOF,
+                    )
+                continue
+            order = verdicts.linearized(dropped_symbol)
+            for sym in order:
+                if (anc_native := native_root_type(sym)) is not None:
+                    if "model_config" in vars(anc_native) or "Config" in vars(anc_native):
+                        raise NeedsInput(
+                            f"{code.location} dropped base `{dropped_symbol}` inherits `model_config`",
+                            NeededInput.PROOF,
+                        )
+                    continue
+                if any(
+                    name in ("model_config", "Config")
+                    for name, _ in self.own_bindings(sym, composed=False)
+                ):
+                    raise NeedsInput(
+                        f"{code.location} dropped base `{dropped_symbol}` carries `model_config` or `Config`",
+                        NeededInput.PROOF,
+                    )
+
     def changed_direct_bases_for_membership(self) -> frozenset[str] | None:
         return frozenset(self.dropped)
 
@@ -2938,7 +3252,7 @@ class BaseDropReads(OrderPreservingReads):
         variable of a loop over a display of constants, or a local bound once to a
         text with a constant start or end `__orig_bases__` has not."""
 
-        text = self.text(key)
+        text = self._resolved_constant_str(key) if isinstance(key, ast.expr) else None
         if text is not None:
             return text != HEADER_BASES
         if not isinstance(key, ast.Name):
