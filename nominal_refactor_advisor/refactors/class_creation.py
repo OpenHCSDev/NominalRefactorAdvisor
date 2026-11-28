@@ -797,6 +797,45 @@ class ClassCreationProof:
         if unresolved:
             reads.refuse(node, f"`dir()` changes attribute set by {unresolved}")
 
+    def require_isabstract_kept(self, node: ast.AST, reads: CreationReads) -> None:
+        """`inspect.isabstract(cls)` checks only whether `cls` has any unimplemented
+        `@abstractmethod` in its own namespace or its bases' `__abstractmethods__`.
+        Moving concrete members (with `abstract_moved` empty) and neither gaining nor
+        dropping abstract methods leaves `inspect.isabstract(cls)` unchanged."""
+
+        if self.abstract_moved or (
+            self.moved & frozenset(("__abstractmethods__", "__isabstractmethod__"))
+        ):
+            reads.refuse(node, "changes abstract methods read by `inspect.isabstract()`")
+        before_set = frozenset(self.walk.before)
+        after_set = frozenset(self.walk.after)
+        for symbol in self.walk.after:
+            if symbol in before_set:
+                continue
+            indexed = self.walked(symbol)
+            if indexed.abstract_method_names:
+                reads.refuse(
+                    node,
+                    f"gained base `{indexed.qualname}` declares abstract methods "
+                    f"{sorted(indexed.abstract_method_names)} read by `inspect.isabstract()`",
+                )
+            if not indexed.base_references_are_complete:
+                reads.refuse(
+                    node,
+                    f"gained base `{indexed.qualname}` has unresolved bases that may "
+                    "add abstract methods read by `inspect.isabstract()`",
+                )
+        for symbol in self.walk.before:
+            if symbol in after_set:
+                continue
+            indexed = self.walked(symbol)
+            if indexed.abstract_method_names:
+                reads.refuse(
+                    node,
+                    f"dropped base `{indexed.qualname}` declares abstract methods "
+                    f"{sorted(indexed.abstract_method_names)} read by `inspect.isabstract()`",
+                )
+
     def require_selection_kept(self, name: str, node: ast.AST, reads: CreationReads) -> None:
         """A walk keeping the classes whose own body binds `name` selects the same
         classes in the same order when the move neither gives `name` to a class
@@ -2206,6 +2245,15 @@ class CreationReads:
             ):
                 self.proof.require_dir_kept(call, self, prefixes=self._dir_filter_prefixes(call))
                 return
+            case ast.Call(args=[arg], keywords=[]) if (
+                role is NEW_CLASS
+                and arg is node
+                and self.code.owner is not None
+                and self.proof.resolved(self.code.owner, call.func, call.lineno)
+                == "inspect.isabstract"
+            ):
+                self.proof.require_isabstract_kept(call, self)
+                return
         target = self.callee(call.func)
         if target is True:
             return
@@ -2297,7 +2345,7 @@ class CreationReads:
                 kind = BUILTIN_CONTAINERS.get(self.proof.qualified(owner, name, line))
                 return BuiltinContainer(kind, (), owner, line) if kind is not None else None
             case ast.Attribute(value=ast.Name() as holder, attr=attr):
-                indexed = self.proof.class_index.class_for(self.proof.qualified(owner, holder, line))
+                indexed = self.proof.snapshot.class_overlap_verdicts.ancestor(self.proof.qualified(owner, holder, line))
                 return self.declared_container(indexed, attr) if indexed is not None else None
             case ast.Call(func=ast.Attribute(value=receiver, attr="setdefault"), args=[_, default], keywords=[]):
                 mapping = self.builtin_container(receiver, owner, line)
@@ -2373,7 +2421,21 @@ class CreationReads:
                 if qualified in MODELLED_METACLASSES:
                     return True
                 indexed = self.proof.snapshot.class_overlap_verdicts.ancestor(qualified)
-                return self.proof.method(indexed, attr) if indexed is not None else None
+                if indexed is None:
+                    return None
+                verdicts = self.proof.snapshot.class_overlap_verdicts
+                try:
+                    order = verdicts.linearized(indexed.symbol)
+                except NeedsInput:
+                    order = (indexed.symbol,)
+                for symbol in order:
+                    anc = verdicts.ancestor(symbol)
+                    if anc is None:
+                        continue
+                    found = self.proof.method(anc, attr)
+                    if found is not None:
+                        return found
+                return None
         return None
 
 

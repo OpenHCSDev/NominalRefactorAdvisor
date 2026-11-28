@@ -914,7 +914,10 @@ def test_sibling_override_with_contravariant_parameter_supertype_lifts_cleanly(
     assert simulation.is_clean, simulation.preflight_report
     simulation.apply()
     after = (tmp_path / "pkg/popup.py").read_text()
-    assert "def for_prompt(cls, prompt: object) -> Self:\n        return cls()" in after
+    assert (
+        "def for_prompt(cls, prompt: object) -> Self | None:\n        return cls()"
+        in after
+    )
     assert _findings(tmp_path) == []
 
 
@@ -1133,3 +1136,225 @@ def test_lift_onto_existing_home_allows_bases_read_when_bases_unchanged(tmp_path
         findings[0], _snapshot(tmp_path)
     )
     assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+
+
+def test_replace_home_stub_preserves_broader_return_annotation_and_import(
+    tmp_path: Path,
+):
+    """Reproduces `CodingTool._parse_resource` (`agent-comms` #nra 12710): lifting
+    `def _parse_resource(self) -> None: return None` onto `@abstractmethod def
+    _parse_resource(self) -> FileClaimPath | None: ...` must preserve the base
+    contract's return annotation and keep `FileClaimPath` imported."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/claim.py": "class FileClaimPath:\n    pass\n",
+            "pkg/tools.py": (
+                "from __future__ import annotations\n"
+                "from abc import ABC, abstractmethod\n"
+                "from pkg.claim import FileClaimPath\n\n\n"
+                "class CodingTool(ABC):\n"
+                "    @abstractmethod\n"
+                "    def _parse_resource(self) -> FileClaimPath | None: ...\n\n\n"
+                "class ReadTool(CodingTool):\n"
+                "    def _parse_resource(self) -> None:\n"
+                "        return None\n\n\n"
+                "class BashTool(CodingTool):\n"
+                "    def _parse_resource(self) -> None:\n"
+                "        return None\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        findings[0], _snapshot(tmp_path)
+    )
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.executable_recipe.simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    after = (tmp_path / "pkg/tools.py").read_text()
+    assert "from pkg.claim import FileClaimPath" in after
+    assert "def _parse_resource(self) -> FileClaimPath | None:\n        return None" in after
+    assert _findings(tmp_path) == []
+
+
+def test_partial_self_return_annotation_rewrites_to_self(tmp_path: Path):
+    """Reproduces `read_basis.py:604` (`agent-comms` #nra 12716): when one sibling
+    has no return annotation and another returns its own class name, lifting onto a
+    shared base must rewrite the return annotation to `Self` instead of stamping the
+    annotated sibling's class name onto the base."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/conv.py": (
+                "from __future__ import annotations\n"
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class Conversation(ABC):\n"
+                "    @abstractmethod\n"
+                "    def resolved(self) -> Conversation: ...\n\n\n"
+                "class AllConversation(Conversation):\n"
+                "    def resolved(self):\n"
+                "        return self\n\n\n"
+                "class ChannelConversation(Conversation):\n"
+                "    def resolved(self) -> ChannelConversation:\n"
+                "        return self\n\n\n"
+                "class DirectConversation(Conversation):\n"
+                "    def resolved(self) -> Conversation:\n"
+                "        return AllConversation()\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="Conversation",
+                because="self-resolving conversations",
+                name="NamedConversation",
+                judgement="Conversations that resolve to themselves.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.executable_recipe.simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    after = (tmp_path / "pkg/conv.py").read_text()
+    assert "from typing import Self" in after
+    assert "def resolved(self) -> Self:\n        return self" in after
+    assert "-> ChannelConversation" not in after
+    assert _findings(tmp_path) == []
+
+
+def test_mixed_direct_and_indirect_siblings_rebase_without_restating_parent(
+    tmp_path: Path,
+):
+    """Reproduces `ChildOutcome` (`agent-comms` #nra 12715): when some answering
+    siblings inherit `parent` directly and others indirectly, direct siblings replace
+    `parent` with the extracted base while indirect siblings prepend it — avoiding a
+    manufactured `P51 Restated Base` finding."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/outcomes.py": (
+                "class ChildOutcome:\n"
+                "    def ok(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class InterruptedOutcome(ChildOutcome):\n"
+                "    pass\n\n\n"
+                "class SignaledOutcome(InterruptedOutcome):\n"
+                "    def ok(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class FailedToStartOutcome(ChildOutcome):\n"
+                "    def ok(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class CleanOutcome(ChildOutcome):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="ChildOutcome",
+                because="unsuccessful outcomes",
+                name="UnsuccessfulChildOutcome",
+                judgement="Outcomes that did not succeed.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.executable_recipe.simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    after = (tmp_path / "pkg/outcomes.py").read_text()
+    assert "class FailedToStartOutcome(UnsuccessfulChildOutcome):" in after
+    assert "class SignaledOutcome(UnsuccessfulChildOutcome, InterruptedOutcome):" in after
+    assert "FailedToStartOutcome(UnsuccessfulChildOutcome, ChildOutcome)" not in after
+    assert _findings(tmp_path) == []
+
+
+def test_extract_sibling_override_base_preserves_external_base_mro(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """When answering siblings or their descendants inherit an installed/external base
+    alongside the scanned parent, post-rebase MRO checking must include external bases
+    via `verdicts.bases(...)` rather than dropping them via `resolved_base_symbols`."""
+
+    _write(
+        tmp_path,
+        {
+            "site/extwidget.py": "class ExternalFrame:\n    pass\n",
+            "repo/pkg/__init__.py": "",
+            "repo/pkg/questions.py": (
+                "from extwidget import ExternalFrame\n\n\n"
+                "class QuestionContext:\n"
+                "    def kind(self) -> str:\n"
+                "        return 'none'\n\n\n"
+                "class LiveQuestion(ExternalFrame, QuestionContext):\n"
+                "    def kind(self) -> str:\n"
+                "        return 'live'\n\n\n"
+                "class PanelQuestion(ExternalFrame, QuestionContext):\n"
+                "    def kind(self) -> str:\n"
+                "        return 'live'\n\n\n"
+                "class SpecialPanelQuestion(PanelQuestion, ExternalFrame):\n"
+                "    pass\n\n\n"
+                "class DryQuestion(QuestionContext):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    repo = tmp_path / "repo"
+    findings = _findings(repo)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="QuestionContext",
+                because="live questions",
+                name="LiveQuestionContext",
+                judgement="Question contexts that are live.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(repo)
+    )
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.executable_recipe.simulate(_snapshot(repo))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    after = (repo / "pkg/questions.py").read_text()
+    assert "class LiveQuestion(ExternalFrame, LiveQuestionContext):" in after
+    assert "class PanelQuestion(ExternalFrame, LiveQuestionContext):" in after
+    assert _findings(repo) == []
