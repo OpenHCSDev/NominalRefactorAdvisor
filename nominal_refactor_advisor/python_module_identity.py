@@ -110,7 +110,9 @@ class PythonModulePathIdentity(SourceFileIdentity):
         unnameable = [
             index for index, part in enumerate(parts) if not python_module_name_is_importable(part)
         ]
-        return analysis_root.joinpath(*parts[: unnameable[-1] + 1]) if unnameable else analysis_root
+        if unnameable:
+            return analysis_root.joinpath(*parts[: unnameable[-1] + 1])
+        return _namespace_package_import_root(analysis_root)
 
     @property
     def declared_source_relative_path(self) -> Path:
@@ -147,6 +149,38 @@ class PythonModulePathIdentity(SourceFileIdentity):
     @property
     def is_importable(self) -> bool:
         return python_module_name_is_importable(self.import_name)
+
+
+_PROJECT_ROOT_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg", ".git")
+
+
+def _is_project_root(directory: Path) -> bool:
+    return any((directory / marker).exists() for marker in _PROJECT_ROOT_MARKERS)
+
+
+def _namespace_package_import_root(analysis_root: Path) -> Path:
+    """When `analysis_root` is a PEP 420 namespace package (no `__init__.py`)
+    nested under a project root (`pyproject.toml` / `setup.py` / `setup.cfg` /
+    `.git`, optionally via `src/`), return the project's import root so modules
+    keep their full dotted names (`pkg.mod`, not `mod`) during single-file or
+    subpackage scans."""
+
+    resolved = analysis_root.resolve()
+    if _is_project_root(resolved) or (
+        resolved.name == "src" and _is_project_root(resolved.parent)
+    ):
+        return analysis_root
+    cursor = resolved
+    while cursor != cursor.parent:
+        if not python_module_name_is_importable(cursor.name):
+            return analysis_root
+        parent = cursor.parent
+        if parent.name == "src" and _is_project_root(parent.parent):
+            return parent
+        if _is_project_root(parent):
+            return parent
+        cursor = parent
+    return analysis_root
 
 
 def python_module_name_is_importable(module_name: str) -> bool:
