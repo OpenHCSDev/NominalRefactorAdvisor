@@ -232,7 +232,7 @@ class CreatedClassStore:
     def _created_by_new(self, function: FunctionNode) -> frozenset[str]:
         names: set[str] = set()
         for node in ast.walk(function):
-            value = getattr(node, "value", None)
+            value = unwrap_cast(getattr(node, "value", None))
             if not (
                 isinstance(value, ast.Call)
                 and isinstance(value.func, ast.Attribute)
@@ -393,6 +393,22 @@ READ_ONLY_CALLS = frozenset(("cast", "isinstance", "issubclass", "getattr", "has
 """Calls that read the class handed to them and bind nothing on it."""
 
 
+def unwrap_cast(node: ast.AST | None) -> ast.AST | None:
+    """Strip transparent `cast(T, expr)` / `typing.cast(T, expr)` wrappers."""
+
+    while (
+        isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "cast")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "cast")
+        )
+        and len(node.args) == 2
+        and not node.keywords
+    ):
+        node = node.args[1]
+    return node
+
+
 def _is_super_call(node: ast.AST | None, method: str) -> bool:
     match node:
         case ast.Call(func=ast.Attribute(value=ast.Call(func=ast.Name(id="super")), attr=attr)):
@@ -403,13 +419,14 @@ def _is_super_call(node: ast.AST | None, method: str) -> bool:
 def passes_bases_on(node: FunctionNode) -> bool:
     """`__new__(mcs, name, bases, namespace, ...)` never rebinds `bases`, hands
     it on as the third argument of every `super().__new__` it calls, and
-    returns what that call built."""
+    returns what that call built (allowing transparent `cast(T, ...)` wrappers)."""
 
     names = _parameters(node)
     if len(names) < 3:
         return False
     bases = names[2]
     built: set[str] = set()
+    rebound: set[str] = set()
     calls = 0
     for child in ast.walk(node):
         match child:
@@ -423,18 +440,22 @@ def passes_bases_on(node: FunctionNode) -> bool:
                     return False
             case ast.Assign(targets=[ast.Name(id=target)], value=value) | ast.AnnAssign(
                 target=ast.Name(id=target), value=value
-            ) if value is not None and _is_super_call(value, "__new__"):
-                built.add(target)
+            ):
+                if _is_super_call(unwrap_cast(value), "__new__"):
+                    built.add(target)
+                else:
+                    rebound.add(target)
+            case ast.AugAssign(target=ast.Name(id=target)):
+                rebound.add(target)
+    built -= rebound
     if not calls:
         return False
     for child in ast.walk(node):
         if isinstance(child, ast.Return):
-            value = child.value
-            if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "cast":
-                value = value.args[-1] if value.args else None
+            value = unwrap_cast(child.value)
             if not (
                 (isinstance(value, ast.Name) and value.id in built)
-                or (value is not None and _is_super_call(value, "__new__"))
+                or _is_super_call(value, "__new__")
             ):
                 return False
     return True
@@ -505,4 +526,5 @@ __all__ = (
     "CreatedClassStore",
     "CreationBindings",
     "passes_bases_on",
+    "unwrap_cast",
 )

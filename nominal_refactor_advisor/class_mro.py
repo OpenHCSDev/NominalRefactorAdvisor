@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from abc import ABC, ABCMeta, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -46,11 +47,33 @@ class NativeMroBase(StrEnum):
         return None
 
 
-NAMESPACE_READ_NATIVES: tuple[type, ...] = (Generic,)
-"""Natively implemented terminal bases with no source to read: each one's own
-namespace (`vars()`) names every member it binds, and its only base is
-`object`. `Generic`'s creation hook reads just the type parameters its
-subclass's `__orig_bases__` name, which a base declaring none leaves as they were."""
+def _pure_builtin_types() -> tuple[type, ...]:
+    """Every pure-C `builtins` class (excluding `object`) whose entire MRO stays
+    in `builtins` with metaclass `type`: Python exposes each class's exact C3
+    bases and own `vars()` without running repository code."""
+
+    seen: dict[type, None] = {}
+    for value in vars(builtins).values():
+        if (
+            isinstance(value, type)
+            and value is not object
+            and value.__module__ == "builtins"
+            and type(value) is type
+            and all(
+                ancestor.__module__ == "builtins" and type(ancestor) is type
+                for ancestor in value.__mro__
+            )
+        ):
+            seen[value] = None
+    return tuple(seen)
+
+
+NAMESPACE_READ_NATIVES: tuple[type, ...] = (Generic, *_pure_builtin_types())
+"""Natively implemented terminal bases with no `.py` source to read: each one's
+own namespace (`vars()`) names every member it binds, and its bases stay inside
+`NAMESPACE_READ_NATIVES` and `object`. `Generic`'s creation hook reads just the
+type parameters its subclass's `__orig_bases__` name, which a base declaring
+none leaves as they were."""
 
 _NATIVE_MRO_BASE_BY_NAME: dict[str, NativeMroBase] = {
     member.value: member for member in NativeMroBase
@@ -87,7 +110,20 @@ class NativeStandIn:
         native = _NAMESPACE_READ_NATIVE_BY_NAME.get(qualified_name)
         if native is None:
             return None
-        return NativeStandIn(type(qualified_name, (), {}), native_declared_names(native))
+        stand_in_bases = tuple(
+            base_stand_in.entry
+            for base in native.__bases__
+            if base is not object
+            and (
+                base_stand_in := NativeStandIn.for_qualified_name(
+                    f"{base.__module__}.{base.__qualname__}"
+                )
+            )
+            is not None
+        )
+        return NativeStandIn(
+            type(qualified_name, stand_in_bases, {}), native_declared_names(native)
+        )
 
     @staticmethod
     def stops(entry: type, member_name: str) -> bool | None:

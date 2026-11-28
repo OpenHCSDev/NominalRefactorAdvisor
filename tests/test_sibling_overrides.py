@@ -1660,3 +1660,98 @@ def test_sibling_override_covariant_return_supertype_and_external_import_lifts(t
     assert "import collections" in base_after
     assert "def owner(self) -> collections.UserList:" in base_after
     assert _findings(tmp_path) == []
+
+
+def test_cast_wrapped_super_new_metaclass_keeps_proved_mro(tmp_path: Path):
+    """Reproduces `ServesDeclaration.__new__` and `pydantic.ModelMetaclass.__new__`:
+    `cls = cast(Meta, super().__new__(mcs, name, bases, namespace, **kw))` hands
+    `bases` unchanged to `super().__new__` and returns what that call built, so
+    subclasses keep a proved C3 MRO; rebinding `cls` to another value still refuses."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/served.py": (
+                "from typing import cast\n\n\n"
+                "class CastMeta(type):\n"
+                "    def __new__(mcs, name, bases, namespace, **kwargs):\n"
+                "        cls = cast(CastMeta, super().__new__(mcs, name, bases, namespace, **kwargs))\n"
+                "        return cls\n\n\n"
+                "class BaseRequest(metaclass=CastMeta):\n"
+                "    def reply(self) -> str:\n"
+                "        return 'base'\n\n\n"
+                "class RetryRequest(BaseRequest):\n"
+                "    def reply(self) -> str:\n"
+                "        return 'held'\n\n\n"
+                "class SetRequest(BaseRequest):\n"
+                "    def reply(self) -> str:\n"
+                "        return 'held'\n\n\n"
+                "class ReboundMeta(type):\n"
+                "    def __new__(mcs, name, bases, namespace, **kwargs):\n"
+                "        cls = cast(ReboundMeta, super().__new__(mcs, name, bases, namespace, **kwargs))\n"
+                "        cls = type(name, (), namespace)\n"
+                "        return cls\n\n\n"
+                "class ReboundBase(metaclass=ReboundMeta):\n"
+                "    def reply(self) -> str:\n"
+                "        return 'base'\n\n\n"
+                "class ReboundA(ReboundBase):\n"
+                "    def reply(self) -> str:\n"
+                "        return 'x'\n\n\n"
+                "class ReboundB(ReboundBase):\n"
+                "    def reply(self) -> str:\n"
+                "        return 'x'\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    cast_finding = next(f for f in findings if "BaseRequest.reply" in f.summary)
+    rebound_finding = next(f for f in findings if "ReboundBase.reply" in f.summary)
+    assert "lookup order" not in cast_finding.summary
+    assert "lookup order" in rebound_finding.summary
+    snap = _snapshot(tmp_path)
+    cast_eval = SiblingOverrideDetector().evaluate_recipe_for_finding(cast_finding, snap)
+    assert cast_eval.executable_recipe is not None, cast_eval.rejection_reason
+    rebound_eval = SiblingOverrideDetector().evaluate_recipe_for_finding(rebound_finding, snap)
+    assert rebound_eval.recipe is None
+    assert "lookup order" in rebound_eval.rejection_reason
+
+
+def test_builtin_exception_and_float_subclasses_keep_proved_mro(tmp_path: Path):
+    """Reproduces `ValueError` / `RuntimeError` / `float` subclasses in agent-comms:
+    pure-C `builtins` bases expose their exact MRO and `vars()`, so sibling overrides
+    on subclasses of `ValueError`, `RuntimeError`, or `float` keep a proved C3 order."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/errors.py": (
+                "class RejectedError(Exception):\n"
+                "    def explanation(self) -> str:\n"
+                "        return 'generic'\n\n\n"
+                "class NotVisibleError(RejectedError, ValueError):\n"
+                "    def explanation(self) -> str:\n"
+                "        return str(self)\n\n\n"
+                "class RefusedError(RejectedError, RuntimeError):\n"
+                "    def explanation(self) -> str:\n"
+                "        return str(self)\n\n\n"
+                "class SchemaOwner:\n"
+                "    def schema(self) -> str:\n"
+                "        return 'any'\n\n\n"
+                "class CostAmount(SchemaOwner, float):\n"
+                "    def schema(self) -> str:\n"
+                "        return 'number'\n\n\n"
+                "class CreationTime(SchemaOwner, float):\n"
+                "    def schema(self) -> str:\n"
+                "        return 'number'\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 2
+    assert all("lookup order" not in finding.summary for finding in findings)
+    snap = _snapshot(tmp_path)
+    for finding in findings:
+        evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(finding, snap)
+        assert evaluation.executable_recipe is not None, evaluation.rejection_reason

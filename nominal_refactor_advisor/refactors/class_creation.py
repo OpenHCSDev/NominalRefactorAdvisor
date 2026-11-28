@@ -49,8 +49,9 @@ from nominal_refactor_advisor.class_creation_store import (
     ABSTRACT_HOOKS_META,
     MODELLED_METACLASSES,
     REGISTRY_NAMES,
+    unwrap_cast,
 )
-from nominal_refactor_advisor.class_mro import native_root_type
+from nominal_refactor_advisor.class_mro import NativeMroBase, native_root_type
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
@@ -568,8 +569,9 @@ class ClassCreationProof:
 
         if symbol == target_symbol:
             return True
-        if native_root_type(symbol) is not None:
-            return False
+        target_native = native_root_type(target_symbol)
+        if (native := native_root_type(symbol)) is not None:
+            return target_native is not None and issubclass(native, target_native)
         pending = [symbol]
         visited: set[str] = set()
         while pending:
@@ -579,7 +581,9 @@ class ClassCreationProof:
             visited.add(current_sym)
             if current_sym == target_symbol:
                 return True
-            if native_root_type(current_sym) is not None:
+            if (current_native := native_root_type(current_sym)) is not None:
+                if target_native is not None and issubclass(current_native, target_native):
+                    return True
                 continue
             indexed = self.walked(current_sym)
             if not indexed.base_references_are_complete:
@@ -592,7 +596,11 @@ class ClassCreationProof:
                 base_sym = reference.qualified_name
                 if base_sym == target_symbol:
                     return True
-                if native_root_type(base_sym) is None and base_sym not in visited:
+                if (base_native := native_root_type(base_sym)) is not None:
+                    if target_native is not None and issubclass(base_native, target_native):
+                        return True
+                    continue
+                if base_sym not in visited:
                     pending.append(base_sym)
         return False
 
@@ -832,7 +840,9 @@ class ClassCreationProof:
                     node, f"gained base `{indexed.qualname}` has decorators or class keywords affecting `dir()`"
                 )
             if not indexed.base_references_are_complete or any(
-                native_root_type(ref.qualified_name) is None for ref in indexed.base_references
+                NativeMroBase.for_qualified_name(ref.qualified_name) is None
+                and ref.qualified_name != "typing.Generic"
+                for ref in indexed.base_references
             ):
                 reads.refuse(node, f"gained base `{indexed.qualname}` has non-native bases affecting `dir()`")
             for name, statement in self.own_bindings(symbol, composed=True):
@@ -1331,7 +1341,7 @@ class CreationReads:
                     self.roles[target] = element
                 case ast.Assign(targets=[ast.Name(id=target)], value=value) | ast.AnnAssign(
                     target=ast.Name(id=target), value=value
-                ) if value is not None and self.is_super_call(value, "__new__"):
+                ) if value is not None and self.is_super_call(unwrap_cast(value), "__new__"):
                     self.roles[target] = NEW_CLASS
         for node in ast.walk(self.code.node):
             if node in skipped:
