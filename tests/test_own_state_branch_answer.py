@@ -592,3 +592,68 @@ def mk():
                 ),
             ),
         )
+
+
+def test_own_state_in_place_ternary_return_does_not_double_return(tmp_path: Path) -> None:
+    """In-place ternary push on `OwnStateBranchAnswer` uses `DispatchSite.render_in_place_default`
+    rather than duplicating `return` into `return return ...`."""
+    repo = _write_repo(
+        tmp_path / "ternary_inplace",
+        {
+            "pkg/__init__.py": "",
+            "pkg/m.py": """from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Note:
+    body: str | None
+
+    @property
+    def has_body(self) -> bool:
+        return self.body is not None
+
+    def preview(self, fallback: str) -> str:
+        return self.body if self.has_body else fallback
+
+
+def build() -> tuple[Note, Note]:
+    return Note("hi"), Note(None)
+"""
+        },
+    )
+    _, snap, findings = _scan(repo)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="Note.has_body",
+                because="Note with a body is its own subtype",
+                name="NoteWithBody",
+                judgement="Note carrying a body.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(findings)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 1
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    rewritten = sim.simulation.rewritten_sources[str(repo / "pkg/m.py")]
+    assert "return return" not in rewritten
+    sim.apply()
+    mod = _load_module("_test_p41_ternary_inplace", repo / "pkg/m.py")
+    try:
+        with_body, empty = mod.build()
+        assert with_body.preview("none") == "hi"
+        assert empty.preview("none") == "none"
+    finally:
+        sys.modules.pop("_test_p41_ternary_inplace", None)
+    _, _, after_p41 = _scan(repo)
+    assert after_p41 == []
+

@@ -67,7 +67,6 @@ from nominal_refactor_advisor.refactors.constant_subtype_answer import (
     _contains_super_call,
     _indent_methods,
     _method_header_text,
-    _render_block_at_indent,
     _render_in_place_override,
     _statement_full_line_span,
     _subject_allowed_for_site,
@@ -1192,7 +1191,9 @@ class _OwnStateConsumerProof:
         if not line_indent.isspace():
             line_indent = ""
         if self.in_place_base_method:
-            return start, end, _render_block_at_indent(self.false_body, line_indent)
+            rendered = site.render_in_place_default(self.false_body, line_indent)
+            assert rendered is not None
+            return start, end, rendered
         call_args = ", ".join(arg.call_expr for arg in self.captured_args)
         subject_text = ast.unparse(site.subject)
         match site.subject:
@@ -1444,6 +1445,11 @@ def _prove_consumer(
                 NeededInput.SOURCE_CHANGE,
             )
         false_body = raw_false
+        if site.render_in_place_default(false_body) is None:
+            raise NeedsInput(
+                f"`{function.name}` branch shape at {source_path}:{consumer.test_line} cannot render in place",
+                NeededInput.SOURCE_CHANGE,
+            )
         true_body = raw_true
         captured_args: tuple[CapturedArgument, ...] = ()
         is_async = isinstance(function, ast.AsyncFunctionDef)
