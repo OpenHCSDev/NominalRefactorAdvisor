@@ -2166,7 +2166,7 @@ def _subject_probed_attributes(site: AbsenceBranchSite) -> frozenset[str]:
 
     subject_dump = ast.dump(site.subject)
     attrs: set[str] = set()
-    for expr in site.guard_exprs:
+    for expr in site.guard_exprs():
         for node in ast.walk(expr):
             match node:
                 case ast.Attribute(value=value, attr=attr) if ast.dump(value) == subject_dump:

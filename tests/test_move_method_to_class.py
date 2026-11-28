@@ -471,5 +471,5 @@ def test_move_method_to_parameter_refuses_caller_passing_supertype(tmp_path: Pat
         receiver_parameter="history",
     )
     with pytest.raises(CodemodOperationPreflightError, match="outside destination `EvidencedFragment`'s hierarchy"):
-        CodemodPlanSequence.from_operations((operation,)).simulate(snapshot)
+        RefactorRecipe(recipe_id="test", reason="test").with_operation(operation).simulate(snapshot)
 
