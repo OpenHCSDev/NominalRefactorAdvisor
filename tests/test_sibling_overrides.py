@@ -725,3 +725,101 @@ def test_refuses_extract_when_picked_base_name_collides(tmp_path: Path):
     assert evaluation.recipe is None
     assert "already bound" in evaluation.rejection_reason
     assert NeededInput.OWNER_PICK in evaluation.needs
+
+
+def test_sibling_property_with_return_annotation_on_one_sibling_lifts_keeping_annotation(
+    tmp_path: Path,
+):
+    """Reproduces Toad `ConversationPager.selected_categories`: an unannotated
+    `@property` on Qt and an annotated `@property` on Textual are one
+    declaration and lift onto their shared ancestor keeping the annotation."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/pager.py": (
+                "from __future__ import annotations\n\n\n"
+                "class HistoryPager:\n"
+                "    @property\n"
+                "    def selected_categories(self) -> frozenset[str]:\n"
+                "        return frozenset(('all',))\n\n\n"
+                "class ConversationPager(HistoryPager):\n"
+                "    pass\n"
+            ),
+            "pkg/qt_history.py": (
+                "from pkg.pager import ConversationPager\n\n\n"
+                "class QtConversationHistory(ConversationPager):\n"
+                "    def __init__(self, visible: frozenset[str]) -> None:\n"
+                "        self.visible = visible\n\n"
+                "    @property\n"
+                "    def selected_categories(self):\n"
+                "        return self.visible\n"
+            ),
+            "pkg/tui_history.py": (
+                "from __future__ import annotations\n\n"
+                "from pkg.pager import ConversationPager\n\n\n"
+                "class ConversationHistory(ConversationPager):\n"
+                "    def __init__(self, visible: frozenset[str]) -> None:\n"
+                "        self.visible = visible\n\n"
+                "    @property\n"
+                "    def selected_categories(self) -> frozenset[str]:\n"
+                "        return self.visible\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    assert "`ConversationPager` already exists to hold it" in findings[0].summary
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        findings[0], _snapshot(tmp_path)
+    )
+    assert evaluation.recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.recipe.simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    pager_text = (tmp_path / "pkg/pager.py").read_text()
+    assert "def selected_categories(self) -> frozenset[str]:" in pager_text
+    assert "selected_categories" not in (tmp_path / "pkg/qt_history.py").read_text()
+    assert "selected_categories" not in (tmp_path / "pkg/tui_history.py").read_text()
+    assert _findings(tmp_path) == []
+
+
+def test_sibling_property_with_conflicting_return_annotations_is_found_and_refuses_blind_lift(
+    tmp_path: Path,
+):
+    """Reproduces Toad `QtQuestion.question -> QtQuestion` vs `Question.question -> Question`:
+    detected as identical runtime overrides, while lifting refuses stamping one sibling's
+    return type onto the other."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/question.py": (
+                "from __future__ import annotations\n"
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class QuestionContext(ABC):\n"
+                "    @property\n"
+                "    @abstractmethod\n"
+                "    def question(self) -> QuestionContext: ...\n\n\n"
+                "class QtQuestion(QuestionContext):\n"
+                "    @property\n"
+                "    def question(self) -> QtQuestion:\n"
+                "        return self\n\n\n"
+                "class TuiQuestion(QuestionContext):\n"
+                "    @property\n"
+                "    def question(self) -> TuiQuestion:\n"
+                "        return self\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    assert "QuestionContext.question" in findings[0].summary
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        findings[0], _snapshot(tmp_path)
+    )
+    assert evaluation.recipe is None
+    assert "annotate `question` differently" in evaluation.rejection_reason
+    assert NeededInput.SOURCE_CHANGE in evaluation.needs

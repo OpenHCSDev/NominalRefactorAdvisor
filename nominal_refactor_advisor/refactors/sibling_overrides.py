@@ -89,6 +89,7 @@ from nominal_refactor_advisor.refactors.restated_overrides import (
     MemberDeletionCreationProof,
     NamespaceReaders,
     RestatedOverrideDeletion,
+    method_header_annotations,
     next_binder,
 )
 
@@ -138,8 +139,6 @@ class SiblingOverrideCandidate:
             if '.' in child.qualname:
                 raise NeedsInput(f'`{child.qualname}` is nested inside another class; declaring an intermediate base needs top-level sibling classes', NeededInput.SOURCE_CHANGE)
         restated = tuple((RestatedDeclarations.require(snapshot, children[0], child, (member_name,)) for child in children))
-        first = restated[0]
-        first.require_no_owner_bound_values(snapshot)
         rebase = cls._select_rebase(snapshot, verdicts, declaring, children)
         if '.' in rebase.parent.qualname:
             raise NeedsInput(f'`{rebase.parent.qualname}` is nested inside another class', NeededInput.SOURCE_CHANGE)
@@ -148,7 +147,9 @@ class SiblingOverrideCandidate:
         placement, parent_spelling = cls._select_placement(snapshot, rebase, children, base_name)
         cls._require_base_name_unbound(snapshot, base_name, placement, children)
         creation_keywords = _creation_keywords_for_intermediate(snapshot, rebase.parent)
-        movable_members(ClassMemberMoveProofContext.between(snapshot, children[0].target, placement.anchor.target), children[0], first.statements)
+        lifted_index = SiblingOverrideMove.select_lifted_index(snapshot, children, restated, placement.anchor.target, member_name)
+        first = restated[lifted_index]
+        first.require_no_owner_bound_values(snapshot)
         cls._require_post_rebase_mro_safe(snapshot, verdicts, rebase, declaring, children, member_name, base_name, lifted_is_property=any((_is_property_statement(statement) for statement in first.statements)))
         names = frozenset((member_name,))
         for child, restatement in zip(children, restated):
@@ -160,7 +161,7 @@ class SiblingOverrideCandidate:
             RestatedOverrideDeletion.require_plain_decorators(proof, child)
             proof.require_unchanged()
             NamespaceReaders(snapshot).require_unread(child.facts, names)
-        return cls(candidate=self, rebase=rebase, placement=placement, parent_spelling=parent_spelling, base_name=base_name, docstring=docstring.strip(), creation_keywords=creation_keywords, children=children, restated=restated)
+        return cls(candidate=self, rebase=rebase, placement=placement, parent_spelling=parent_spelling, base_name=base_name, docstring=docstring.strip(), creation_keywords=creation_keywords, children=children, restated=restated, lifted_index=lifted_index)
 
     def existing_home_note(self):
         """Format the summary clause naming an existing home class when one exists."""
@@ -819,6 +820,65 @@ class SiblingOverrideMove(ABC):
     candidate: SiblingOverrideCandidate
     children: tuple[OverlapClass, ...]
     restated: tuple[RestatedDeclarations, ...]
+    lifted_index: int
+
+    @property
+    def lifted_restatement(self) -> RestatedDeclarations:
+        return self.restated[self.lifted_index]
+
+    @staticmethod
+    def select_lifted_index(
+        snapshot: CodemodSourceSnapshot,
+        children: tuple[OverlapClass, ...],
+        restated: tuple[RestatedDeclarations, ...],
+        destination_target,
+        member_name: str,
+    ) -> int:
+        """Choose which sibling's source statement moves onto the shared ancestor.
+
+        When siblings differ only by omitted type annotations, prefer the most-annotated
+        copy whose annotation imports move cleanly without closing a cycle. Refuse when
+        siblings declare conflicting annotations on the same header slot.
+        """
+
+        annotations_by_index = [
+            method_header_annotations(restatement.statements[0])
+            if len(restatement.statements) == 1
+            else {}
+            for restatement in restated
+        ]
+        seen_slots: dict[str, str] = {}
+        for slot_map in annotations_by_index:
+            for slot, spelling in slot_map.items():
+                prior = seen_slots.get(slot)
+                if prior is not None and prior != spelling:
+                    raise NeedsInput(
+                        f"siblings annotate `{member_name}` differently on {slot} "
+                        f"(`{prior}` vs `{spelling}`): align the signature before lifting",
+                        NeededInput.SOURCE_CHANGE,
+                    )
+                seen_slots[slot] = spelling
+        candidate_indices = sorted(
+            range(len(children)),
+            key=lambda index: (-len(annotations_by_index[index]), index),
+        )
+        first_error: NeedsInput | None = None
+        for index in candidate_indices:
+            try:
+                movable_members(
+                    ClassMemberMoveProofContext.between(
+                        snapshot, children[index].target, destination_target
+                    ),
+                    children[index],
+                    restated[index].statements,
+                )
+            except NeedsInput as error:
+                if first_error is None:
+                    first_error = error
+                continue
+            return index
+        assert first_error is not None
+        raise first_error
 
 
 @dataclass(frozen=True)
@@ -873,15 +933,11 @@ class SiblingOverrideLift(SiblingOverrideMove):
             RestatedDeclarations.require(snapshot, children[0], child, (member_name,))
             for child in children
         )
-        first = restated[0]
-        first.require_no_owner_bound_values(snapshot)
-        movable_members(
-            ClassMemberMoveProofContext.between(
-                snapshot, children[0].target, home.target
-            ),
-            children[0],
-            first.statements,
+        lifted_index = cls.select_lifted_index(
+            snapshot, children, restated, home.target, member_name
         )
+        first = restated[lifted_index]
+        first.require_no_owner_bound_values(snapshot)
         placement = cls._require_home_placement(
             snapshot, verdicts, candidate, home, member_name
         )
@@ -931,6 +987,7 @@ class SiblingOverrideLift(SiblingOverrideMove):
             candidate=candidate,
             children=children,
             restated=restated,
+            lifted_index=lifted_index,
             home=home,
             placement=placement,
         )
@@ -1110,7 +1167,7 @@ class SiblingOverrideLift(SiblingOverrideMove):
         self, snapshot: CodemodSourceSnapshot, rationale: str
     ) -> tuple[NominalSourceEdit, ...]:
         home = self.home
-        first = self.restated[0]
+        first = self.lifted_restatement
         documentation = KeptDocumentation(self.children, first.deleted_names)
         rationale = documentation.rationale(rationale)
         home_source = snapshot.sources_by_file_path[home.file_path]
@@ -1884,7 +1941,7 @@ class SiblingOverrideBaseExtraction(SiblingOverrideMove):
     def edits(
         self, snapshot: CodemodSourceSnapshot, rationale: str
     ) -> tuple[NominalSourceEdit, ...]:
-        first = self.restated[0]
+        first = self.lifted_restatement
         documentation = KeptDocumentation(self.children, first.deleted_names)
         rationale = documentation.rationale(rationale)
         edits: list[NominalSourceEdit] = [

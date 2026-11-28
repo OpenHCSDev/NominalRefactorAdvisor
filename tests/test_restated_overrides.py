@@ -383,3 +383,79 @@ def test_a_metaclass_that_rewrites_its_bases_refuses_the_deletion(tmp_path: Path
 def test_a_metaclass_handing_its_bases_on_keeps_the_deletion(tmp_path: Path):
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/ends.py": _rebasing("bases")})
     assert [finding.primary_evidence.symbol for finding in _findings(tmp_path)] == ["Member"]
+
+
+def test_restated_method_omitting_parent_annotation_is_found_and_deleted(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/annotated.py": (
+                "class Base:\n"
+                "    @property\n"
+                "    def value(self) -> int:\n"
+                "        return 1\n\n\n"
+                "class Child(Base):\n"
+                "    @property\n"
+                "    def value(self):\n"
+                "        return 1\n"
+            ),
+        },
+    )
+    assert [f.primary_evidence.symbol for f in _findings(tmp_path)] == ["Child"]
+    evaluation = _evaluation(tmp_path, "Child")
+    assert evaluation.recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.recipe.simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    assert _findings(tmp_path) == []
+
+
+def test_restated_method_adding_annotation_absent_on_parent_refuses_dropping_it(
+    tmp_path: Path,
+):
+    """Reproduces Toad `FrozenClosedHistory.latest -> PreparedTranscriptPage` over
+    unannotated `ClosedHistory.latest`: flagged as a restated body, while deletion
+    refuses silently dropping the subclass return annotation."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/history.py": (
+                "class ClosedHistory:\n"
+                "    async def latest(self, page: str):\n"
+                "        return page.strip()\n\n\n"
+                "class FrozenClosedHistory(ClosedHistory):\n"
+                "    async def latest(self, page: str) -> str:\n"
+                "        return page.strip()\n"
+            ),
+        },
+    )
+    assert [f.primary_evidence.symbol for f in _findings(tmp_path)] == ["FrozenClosedHistory"]
+    evaluation = _evaluation(tmp_path, "FrozenClosedHistory")
+    assert evaluation.recipe is None
+    assert "declares type annotation(s)" in evaluation.rejection_reason
+    assert NeededInput.SOURCE_CHANGE in evaluation.needs
+
+
+def test_abstractmethod_with_different_return_annotation_is_no_finding(tmp_path: Path):
+    """Reproduces Toad `ActivatesContract.activate() -> None` vs `Activates.activate() -> object`:
+    abstract stubs' signatures ARE their contracts and must not be collapsed."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/contracts.py": (
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class ActivatesContract(ABC):\n"
+                "    @abstractmethod\n"
+                "    def activate(self) -> None: ...\n\n\n"
+                "class Activates(ActivatesContract):\n"
+                "    @abstractmethod\n"
+                "    def activate(self) -> object: ...\n"
+            ),
+        },
+    )
+    assert _findings(tmp_path) == []

@@ -857,6 +857,31 @@ class MemberDeletionReads(OrderPreservingReads):
         return f"NRA needs a proof that deleting {self.proof.owner_name} leaves it unchanged"
 
 
+def method_header_annotations(statement: ast.stmt) -> dict[str, str]:
+    """Non-empty parameter and return annotations spelled on one method header."""
+
+    if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return {}
+    annotations: dict[str, str] = {}
+    args = statement.args
+    for index, arg in enumerate(args.posonlyargs):
+        if arg.annotation is not None:
+            annotations[f"posonly:{index}"] = ast.unparse(arg.annotation)
+    for index, arg in enumerate(args.args):
+        if arg.annotation is not None:
+            annotations[f"arg:{index}"] = ast.unparse(arg.annotation)
+    if args.vararg is not None and args.vararg.annotation is not None:
+        annotations["vararg"] = ast.unparse(args.vararg.annotation)
+    for arg in args.kwonlyargs:
+        if arg.annotation is not None:
+            annotations[f"kwonly:{arg.arg}"] = ast.unparse(arg.annotation)
+    if args.kwarg is not None and args.kwarg.annotation is not None:
+        annotations["kwarg"] = ast.unparse(args.kwarg.annotation)
+    if statement.returns is not None:
+        annotations["return"] = ast.unparse(statement.returns)
+    return annotations
+
+
 @dataclass(frozen=True)
 class RestatedOverrideDeletion:
     """One class's members that restate what it inherits, proved deletable."""
@@ -902,8 +927,12 @@ class RestatedOverrideDeletion:
                     f"`{overlap.qualname}`'s order, not first by `{inherited}`",
                     NeededInput.PROOF,
                 )
+            inherited_overlap = OverlapClass.for_symbol(snapshot, inherited)
             restatement = RestatedDeclarations.require(
-                snapshot, OverlapClass.for_symbol(snapshot, inherited), overlap, (name,)
+                snapshot, inherited_overlap, overlap, (name,)
+            )
+            cls._require_inherited_preserves_annotations(
+                overlap, inherited_overlap, restatement, name
             )
             for statement in restatement.statements:
                 cls.require_once_per_class(proof, overlap, statement)
@@ -912,6 +941,38 @@ class RestatedOverrideDeletion:
         proof.require_unchanged()
         NamespaceReaders(snapshot).require_unread(overlap.facts, names)
         return cls(overlap, tuple(restated))
+
+    @staticmethod
+    def _require_inherited_preserves_annotations(
+        overlap: OverlapClass,
+        inherited_overlap: OverlapClass,
+        restatement: RestatedDeclarations,
+        name: str,
+    ) -> None:
+        """Deleting an override must not silently drop or alter type annotations the
+        subclass declared and the inherited definition lacks or spells differently."""
+
+        if len(restatement.statements) != 1:
+            return
+        child_annotations = method_header_annotations(restatement.statements[0])
+        if not child_annotations:
+            return
+        inherited_statements = inherited_overlap.statements_declaring((name,))
+        if len(inherited_statements) != 1:
+            return
+        inherited_annotations = method_header_annotations(inherited_statements[0])
+        changed = [
+            f"{slot}: `{value}`"
+            for slot, value in child_annotations.items()
+            if inherited_annotations.get(slot) != value
+        ]
+        if changed:
+            raise NeedsInput(
+                f"`{overlap.qualname}.{name}` declares type annotation(s) ({', '.join(changed)}) "
+                f"not matched on `{inherited_overlap.qualname}.{name}`: align the annotations on "
+                f"`{inherited_overlap.qualname}.{name}` before deleting the override",
+                NeededInput.SOURCE_CHANGE,
+            )
 
     @staticmethod
     def require_once_per_class(
