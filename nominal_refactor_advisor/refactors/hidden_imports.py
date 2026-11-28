@@ -54,6 +54,8 @@ class HiddenImportFindingRecipeSynthesizer(
 ):
     """One promotion of every accepted hidden import in the finding's module."""
 
+    action_key_child_subject = "hidden_imports"
+
     def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,

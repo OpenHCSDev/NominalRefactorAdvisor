@@ -11,7 +11,11 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_python_modules
-from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod import (
+    CodemodPlanSequence,
+    CodemodSourceSnapshot,
+    codemod_plan_from_findings,
+)
 from nominal_refactor_advisor.codemod_source_edits import SourceFileCreation
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._hidden_import_cuts import HiddenImportCycleDetector
@@ -575,3 +579,51 @@ def test_sole_reader_refuses_collapsing_standalone_screen_module_into_hub(tmp_pa
     [(_refusal, need)] = stays.needs
     assert isinstance(need, SoleReaderKept)
     assert "would collapse `pkg.settings_screen` into a hub" in str(need)
+
+
+def test_same_module_hidden_import_promotion_and_cycle_cut_compose_without_nominal_conflict(
+    tmp_path: Path,
+):
+    """Reproduces Toad `committed_presentation.py` / `transcript_publication.py` /
+    `agent_surface.py`: a hub that both has its own non-cyclic hidden import and
+    exports a declaration cut to break a reader's cycle must not short-circuit on
+    identical `(file_path, module_name)` action keys when their edits commute."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/base.py": "LIMIT = 3\n",
+            "pkg/helper.py": "BONUS = 4\n",
+            "pkg/hub.py": (
+                "from pkg.base import LIMIT\n"
+                "from pkg.a import a_value\n\n\n"
+                "class Record:\n"
+                "    size = LIMIT\n\n\n"
+                "def total() -> int:\n"
+                "    from pkg.helper import BONUS\n\n"
+                "    return a_value() + BONUS\n"
+            ),
+            "pkg/a.py": READER.format(name="a_value"),
+            "main.py": "from pkg.hub import total\n\nprint(total())\n",
+        },
+    )
+    expected = _run(tmp_path)
+    modules = _modules(tmp_path)
+    with ScanCache.scope():
+        findings = [
+            *HiddenImportDetector().detect(modules, DetectorConfig()),
+            *HiddenImportCycleDetector().detect(modules, DetectorConfig()),
+        ]
+    assert {f.detector_id for f in findings} == {"hidden_import", "hidden_import_cycle"}
+    snapshot = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert plan.report.candidate_count == 2
+    assert len(plan.document.recipes) == 2
+    assert plan.exportable_plan_document is not None
+    assert len(plan.exportable_plan_document.recipes) == 2
+    sim = plan.document.simulate(snapshot)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+    assert _run(tmp_path) == expected
+    assert HiddenImportPlan.derive(_modules(tmp_path)).refused == ()
+    assert HiddenImportPlan.derive(_modules(tmp_path)).accepted == ()

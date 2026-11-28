@@ -413,6 +413,8 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
 class PrimaryEvidenceActionKeysMixin:
     """Derive one conflict key from a finding's primary source witness."""
 
+    action_key_child_subject: ClassVar[str | None] = None
+
     def action_keys_for_finding(
         self,
         finding: RefactorFinding,
@@ -420,9 +422,17 @@ class PrimaryEvidenceActionKeysMixin:
         evidence = finding.primary_evidence
         if evidence is None:
             return ()
+        subject = (
+            evidence.subject_symbol
+            if self.action_key_child_subject is None
+            else FindingRecipeActionKey.child_subject(
+                evidence.subject_symbol,
+                self.action_key_child_subject,
+            )
+        )
         return FindingRecipeActionKey.from_finding_file_subjects(
             finding,
-            ((evidence.file_path, evidence.subject_symbol),),
+            ((evidence.file_path, subject),),
         )
 
 
