@@ -12,7 +12,11 @@ from nominal_refactor_advisor.detectors._hidden_imports import (
     CompactHiddenImportCandidateDetector,
 )
 from nominal_refactor_advisor.hidden_imports import CompactHiddenImportPlan
-from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.models import (
+    HiddenImportCycleMetrics,
+    RefactorFinding,
+    SourceLocation,
+)
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.hidden_import_cuts import (
     HiddenImportCutFindingRecipeSynthesizer,
@@ -64,6 +68,10 @@ class HiddenImportCycleDetector(
             + ", ".join(f"`{reader}`" for reader in candidate.readers)
             + ".",
             (SourceLocation(candidate.file_path, 1, candidate.hub),),
+            metrics=HiddenImportCycleMetrics(
+                hub=candidate.hub,
+                readers=candidate.readers,
+            ),
         )
 
 
