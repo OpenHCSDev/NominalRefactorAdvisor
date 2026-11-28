@@ -2258,7 +2258,7 @@ def _require_parameter_callers_within_owner(
     expected_fn_qualified = f"{source_module.module_name}.{function.name}"
 
     if isinstance(enclosure, NestedFunctionEnclosure):
-        outer_fn = enclosure.enclosing_function_chain[0]
+        outer_fn = enclosure.enclosing_function_chain()[0]
         candidate_modules = (
             (source_module, tuple(n for n in ast.walk(outer_fn) if isinstance(n, ast.Call))),
         )
