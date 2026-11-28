@@ -11,6 +11,7 @@ onto that ancestor deletes every sibling copy in one proof-checked step.
 from __future__ import annotations
 
 import ast
+import copy
 import keyword as keyword_module
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -53,9 +54,13 @@ from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceInsertion,
     SourceNodeSpan,
+    SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
+from nominal_refactor_advisor.codemod_statement_source import (
+    StatementDeletionSource,
+    StatementSource,
+)
 from nominal_refactor_advisor.models import (
     RefactorFinding,
     SourceLocation,
@@ -147,7 +152,9 @@ class SiblingOverrideCandidate:
         placement, parent_spelling = cls._select_placement(snapshot, rebase, children, base_name)
         cls._require_base_name_unbound(snapshot, base_name, placement, children)
         creation_keywords = _creation_keywords_for_intermediate(snapshot, rebase.parent)
-        lifted_index = SiblingOverrideMove.select_lifted_index(snapshot, children, restated, placement.anchor.target, member_name)
+        lifted_index, annotation_plan = SiblingOverrideMove.select_lifted_choice(
+            snapshot, children, restated, placement.anchor, member_name
+        )
         first = restated[lifted_index]
         first.require_no_owner_bound_values(snapshot)
         cls._require_post_rebase_mro_safe(snapshot, verdicts, rebase, declaring, children, member_name, base_name, lifted_is_property=any((_is_property_statement(statement) for statement in first.statements)))
@@ -171,7 +178,7 @@ class SiblingOverrideCandidate:
             RestatedOverrideDeletion.require_plain_decorators(proof, child)
             proof.require_unchanged()
             NamespaceReaders(snapshot).require_unread(child.facts, names)
-        return cls(candidate=self, rebase=rebase, placement=placement, parent_spelling=parent_spelling, base_name=base_name, docstring=docstring.strip(), creation_keywords=creation_keywords, children=children, restated=restated, lifted_index=lifted_index)
+        return cls(candidate=self, rebase=rebase, placement=placement, parent_spelling=parent_spelling, base_name=base_name, docstring=docstring.strip(), creation_keywords=creation_keywords, children=children, restated=restated, lifted_index=lifted_index, annotation_plan=annotation_plan)
 
     def existing_home_note(self):
         """Format the summary clause naming an existing home class when one exists."""
@@ -690,6 +697,290 @@ def _is_classvar_annotation(annotation: ast.expr) -> bool:
     return False
 
 
+def _self_return_form(spelling: str, class_name: str) -> str | None:
+    """Map a sibling's self-typed return annotation to `Self` or `Self | None`."""
+
+    if spelling in (class_name, "Self", "typing.Self"):
+        return "Self"
+    if spelling in (
+        f"{class_name} | None",
+        f"None | {class_name}",
+        "Self | None",
+        "None | Self",
+        "typing.Self | None",
+        "None | typing.Self",
+    ):
+        return "Self | None"
+    return None
+
+
+def _slot_annotation_node(statement: ast.stmt, slot: str) -> ast.expr | None:
+    """Locate the annotation AST node on `statement` for a `method_header_annotations` slot."""
+
+    if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return None
+    if slot == "return":
+        return statement.returns
+    args = statement.args
+    if slot.startswith("posonly:"):
+        index = int(slot.partition(":")[2])
+        return args.posonlyargs[index].annotation if index < len(args.posonlyargs) else None
+    if slot.startswith("arg:"):
+        index = int(slot.partition(":")[2])
+        return args.args[index].annotation if index < len(args.args) else None
+    if slot == "vararg":
+        return None if args.vararg is None else args.vararg.annotation
+    if slot.startswith("kwonly:"):
+        name = slot.partition(":")[2]
+        for arg in args.kwonlyargs:
+            if arg.arg == name:
+                return arg.annotation
+        return None
+    if slot == "kwarg":
+        return None if args.kwarg is None else args.kwarg.annotation
+    return None
+
+
+def _set_slot_annotation(
+    statement: ast.FunctionDef | ast.AsyncFunctionDef,
+    slot: str,
+    replacement: ast.expr | None,
+) -> None:
+    """Update one annotation slot on a copied function AST node."""
+
+    if slot == "return":
+        statement.returns = replacement
+        return
+    args = statement.args
+    if slot.startswith("posonly:"):
+        index = int(slot.partition(":")[2])
+        args.posonlyargs = list(args.posonlyargs)
+        arg = copy.copy(args.posonlyargs[index])
+        arg.annotation = replacement
+        args.posonlyargs[index] = arg
+    elif slot.startswith("arg:"):
+        index = int(slot.partition(":")[2])
+        args.args = list(args.args)
+        arg = copy.copy(args.args[index])
+        arg.annotation = replacement
+        args.args[index] = arg
+    elif slot == "vararg" and args.vararg is not None:
+        arg = copy.copy(args.vararg)
+        arg.annotation = replacement
+        args.vararg = arg
+    elif slot.startswith("kwonly:"):
+        name = slot.partition(":")[2]
+        args.kwonlyargs = list(args.kwonlyargs)
+        for index, arg in enumerate(args.kwonlyargs):
+            if arg.arg == name:
+                copied = copy.copy(arg)
+                copied.annotation = replacement
+                args.kwonlyargs[index] = copied
+                break
+    elif slot == "kwarg" and args.kwarg is not None:
+        arg = copy.copy(args.kwarg)
+        arg.annotation = replacement
+        args.kwarg = arg
+
+
+def _aligned_contravariant_param_annotation(
+    snapshot: CodemodSourceSnapshot,
+    children: tuple[OverlapClass, ...],
+    annotations_by_index: list[dict[str, str]],
+    slot: str,
+) -> str | None:
+    """Return a sibling's parameter annotation that is a supertype of every other sibling's
+    annotation on `slot` (either `object`, or a scanned class ancestor of all other siblings'
+    parameter types), so widening to it is contravariantly sound for every caller and already
+    typechecked on the shared body."""
+
+    annotated = [
+        (children[index], slot_map[slot])
+        for index, slot_map in enumerate(annotations_by_index)
+        if slot in slot_map
+    ]
+    if any(spelling == "object" for _child, spelling in annotated):
+        return "object"
+    bindings = snapshot.module_binding_proof
+    class_index = snapshot.class_overlap_verdicts.class_index
+    resolved: list[tuple[str, str]] = []
+    for child, spelling in annotated:
+        try:
+            expr = ast.parse(spelling, mode="eval").body
+        except SyntaxError:
+            return None
+        if not isinstance(expr, (ast.Name, ast.Attribute)):
+            return None
+        parsed = snapshot.parsed_module_for_source_path(child.file_path)
+        witness = bindings.reference_or_builtin_witness_at(
+            parsed, expr, line=child.node.lineno
+        )
+        if witness is None or witness.qualified_name not in class_index.classes_by_symbol:
+            return None
+        resolved.append((witness.qualified_name, spelling))
+    for candidate_sym, candidate_spelling in resolved:
+        if all(
+            other_sym == candidate_sym
+            or candidate_sym in class_index.ancestor_symbols(other_sym)
+            for other_sym, _other_spelling in resolved
+        ):
+            return candidate_spelling
+    return None
+
+
+@dataclass(frozen=True)
+class HeaderAnnotationPlan:
+    """Header annotation rewrites needed when siblings annotate a lifted method differently."""
+
+    overrides: tuple[tuple[str, str], ...] = ()
+    imports_typing_self: bool = False
+
+    @classmethod
+    def for_siblings(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        children: tuple[OverlapClass, ...],
+        annotations_by_index: list[dict[str, str]],
+        destination: OverlapClass,
+        member_name: str,
+    ) -> HeaderAnnotationPlan:
+        slots_order: list[str] = []
+        by_slot: dict[str, list[str]] = {}
+        for slot_map in annotations_by_index:
+            for slot, spelling in slot_map.items():
+                if slot not in by_slot:
+                    slots_order.append(slot)
+                    by_slot[slot] = []
+                if spelling not in by_slot[slot]:
+                    by_slot[slot].append(spelling)
+
+        overrides: list[tuple[str, str]] = []
+        imports_typing_self = False
+        for slot in slots_order:
+            spellings = by_slot[slot]
+            if len(spellings) <= 1:
+                continue
+            if slot == "return":
+                forms = {
+                    _self_return_form(slot_map["return"], child.node.name)
+                    for child, slot_map in zip(children, annotations_by_index)
+                    if "return" in slot_map
+                }
+                if len(forms) == 1 and (aligned := next(iter(forms))) is not None:
+                    dest_module = snapshot.parsed_module_for_source_path(destination.file_path)
+                    actual = snapshot.module_binding_proof.reference_or_builtin_witness_at(
+                        dest_module,
+                        ast.Name(id="Self", ctx=ast.Load()),
+                        line=destination.node.lineno,
+                    )
+                    if actual is None:
+                        imports_typing_self = True
+                    elif actual.qualified_name not in ("typing.Self", "typing_extensions.Self"):
+                        raise NeedsInput(
+                            f"`Self` is bound to `{actual.qualified_name}` in {destination.file_path}, "
+                            "not `typing.Self`",
+                            NeededInput.SOURCE_CHANGE,
+                        )
+                    overrides.append(("return", aligned))
+                    continue
+            elif slot.startswith(("arg:", "posonly:", "kwonly:")):
+                aligned_param = _aligned_contravariant_param_annotation(
+                    snapshot, children, annotations_by_index, slot
+                )
+                if aligned_param is not None:
+                    overrides.append((slot, aligned_param))
+                    continue
+            raise NeedsInput(
+                f"siblings annotate `{member_name}` differently on {slot} "
+                f"(`{spellings[0]}` vs `{spellings[1]}`): align the signature before lifting",
+                NeededInput.SOURCE_CHANGE,
+            )
+        return cls(tuple(overrides), imports_typing_self)
+
+    def rewritten_statements(
+        self,
+        statements: tuple[ast.stmt, ...],
+        *,
+        strip_typing_self: bool = False,
+    ) -> tuple[ast.stmt, ...]:
+        if not self.overrides or len(statements) != 1:
+            return statements
+        statement = statements[0]
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return statements
+        copied = copy.copy(statement)
+        copied.args = copy.copy(statement.args)
+        for slot, replacement in self.overrides:
+            if strip_typing_self and slot == "return" and replacement in ("Self", "Self | None"):
+                _set_slot_annotation(copied, slot, None)
+            else:
+                _set_slot_annotation(copied, slot, ast.parse(replacement, mode="eval").body)
+        return (copied,)
+
+    def require_renderable(self, statements: tuple[ast.stmt, ...]) -> None:
+        if not self.overrides:
+            return
+        if len(statements) != 1 or not isinstance(
+            statements[0], (ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            raise NeedsInput(
+                "header annotation rewrite requires a single lifted method statement",
+                NeededInput.SOURCE_CHANGE,
+            )
+        stmt = statements[0]
+        for slot, _replacement in self.overrides:
+            ann_node = _slot_annotation_node(stmt, slot)
+            if ann_node is None:
+                raise NeedsInput(
+                    f"lifted sibling omits annotation on `{slot}` needed for signature alignment",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            if ann_node.lineno != (ann_node.end_lineno or ann_node.lineno):
+                raise NeedsInput(
+                    f"multiline annotation on `{slot}` must be aligned before lifting",
+                    NeededInput.SOURCE_CHANGE,
+                )
+
+    def member_sources(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        first: RestatedDeclarations,
+        indentation: str,
+        documentation: KeptDocumentation,
+    ) -> tuple[tuple[str, bool], ...]:
+        if not self.overrides:
+            return first.member_sources(snapshot, indentation, documentation)
+        source = snapshot.sources_by_file_path[first.restating.file_path]
+        stmt = first.statements[0]
+        geometry = SourceTextGeometry(source)
+        spans: list[tuple[int, int, str]] = []
+        for slot, replacement in self.overrides:
+            ann_node = _slot_annotation_node(stmt, slot)
+            assert ann_node is not None
+            start, end = geometry.required_node_offsets(ann_node)
+            spans.append((start, end, replacement))
+        patched = source
+        for start, end, replacement in sorted(spans, key=lambda item: item[0], reverse=True):
+            patched = patched[:start] + replacement + patched[end:]
+        keeps = documentation.kept(min(declared_names(stmt))) is not None
+        written = StatementSource(source=patched, node=stmt).member_source(indentation)
+        assert isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+        return ((written if keeps else first.undocumented(patched, stmt, written), True),)
+
+    def extra_imports(
+        self, destination_file_path: str, rationale: str
+    ) -> tuple[ModuleImportMutation, ...]:
+        if not self.imports_typing_self:
+            return ()
+        return (
+            ModuleImportMutation.from_source(
+                file_path=destination_file_path,
+                import_source="from typing import Self",
+                rationale=rationale,
+            ),
+        )
+
+
 class HomePlacement(ABC):
     """How the lifted declaration lands in `home`: inserted anew or replacing a stub."""
 
@@ -700,6 +991,7 @@ class HomePlacement(ABC):
         home: OverlapClass,
         first: RestatedDeclarations,
         documentation: KeptDocumentation,
+        annotation_plan: HeaderAnnotationPlan = HeaderAnnotationPlan(),
     ) -> SourceTextSpanReplacement:
         raise NotImplementedError
 
@@ -724,11 +1016,12 @@ class InsertIntoHome(HomePlacement):
         home: OverlapClass,
         first: RestatedDeclarations,
         documentation: KeptDocumentation,
+        annotation_plan: HeaderAnnotationPlan = HeaderAnnotationPlan(),
     ) -> SourceTextSpanReplacement:
         home_source = snapshot.sources_by_file_path[home.file_path]
         body = ClassBodySourceAuthority(home.node, home_source)
         return body.declaration_block_replacement(
-            first.member_sources(snapshot, body.indentation, documentation)
+            annotation_plan.member_sources(snapshot, first, body.indentation, documentation)
         )
 
     def obsolete_home_edits(
@@ -754,11 +1047,14 @@ class ReplaceHomeStub(HomePlacement):
         home: OverlapClass,
         first: RestatedDeclarations,
         documentation: KeptDocumentation,
+        annotation_plan: HeaderAnnotationPlan = HeaderAnnotationPlan(),
     ) -> SourceTextSpanReplacement:
         home_source = snapshot.sources_by_file_path[home.file_path]
         body = ClassBodySourceAuthority(home.node, home_source)
         start, end = body.geometry.node_span_offsets(SourceNodeSpan(self.stub, Include))
-        member_sources = first.member_sources(snapshot, body.indentation, documentation)
+        member_sources = annotation_plan.member_sources(
+            snapshot, first, body.indentation, documentation
+        )
         rendered = self._rendered_replacement(
             home_source, body.indentation, first, member_sources
         )
@@ -831,24 +1127,23 @@ class SiblingOverrideMove(ABC):
     children: tuple[OverlapClass, ...]
     restated: tuple[RestatedDeclarations, ...]
     lifted_index: int
+    annotation_plan: HeaderAnnotationPlan
 
     @property
     def lifted_restatement(self) -> RestatedDeclarations:
         return self.restated[self.lifted_index]
 
     @staticmethod
-    def select_lifted_index(
+    def select_lifted_choice(
         snapshot: CodemodSourceSnapshot,
         children: tuple[OverlapClass, ...],
         restated: tuple[RestatedDeclarations, ...],
-        destination_target,
+        destination: OverlapClass,
         member_name: str,
-    ) -> int:
-        """Choose which sibling's source statement moves onto the shared ancestor.
-
-        When siblings differ only by omitted type annotations, prefer the most-annotated
-        copy whose annotation imports move cleanly without closing a cycle. Refuse when
-        siblings declare conflicting annotations on the same header slot.
+    ) -> tuple[int, HeaderAnnotationPlan]:
+        """Choose which sibling's source statement moves onto the shared ancestor and
+        any sound header annotation alignment (`Self` return or contravariant parameter
+        supertype). Refuse when siblings declare incompatible annotations on the same slot.
         """
 
         annotations_by_index = [
@@ -857,36 +1152,42 @@ class SiblingOverrideMove(ABC):
             else {}
             for restatement in restated
         ]
-        seen_slots: dict[str, str] = {}
-        for slot_map in annotations_by_index:
-            for slot, spelling in slot_map.items():
-                prior = seen_slots.get(slot)
-                if prior is not None and prior != spelling:
-                    raise NeedsInput(
-                        f"siblings annotate `{member_name}` differently on {slot} "
-                        f"(`{prior}` vs `{spelling}`): align the signature before lifting",
-                        NeededInput.SOURCE_CHANGE,
-                    )
-                seen_slots[slot] = spelling
+        annotation_plan = HeaderAnnotationPlan.for_siblings(
+            snapshot, children, annotations_by_index, destination, member_name
+        )
+        override_map = dict(annotation_plan.overrides)
         candidate_indices = sorted(
             range(len(children)),
-            key=lambda index: (-len(annotations_by_index[index]), index),
+            key=lambda index: (
+                -int(all(slot in annotations_by_index[index] for slot in override_map)),
+                -sum(
+                    1
+                    for slot, replacement in override_map.items()
+                    if annotations_by_index[index].get(slot) == replacement
+                ),
+                -len(annotations_by_index[index]),
+                index,
+            ),
         )
         first_error: NeedsInput | None = None
         for index in candidate_indices:
             try:
+                annotation_plan.require_renderable(restated[index].statements)
+                checked_statements = annotation_plan.rewritten_statements(
+                    restated[index].statements, strip_typing_self=True
+                )
                 movable_members(
                     ClassMemberMoveProofContext.between(
-                        snapshot, children[index].target, destination_target
+                        snapshot, children[index].target, destination.target
                     ),
                     children[index],
-                    restated[index].statements,
+                    checked_statements,
                 )
             except NeedsInput as error:
                 if first_error is None:
                     first_error = error
                 continue
-            return index
+            return index, annotation_plan
         assert first_error is not None
         raise first_error
 
@@ -943,8 +1244,8 @@ class SiblingOverrideLift(SiblingOverrideMove):
             RestatedDeclarations.require(snapshot, children[0], child, (member_name,))
             for child in children
         )
-        lifted_index = cls.select_lifted_index(
-            snapshot, children, restated, home.target, member_name
+        lifted_index, annotation_plan = cls.select_lifted_choice(
+            snapshot, children, restated, home, member_name
         )
         first = restated[lifted_index]
         first.require_no_owner_bound_values(snapshot)
@@ -998,6 +1299,7 @@ class SiblingOverrideLift(SiblingOverrideMove):
             children=children,
             restated=restated,
             lifted_index=lifted_index,
+            annotation_plan=annotation_plan,
             home=home,
             placement=placement,
         )
@@ -1183,7 +1485,7 @@ class SiblingOverrideLift(SiblingOverrideMove):
         home_source = snapshot.sources_by_file_path[home.file_path]
         body = ClassBodySourceAuthority(home.node, home_source)
         home_replacement = self.placement.replacement(
-            snapshot, home, first, documentation
+            snapshot, home, first, documentation, self.annotation_plan
         )
         home_edits: list[NominalSourceEdit] = [
             *body.geometry.physical_edits(
@@ -1192,10 +1494,20 @@ class SiblingOverrideLift(SiblingOverrideMove):
                 rationale=rationale,
             ),
             *required_name_imports(
-                snapshot, first.statements, first.restating, home, rationale
+                snapshot,
+                self.annotation_plan.rewritten_statements(
+                    first.statements, strip_typing_self=True
+                ),
+                first.restating,
+                home,
+                rationale,
             ),
+            *self.annotation_plan.extra_imports(home.file_path, rationale),
             *self.placement.obsolete_home_edits(
-                snapshot, home, first.statements, rationale
+                snapshot,
+                home,
+                self.annotation_plan.rewritten_statements(first.statements),
+                rationale,
             ),
         ]
         for restatement in self.restated:
@@ -1506,6 +1818,7 @@ class NewBasePlacement(ABC):
         first: RestatedDeclarations,
         documentation: KeptDocumentation,
         rationale: str,
+        annotation_plan: HeaderAnnotationPlan = HeaderAnnotationPlan(),
     ) -> SourceInsertion:
         raise NotImplementedError
 
@@ -1530,12 +1843,13 @@ def _rendered_class_lines(
     docstring: str,
     first: RestatedDeclarations,
     documentation: KeptDocumentation,
+    annotation_plan: HeaderAnnotationPlan = HeaderAnnotationPlan(),
 ) -> tuple[str, ...]:
     member_indentation = indentation + "    "
     keywords = "".join(f", {keyword}=None" for keyword in creation_keywords)
     members: list[str] = []
-    for member_text, is_fn in first.member_sources(
-        snapshot, member_indentation, documentation
+    for member_text, is_fn in annotation_plan.member_sources(
+        snapshot, first, member_indentation, documentation
     ):
         if is_fn and members:
             members.append("\n")
@@ -1571,6 +1885,7 @@ class SameModuleBeforeFirstSibling(NewBasePlacement):
         first: RestatedDeclarations,
         documentation: KeptDocumentation,
         rationale: str,
+        annotation_plan: HeaderAnnotationPlan = HeaderAnnotationPlan(),
     ) -> SourceInsertion:
         source = snapshot.sources_by_file_path[self.file_path]
         lines = source.splitlines(keepends=True)
@@ -1589,6 +1904,7 @@ class SameModuleBeforeFirstSibling(NewBasePlacement):
             docstring,
             first,
             documentation,
+            annotation_plan,
         )
         return SourceInsertion(
             file_path=self.file_path,
@@ -1660,6 +1976,7 @@ class ParentModuleAfterParent(NewBasePlacement):
         first: RestatedDeclarations,
         documentation: KeptDocumentation,
         rationale: str,
+        annotation_plan: HeaderAnnotationPlan = HeaderAnnotationPlan(),
     ) -> SourceInsertion:
         source = snapshot.sources_by_file_path[self.file_path]
         lines = source.splitlines(keepends=True)
@@ -1675,6 +1992,7 @@ class ParentModuleAfterParent(NewBasePlacement):
             docstring,
             first,
             documentation,
+            annotation_plan,
         )
         return SourceInsertion(
             file_path=self.file_path,
@@ -1981,14 +2299,18 @@ class SiblingOverrideBaseExtraction(SiblingOverrideMove):
                 first,
                 documentation,
                 rationale,
+                self.annotation_plan,
             ),
             *required_name_imports(
                 snapshot,
-                first.statements,
+                self.annotation_plan.rewritten_statements(
+                    first.statements, strip_typing_self=True
+                ),
                 first.restating,
                 self.placement.anchor,
                 rationale,
             ),
+            *self.annotation_plan.extra_imports(self.placement.file_path, rationale),
             *self.placement.extra_imports(
                 snapshot, self.base_name, self.rebase.parent, self.children, rationale
             ),

@@ -785,12 +785,13 @@ def test_sibling_property_with_return_annotation_on_one_sibling_lifts_keeping_an
     assert _findings(tmp_path) == []
 
 
-def test_sibling_property_with_conflicting_return_annotations_is_found_and_refuses_blind_lift(
+def test_sibling_property_with_self_return_annotations_lifts_as_typing_self(
     tmp_path: Path,
 ):
-    """Reproduces Toad `QtQuestion.question -> QtQuestion` vs `Question.question -> Question`:
-    detected as identical runtime overrides, while lifting refuses stamping one sibling's
-    return type onto the other."""
+    """Reproduces Toad `QtQuestion.question -> QtQuestion` vs `Question.question -> Question`
+    and Core `for_session` / `bound_to`: when every annotated sibling returns its own class
+    name (or `Self`), lifting rewrites the return annotation to `Self` and imports `typing.Self`
+    so every subclass preserves its narrowed static return type."""
 
     _write(
         tmp_path,
@@ -820,9 +821,101 @@ def test_sibling_property_with_conflicting_return_annotations_is_found_and_refus
     evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
         findings[0], _snapshot(tmp_path)
     )
+    assert evaluation.recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.recipe.simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    after = (tmp_path / "pkg/question.py").read_text()
+    assert "from typing import Self" in after
+    assert "def question(self) -> Self:\n        return self" in after
+    assert "-> QtQuestion" not in after
+    assert "-> TuiQuestion" not in after
+    assert _findings(tmp_path) == []
+
+
+def test_sibling_property_with_conflicting_return_annotations_is_found_and_refuses_blind_lift(
+    tmp_path: Path,
+):
+    """Non-`Self` conflicting return annotations (`-> int` vs `-> str`) still refuse
+    stamping one sibling's return type onto the other."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/fields.py": (
+                "from __future__ import annotations\n"
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class DialogField(ABC):\n"
+                "    @abstractmethod\n"
+                "    def initial_value(self) -> object: ...\n\n\n"
+                "class IntField(DialogField):\n"
+                "    default: int = 0\n"
+                "    def initial_value(self) -> int:\n"
+                "        return self.default\n\n\n"
+                "class StrField(DialogField):\n"
+                "    default: str = ''\n"
+                "    def initial_value(self) -> str:\n"
+                "        return self.default\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    assert "DialogField.initial_value" in findings[0].summary
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        findings[0], _snapshot(tmp_path)
+    )
     assert evaluation.recipe is None
-    assert "annotate `question` differently" in evaluation.rejection_reason
+    assert "annotate `initial_value` differently" in evaluation.rejection_reason
     assert NeededInput.SOURCE_CHANGE in evaluation.needs
+
+
+def test_sibling_override_with_contravariant_parameter_supertype_lifts_cleanly(
+    tmp_path: Path,
+):
+    """Reproduces Toad `PromptPopup.for_prompt` (`prompt: object` vs `prompt: Prompt`)
+    and scanned-class ancestor parameters (`BaseCheck` vs `SubCheck`): when one sibling's
+    parameter annotation is a supertype of every other sibling's annotation on that slot,
+    lifting uses that supertype contravariantly."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/popup.py": (
+                "from __future__ import annotations\n"
+                "from abc import ABC, abstractmethod\n"
+                "from typing import Self\n\n\n"
+                "class Prompt:\n"
+                "    pass\n\n\n"
+                "class PromptPopup(ABC):\n"
+                "    @classmethod\n"
+                "    @abstractmethod\n"
+                "    def for_prompt(cls, prompt: Prompt) -> Self | None: ...\n\n\n"
+                "class ModelSwitcher(PromptPopup):\n"
+                "    @classmethod\n"
+                "    def for_prompt(cls, prompt: object) -> Self:\n"
+                "        return cls()\n\n\n"
+                "class PathSearch(PromptPopup):\n"
+                "    @classmethod\n"
+                "    def for_prompt(cls, prompt: Prompt) -> Self:\n"
+                "        return cls()\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        findings[0], _snapshot(tmp_path)
+    )
+    assert evaluation.recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.recipe.simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    after = (tmp_path / "pkg/popup.py").read_text()
+    assert "def for_prompt(cls, prompt: object) -> Self:\n        return cls()" in after
+    assert _findings(tmp_path) == []
 
 
 def test_extracts_declared_family_intermediate_with_declared_name_none(
