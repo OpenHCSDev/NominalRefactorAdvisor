@@ -2132,5 +2132,89 @@ def test_push_refuses_when_caller_passes_supertype_to_narrowed_parameter(
     assert "outside `EvidencedFragment`'s hierarchy" in ev.rejection_reason
 
 
+def test_elif_prefix_guarded_reassigned_local_passes_parameter_and_runs(
+    tmp_path: Path,
+) -> None:
+    """Reproduces Toad `rich_preparation.py` (`prepare_rich`): an `elif PREFIX and
+    owner.attr is not None:` branch that reads and rebinds an already-bound local
+    (`renderable = renderable.copy()`) must keep `reassigned_target` through
+    `ElifAbsenceBranchSite`, passing `renderable` into the pushed method instead
+    of emitting an `UnboundLocalError`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/rich_prep.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass\n"
+                "class RichText:\n"
+                "    body: str\n"
+                "    justify: str | None = None\n\n"
+                "    def copy(self) -> 'RichText':\n"
+                "        return RichText(self.body, self.justify)\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class RichPresentation:\n"
+                "    justify: str | None = None\n\n\n"
+                "def prepare_rich(renderable: RichText | str, presentation: RichPresentation) -> RichText:\n"
+                "    if isinstance(renderable, str):\n"
+                "        renderable = RichText(renderable, presentation.justify)\n"
+                "    elif isinstance(renderable, RichText) and presentation.justify is not None:\n"
+                "        renderable = renderable.copy()\n"
+                "        renderable.justify = presentation.justify\n"
+                "    return renderable\n"
+            ),
+        },
+    )
+
+    _mods, snap, findings = _scan(tmp_path)
+    (finding,) = [f for f in findings if f.primary_evidence.symbol == "prepare_rich"]
+    ev = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(finding, snap)
+    assert ev.needs == (NeededInput.OWNER_PICK,)
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=finding.stable_id,
+                owner="prepare_rich",
+                because="RichPresentation owns applying its optional justification.",
+                name="apply_justify",
+                judgement="Return a justified copy when justification is set.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(findings)
+    assert not report.unmatched
+    _apply_one(picked[0], snap)
+
+    after = (tmp_path / "pkg/rich_prep.py").read_text()
+    assert "def apply_justify(self, renderable" in after
+    assert "renderable = presentation.apply_justify(renderable)" in after
+
+    _after_mods, _after_snap, remaining = _scan(tmp_path)
+    assert remaining == []
+
+    # Real runtime execution parity: both justify=None and justify="center" must work without UnboundLocalError.
+    sys.path.insert(0, str(tmp_path))
+    try:
+        for mod_name in [m for m in sys.modules if m == "pkg" or m.startswith("pkg.")]:
+            del sys.modules[mod_name]
+        import pkg.rich_prep as rich_prep  # type: ignore[import-not-found]
+
+        orig = rich_prep.RichText("hi")
+        unchanged = rich_prep.prepare_rich(orig, rich_prep.RichPresentation(None))
+        assert unchanged is orig and unchanged.justify is None
+
+        justified = rich_prep.prepare_rich(orig, rich_prep.RichPresentation("center"))
+        assert justified is not orig and justified.justify == "center" and orig.justify is None
+    finally:
+        sys.path.remove(str(tmp_path))
+        for mod_name in [m for m in sys.modules if m == "pkg" or m.startswith("pkg.")]:
+            del sys.modules[mod_name]
+
+
+
 
 
