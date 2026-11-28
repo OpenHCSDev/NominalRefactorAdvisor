@@ -2470,7 +2470,8 @@ class _CallbackAdapterArg:
     has_default: bool
 
     def render(self, source: str, family_name: str) -> str:
-        ref_src = SourceTextGeometry(source).slice_node(self.ref_expr)
+        start, end = SourceTextGeometry(source).required_node_offsets(self.ref_expr)
+        ref_src = source[start:end]
         param_spec = (
             f"{self.lambda_param}=None" if self.has_default else self.lambda_param
         )
