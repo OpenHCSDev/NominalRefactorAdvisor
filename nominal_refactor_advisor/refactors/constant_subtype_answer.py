@@ -1878,19 +1878,6 @@ def _render_in_place_override(
     return "\n".join(lines)
 
 
-def _render_block_at_indent(
-    body: tuple[ast.stmt, ...], indent: str
-) -> str:
-    rendered_lines: list[str] = []
-    for stmt in body:
-        for raw_line in ast.unparse(ast.fix_missing_locations(stmt)).splitlines():
-            rendered_lines.append(raw_line)
-    return "\n".join(
-        f"{indent}{line}" if idx > 0 and line else line
-        for idx, line in enumerate(rendered_lines)
-    )
-
-
 def _contains_super_call(statements: Sequence[ast.stmt]) -> bool:
     for stmt in statements:
         for node in ast.walk(stmt):
@@ -2150,6 +2137,11 @@ class ConstantAnswerPushProof:
                     NeededInput.SOURCE_CHANGE,
                 )
             base_body = raw_body_for(base_value)
+            if site.render_in_place_default(base_body) is None:
+                raise NeedsInput(
+                    f"`{function.name}` branch shape at {source_path}:{test_line} cannot render in place",
+                    NeededInput.SOURCE_CHANGE,
+                )
             overrides = tuple(
                 (
                     ResolvedClassTarget.from_rewrite_target(
@@ -2274,7 +2266,9 @@ class ConstantAnswerPushProof:
         if not line_indent.isspace():
             line_indent = ""
         if self.in_place_base_method:
-            return start, end, _render_block_at_indent(self.base_body, line_indent)
+            rendered = site.render_in_place_default(self.base_body, line_indent)
+            assert rendered is not None
+            return start, end, rendered
         call_args = ", ".join(arg.call_expr for arg in self.captured_args)
         subject_text = ast.unparse(site.subject)
         match site.subject:

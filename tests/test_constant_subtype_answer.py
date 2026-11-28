@@ -1008,4 +1008,60 @@ def test_pushing_cross_module_external_import_and_prefix_guarded_else_assign(
     assert _findings(tmp_path) == []
 
 
+def test_in_place_classmethod_ternary_return_does_not_double_return(tmp_path: Path) -> None:
+    """In-place ternary push (`return rule if cls.flag else ''`) uses
+    `TernaryDispatchSite.render_in_place_default` so the base method becomes `return rule`,
+    never `return return rule` (bench regression from `toad.client.input_modality`)."""
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/modality.py": (
+                "from abc import ABC\n"
+                "from typing import ClassVar\n"
+                "\n"
+                "class InputModality(ABC):\n"
+                "    hover_highlights: ClassVar[bool]\n"
+                "\n"
+                "    @classmethod\n"
+                "    def hover_rule(cls, rule: str) -> str:\n"
+                "        return rule if cls.hover_highlights else ''\n"
+                "\n"
+                "    @classmethod\n"
+                "    def hover_or_pressed(cls, selector: str) -> str:\n"
+                "        if cls.hover_highlights:\n"
+                "            return f'{selector}:hover, {selector}:pressed'\n"
+                "        return f'{selector}:pressed'\n"
+                "\n"
+                "class KeyboardInput(InputModality):\n"
+                "    hover_highlights = True\n"
+                "\n"
+                "class TouchInput(InputModality):\n"
+                "    hover_highlights = False\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    target = next(f for f in findings if f.metrics.member_name == "hover_highlights")
+    ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+        target, _snapshot(tmp_path)
+    )
+    assert ev.executable_recipe is not None, ev.reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "modality.py").read_text()
+    assert "return return" not in after
+    assert "hover_highlights" not in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    kb = ns["KeyboardInput"]
+    touch = ns["TouchInput"]
+    assert kb.hover_rule("QWidget:hover {}") == "QWidget:hover {}"  # type: ignore[attr-defined]
+    assert touch.hover_rule("QWidget:hover {}") == ""  # type: ignore[attr-defined]
+    assert kb.hover_or_pressed("QPushButton") == "QPushButton:hover, QPushButton:pressed"  # type: ignore[attr-defined]
+    assert touch.hover_or_pressed("QPushButton") == "QPushButton:pressed"  # type: ignore[attr-defined]
+    assert _findings(tmp_path) == []
+
+
+
 
