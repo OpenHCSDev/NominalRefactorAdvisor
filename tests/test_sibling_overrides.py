@@ -1,5 +1,7 @@
 """Classes overriding one inherited member with the same declaration, found."""
 
+import subprocess
+import sys
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import (
@@ -1358,3 +1360,146 @@ def test_extract_sibling_override_base_preserves_external_base_mro(
     assert "class LiveQuestion(ExternalFrame, LiveQuestionContext):" in after
     assert "class PanelQuestion(ExternalFrame, LiveQuestionContext):" in after
     assert _findings(repo) == []
+
+
+def test_cross_module_lift_skips_self_import_for_deferred_forward_ref(tmp_path: Path):
+    """Reproduces `cli_bridges/runtime_updates.py` (`CatchUpReadingPhase` / `LiveReadingPhase`):
+    moving a method from a sibling module into the parent's module whose annotations
+    reference classes declared later in that same module must NOT emit a self-import
+    (`from pkg.updates import StatusUpdate`) that crashes with circular `ImportError`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/updates.py": (
+                "from __future__ import annotations\n"
+                "from abc import ABC\n\n\n"
+                "class ReadingPhase(ABC):\n"
+                "    def status(self, update: StatusUpdate) -> tuple[RuntimeUpdate, ...]:\n"
+                "        return ()\n\n\n"
+                "class RuntimeUpdate:\n"
+                "    pass\n\n\n"
+                "class StatusUpdate(RuntimeUpdate):\n"
+                "    pass\n"
+            ),
+            "pkg/alpha.py": (
+                "from __future__ import annotations\n"
+                "from pkg.updates import ReadingPhase, RuntimeUpdate, StatusUpdate\n\n\n"
+                "class AlphaLive(ReadingPhase):\n"
+                "    def status(self, update: StatusUpdate) -> tuple[RuntimeUpdate, ...]:\n"
+                "        return (update,)\n"
+            ),
+            "pkg/beta.py": (
+                "from __future__ import annotations\n"
+                "from pkg.updates import ReadingPhase, RuntimeUpdate, StatusUpdate\n\n\n"
+                "class BetaLive(ReadingPhase):\n"
+                "    def status(self, update: StatusUpdate) -> tuple[RuntimeUpdate, ...]:\n"
+                "        return (update,)\n"
+            ),
+            "pkg/gamma.py": (
+                "from __future__ import annotations\n"
+                "from pkg.updates import ReadingPhase\n\n\n"
+                "class GammaQuiet(ReadingPhase):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="ReadingPhase",
+                because="live phases emit status updates immediately",
+                name="LiveReadingPhase",
+                judgement="A live reading phase that emits status updates immediately.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.executable_recipe.simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    after = (tmp_path / "pkg/updates.py").read_text()
+    assert "from pkg.updates import" not in after
+    assert "class LiveReadingPhase(ReadingPhase):" in after
+    # Real import proof: importing pkg.alpha/pkg.beta/pkg.updates must not circular-import.
+    result = subprocess.run(
+        [sys.executable, "-c", "import pkg.alpha, pkg.beta, pkg.updates; u = pkg.updates.StatusUpdate(); assert pkg.alpha.AlphaLive().status(u) == (u,)"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert _findings(tmp_path) == []
+
+
+def test_cross_module_lift_refuses_eager_forward_ref_in_destination_module(tmp_path: Path):
+    """Without `from __future__ import annotations`, annotations on a moved method
+    referencing a class declared later in the destination module are evaluated eagerly
+    at class-definition time; NRA must refuse instead of emitting a crashing self-import
+    or NameError."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/updates.py": (
+                "from abc import ABC\n\n\n"
+                "class ReadingPhase(ABC):\n"
+                "    def status(self, update):\n"
+                "        return ()\n\n\n"
+                "class RuntimeUpdate:\n"
+                "    pass\n\n\n"
+                "class StatusUpdate(RuntimeUpdate):\n"
+                "    pass\n"
+            ),
+            "pkg/alpha.py": (
+                "from pkg.updates import ReadingPhase, RuntimeUpdate, StatusUpdate\n\n\n"
+                "class AlphaLive(ReadingPhase):\n"
+                "    def status(self, update: StatusUpdate) -> tuple[RuntimeUpdate, ...]:\n"
+                "        return (update,)\n"
+            ),
+            "pkg/beta.py": (
+                "from pkg.updates import ReadingPhase, RuntimeUpdate, StatusUpdate\n\n\n"
+                "class BetaLive(ReadingPhase):\n"
+                "    def status(self, update: StatusUpdate) -> tuple[RuntimeUpdate, ...]:\n"
+                "        return (update,)\n"
+            ),
+            "pkg/gamma.py": (
+                "from pkg.updates import ReadingPhase\n\n\n"
+                "class GammaQuiet(ReadingPhase):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="ReadingPhase",
+                because="live phases emit status updates immediately",
+                name="LiveReadingPhase",
+                judgement="A live reading phase that emits status updates immediately.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    assert evaluation.recipe is None
+    assert "declared later" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs
