@@ -752,6 +752,19 @@ class PatternId(IntEnum):
             CapabilityTag.ENUMERATION,
         ),
     )
+    DOTTED_CLASS_ROSTER = _pattern(
+        stable_id=64,
+        display_name="Dotted Class Roster",
+        required_relation=(
+            "A literal collection of dotted class-path strings (`pkg.mod.ClassName`) "
+            "restates capability membership of classes already declared in the "
+            "repository instead of a nominal capability mixin or family base (MEMB-2)."
+        ),
+        witness_capabilities=(
+            CapabilityTag.CAPABILITY_MARKER_IDENTITY,
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+        ),
+    )
 
     def __new__(
         cls,
