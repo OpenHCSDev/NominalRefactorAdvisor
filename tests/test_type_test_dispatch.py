@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import (
@@ -3583,6 +3585,101 @@ def test_closed_multi_root_scanned_union_pushes_whole_and_embedded_and_guards_un
         "exact_leaves_subclass_uncovered_refused",
         "unrelated_tested_class_refused",
     }
+
+
+def test_in_place_multi_statement_default_keeps_imported_name_used_in_remaining_body(
+    tmp_path: Path,
+) -> None:
+    locks_src = """from __future__ import annotations
+
+
+class StoreLockFile:
+    members: tuple[type, ...] = ()
+
+    @classmethod
+    def members_with(cls, target: type) -> tuple[type, ...]:
+        return tuple(m for m in cls.members if issubclass(m, target))
+"""
+    store_src = """from __future__ import annotations
+
+from pkg.locks import StoreLockFile
+
+
+class RootFile:
+    filename: str = ""
+
+    @classmethod
+    def declaring_owner(cls) -> type[RootFile]:
+        if issubclass(cls, StoreLockFile):
+            return cls
+        stores = tuple(
+            owner
+            for owner in StoreLockFile.members_with(cls)
+            if issubclass(owner, RootFile) and owner.filename == cls.filename
+        )
+        if not stores:
+            return cls
+        return stores[0]
+
+
+class PlainFile(RootFile):
+    filename = "bus.db"
+
+
+class LockedBusFile(PlainFile, StoreLockFile):
+    filename = "bus.db"
+
+
+StoreLockFile.members = (LockedBusFile,)
+"""
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/locks.py": locks_src,
+            "pkg/store.py": store_src,
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    snap = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(findings, selector_context=snap)
+    assert plan.candidate_count == 1, plan.report
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    sim.apply()
+
+    after_store = (tmp_path / "pkg/store.py").read_text(encoding="utf-8")
+    assert "from pkg.locks import StoreLockFile" in after_store
+    assert "if issubclass(cls, StoreLockFile):" not in after_store
+
+    locks_ns: dict[str, object] = {}
+    exec(
+        compile((tmp_path / "pkg/locks.py").read_text(encoding="utf-8"), str(tmp_path / "pkg/locks.py"), "exec"),
+        locks_ns,
+    )
+    pkg_mod = types.ModuleType("pkg")
+    locks_mod = types.ModuleType("pkg.locks")
+    locks_mod.__dict__.update(locks_ns)
+    old_pkg = sys.modules.get("pkg")
+    old_locks = sys.modules.get("pkg.locks")
+    sys.modules["pkg"] = pkg_mod
+    sys.modules["pkg.locks"] = locks_mod
+    try:
+        store_ns: dict[str, object] = {}
+        exec(compile(after_store, str(tmp_path / "pkg/store.py"), "exec"), store_ns)
+        assert store_ns["PlainFile"].declaring_owner() is store_ns["LockedBusFile"]  # type: ignore[attr-defined]
+        assert store_ns["LockedBusFile"].declaring_owner() is store_ns["LockedBusFile"]  # type: ignore[attr-defined]
+    finally:
+        if old_pkg is None:
+            sys.modules.pop("pkg", None)
+        else:
+            sys.modules["pkg"] = old_pkg
+        if old_locks is None:
+            sys.modules.pop("pkg.locks", None)
+        else:
+            sys.modules["pkg.locks"] = old_locks
+
 
 
 

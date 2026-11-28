@@ -19,6 +19,7 @@ import copy
 import io
 import keyword as keyword_module
 import re
+import textwrap
 import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
@@ -1743,11 +1744,12 @@ def _names_loaded_in(nodes: Sequence[ast.AST]) -> frozenset[str]:
 
 
 def _names_loaded_in_source(source: str) -> frozenset[str]:
+    dedented = textwrap.dedent(source)
     try:
-        parsed = ast.parse(source)
+        parsed = ast.parse(dedented)
     except SyntaxError:
         try:
-            parsed = ast.parse(source, mode="eval")
+            parsed = ast.parse(dedented, mode="eval")
         except SyntaxError:
             return frozenset()
     return _names_loaded_in((parsed,))
@@ -7904,7 +7906,7 @@ class TypeTestDispatchProof:
         target_edits, target_retained = self.method_target.member_and_import_edits(
             self, snapshot, geometry, param_names, rationale
         )
-        retained_in_source = set(_names_loaded_in_source(replacement_text)) | set(
+        retained_in_source = set(_names_loaded_in_source(line_indent + replacement_text)) | set(
             target_retained
         )
         obsolete_nodes = (
