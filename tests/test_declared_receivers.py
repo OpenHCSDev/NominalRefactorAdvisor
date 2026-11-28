@@ -717,6 +717,75 @@ def test_declared_receiver_typing_resolves_init_annotations_and_keeps_class_obje
     assert isinstance(builder.path_of(assigns["c"]).declared(typing), UndeclaredType)
 
 
+def test_declared_receiver_typing_follows_type_checking_imports_and_init_constructors(
+    tmp_path: Path,
+) -> None:
+    """Reproduces Toad `app_node.py` (`if TYPE_CHECKING: from toad.app import ToadApp`)
+    and unannotated Qt/Textual `__init__` constructor calls (`self._clock = Clock()`):
+    subclasses inherit both cleanly, while ambiguous/local-shadowed/reassigned `__init__`
+    attributes stay undeclared."""
+
+    pkg = tmp_path / "app_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "app.py").write_text(
+        "class Clock:\n"
+        "    def tick(self) -> None: ...\n\n"
+        "class ToadApp:\n"
+        "    def __init__(self, flag: bool, Shadowed: object) -> None:\n"
+        "        self._clock = Clock()\n"
+        "        self._maybe = Clock() if flag else None\n"
+        "        self._reassigned = Clock()\n"
+        "        self._reassigned = None\n"
+        "        self._shadowed = Shadowed()\n"
+    )
+    (pkg / "app_node.py").write_text(
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from app_pkg.app import ToadApp\n\n"
+        "class AppScoped:\n"
+        "    app: ToadApp\n\n"
+        "class ChildWidget(AppScoped):\n"
+        "    def read(self):\n"
+        "        a = self.app\n"
+        "        b = self.app._clock\n"
+        "        c = self.app._maybe\n"
+        "        d = self.app._reassigned\n"
+        "        e = self.app._shadowed\n"
+        "        return a, b, c, d, e\n"
+    )
+    modules = parse_python_modules(pkg)
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_stub(module) for module in modules
+    )
+    class_index = CompactClassFamilyIndexBuilder(projections).build()
+    typing = DeclaredReceiverTyping.from_projections(projections, class_index)
+    node_mod = next(m for m in modules if m.module_name == "app_pkg.app_node")
+    builder = ReceiverPathBuilder(
+        node_mod.module_name,
+        node_mod.module,
+        module_import_aliases(node_mod),
+        node_mod.syntax_index.parent_index,
+    )
+    child_cls = next(
+        stmt for stmt in node_mod.module.body if isinstance(stmt, ast.ClassDef) and stmt.name == "ChildWidget"
+    )
+    read_fn = next(
+        stmt for stmt in child_cls.body if isinstance(stmt, ast.FunctionDef) and stmt.name == "read"
+    )
+    assigns = {
+        stmt.targets[0].id: stmt.value
+        for stmt in read_fn.body
+        if isinstance(stmt, ast.Assign) and isinstance(stmt.targets[0], ast.Name)
+    }
+    assert builder.path_of(assigns["a"]).declared(typing) == DeclaredInstance(("app_pkg.app.ToadApp",))
+    assert builder.path_of(assigns["b"]).declared(typing) == DeclaredInstance(("app_pkg.app.Clock",))
+    assert isinstance(builder.path_of(assigns["c"]).declared(typing), UndeclaredType)
+    assert isinstance(builder.path_of(assigns["d"]).declared(typing), UndeclaredType)
+    assert isinstance(builder.path_of(assigns["e"]).declared(typing), UndeclaredType)
+
+
 def test_declared_receiver_typing_unwraps_awaited_async_calls_only(
     tmp_path: Path,
 ) -> None:

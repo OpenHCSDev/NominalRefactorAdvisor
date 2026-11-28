@@ -1422,6 +1422,8 @@ class CompactIndexedClass(CompactClassHeader):
     callable_member_declarations: tuple[CompactCallableMemberDeclaration, ...] = ()
     init_attribute_annotations: tuple[tuple[str, str], ...] = ()
     """Unambiguous `self.<attr>: T` annotations declared directly inside `__init__`."""
+    init_attribute_calls: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    """Unambiguous `self.<attr> = SomeClass(...)` assignments inside `__init__`."""
     base_argument_sources: tuple[tuple[str, ...], ...] = ()
     """Each referenced base's subscript arguments (`Base[A, B]`), aligned with its base references."""
     type_parameter_names: tuple[str, ...] = ()
@@ -1821,6 +1823,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
     star_import_origins: tuple[CompactModuleStarImportOrigin, ...]
     classes: tuple[CompactIndexedClass, ...]
     field_declaration_wrappers: tuple[CompactFieldDeclarationWrapper, ...] = ()
+    type_checking_import_aliases: tuple[tuple[str, str], ...] = ()
 
     @cached_property
     def has_unsettled_field_declarations(self) -> bool:
@@ -1870,6 +1873,9 @@ class CompactModuleClassHeader(CompactModuleIdentity):
             ),
             field_declaration_wrappers=module_field_declaration_wrappers(
                 parsed_module, binding_snapshots[None]
+            ),
+            type_checking_import_aliases=tuple(
+                sorted(_module_type_checking_import_aliases(parsed_module).items())
             ),
         )
 
@@ -5105,6 +5111,37 @@ def module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     }
 
 
+def _module_type_checking_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
+    """Import aliases declared inside `if TYPE_CHECKING:` blocks, for annotation resolution."""
+
+    runtime_aliases = module_import_aliases(parsed_module)
+    aliases: dict[str, str] = {}
+    for statement in ModuleImportScope.TYPE_CHECKING.import_statements(
+        parsed_module.module
+    ):
+        match statement:
+            case ast.Import(names=names):
+                for alias in names:
+                    local_name = alias.asname or alias.name.partition(".")[0]
+                    target = alias.name if alias.asname else local_name
+                    if local_name not in runtime_aliases:
+                        aliases[local_name] = target
+            case ast.ImportFrom(module=module, level=level, names=names):
+                resolved = parsed_module.module_path_identity.resolve_import_from_module(
+                    imported_module=module,
+                    level=level,
+                )
+                if resolved is None:
+                    continue
+                for alias in names:
+                    if alias.name == "*":
+                        continue
+                    local_name = alias.asname or alias.name
+                    if local_name not in runtime_aliases:
+                        aliases[local_name] = f"{resolved}.{alias.name}"
+    return aliases
+
+
 def module_import_names(parsed_module: ParsedModule) -> frozenset[str]:
     """Names the module's final bindings resolve to an imported module."""
 
@@ -5571,6 +5608,7 @@ def _compact_indexed_classes(
                 node, binding_snapshots[node.lineno]
             ),
             init_attribute_annotations=_compact_init_attribute_annotations(node),
+            init_attribute_calls=_compact_init_attribute_calls(node),
             abstract_method_names=sorted_tuple(
                 statement.name
                 for statement in FunctionDefinition.within(node.body)
@@ -6088,6 +6126,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             star_import_origins=declarations.star_import_origins,
             classes=declarations.classes,
             field_declaration_wrappers=declarations.field_declaration_wrappers,
+            type_checking_import_aliases=declarations.type_checking_import_aliases,
             top_level_definitions=tuple(
                 (node.name, node.lineno)
                 for node in parsed_module.module.body
@@ -7828,6 +7867,127 @@ def _compact_init_attribute_annotations(
     return tuple(
         (name, source)
         for name, source in annotations.items()
+        if name not in ambiguous
+    )
+
+
+def _dotted_name_parts(expr: ast.expr) -> tuple[str, ...]:
+    match expr:
+        case ast.Name(id=name):
+            return (name,)
+        case ast.Attribute(value=value, attr=attr):
+            prefix = _dotted_name_parts(value)
+            return (*prefix, attr) if prefix else ()
+    return ()
+
+
+def _compact_init_attribute_calls(
+    node: ast.ClassDef,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Unambiguous `self.<attr> = SomeClass(...)` assignments inside `__init__`,
+    excluding any attribute also annotated, reassigned to another expression, or
+    calling a local parameter/variable shadowing a module symbol."""
+
+    init_defs = [
+        statement
+        for statement in FunctionDefinition.within(node.body)
+        if statement.name == "__init__"
+    ]
+    if len(init_defs) != 1:
+        return ()
+    init_def = init_defs[0]
+    positional = (*init_def.args.posonlyargs, *init_def.args.args)
+    if not positional:
+        return ()
+    self_name = positional[0].arg
+    init_locals: set[str] = {
+        arg.arg
+        for arg in (*positional, *init_def.args.kwonlyargs)
+    }
+    if init_def.args.vararg is not None:
+        init_locals.add(init_def.args.vararg.arg)
+    if init_def.args.kwarg is not None:
+        init_locals.add(init_def.args.kwarg.arg)
+
+    def collect_locals(statements: Sequence[ast.stmt]) -> None:
+        for stmt in statements:
+            match stmt:
+                case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(name=name):
+                    init_locals.add(name)
+                    continue
+                case ast.Import(names=names) | ast.ImportFrom(names=names):
+                    for alias in names:
+                        if alias.name != "*":
+                            init_locals.add(alias.asname or alias.name.partition(".")[0])
+                    continue
+                case _:
+                    for child in ast.iter_child_nodes(stmt):
+                        match child:
+                            case ast.Name(id=name, ctx=ast.Store()):
+                                init_locals.add(name)
+                            case ast.stmt():
+                                collect_locals((child,))
+                            case ast.ExceptHandler(name=str() as handler_name, body=body):
+                                init_locals.add(handler_name)
+                                collect_locals(body)
+                            case ast.ExceptHandler(body=body):
+                                collect_locals(body)
+                            case ast.match_case(body=body):
+                                collect_locals(body)
+
+    collect_locals(init_def.body)
+
+    calls: dict[str, tuple[str, ...]] = {}
+    ambiguous: set[str] = set()
+
+    def walk(statements: Sequence[ast.stmt]) -> None:
+        for stmt in statements:
+            match stmt:
+                case ast.Assign(targets=targets, value=value):
+                    callee_parts = (
+                        _dotted_name_parts(value.func)
+                        if isinstance(value, ast.Call)
+                        else ()
+                    )
+                    for target in targets:
+                        match target:
+                            case ast.Attribute(value=ast.Name(id=receiver), attr=attr) if receiver == self_name:
+                                if callee_parts and callee_parts[0] not in init_locals:
+                                    previous = calls.get(attr)
+                                    if previous is not None and previous != callee_parts:
+                                        ambiguous.add(attr)
+                                    else:
+                                        calls[attr] = callee_parts
+                                else:
+                                    ambiguous.add(attr)
+                case ast.AnnAssign(
+                    target=ast.Attribute(value=ast.Name(id=receiver), attr=attr)
+                ) if receiver == self_name:
+                    ambiguous.add(attr)
+                case ast.AugAssign(
+                    target=ast.Attribute(value=ast.Name(id=receiver), attr=attr)
+                ) if receiver == self_name:
+                    ambiguous.add(attr)
+                case ast.Delete(targets=targets):
+                    for target in targets:
+                        match target:
+                            case ast.Attribute(value=ast.Name(id=receiver), attr=attr) if receiver == self_name:
+                                ambiguous.add(attr)
+                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+                    continue
+                case _:
+                    for field_value in ast.iter_child_nodes(stmt):
+                        if isinstance(field_value, ast.stmt):
+                            walk((field_value,))
+                        elif isinstance(field_value, ast.ExceptHandler):
+                            walk(field_value.body)
+                        elif isinstance(field_value, ast.match_case):
+                            walk(field_value.body)
+
+    walk(init_def.body)
+    return tuple(
+        (name, parts)
+        for name, parts in calls.items()
         if name not in ambiguous
     )
 

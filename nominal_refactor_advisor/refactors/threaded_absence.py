@@ -2454,6 +2454,108 @@ def _resolve_threaded_hierarchy(
     )
 
 
+_IDENTITY_CALLBACK_CONSUMERS = frozenset(
+    {"disconnect", "unsubscribe", "remove", "discard", "pop", "index", "count"}
+)
+
+
+@dataclass(frozen=True)
+class _CallbackAdapterArg:
+    """A sync single-parameter function/method passed directly as a callback value,
+    wrapped at the boundary with `lambda <p>: <ref>(<Family>.from_optional(<p>))`."""
+
+    file_path: str
+    ref_expr: ast.expr
+    lambda_param: str
+    has_default: bool
+
+    def render(self, source: str, family_name: str) -> str:
+        ref_src = SourceTextGeometry(source).slice_node(self.ref_expr)
+        param_spec = (
+            f"{self.lambda_param}=None" if self.has_default else self.lambda_param
+        )
+        return f"lambda {param_spec}: {ref_src}({family_name}.from_optional({self.lambda_param}))"
+
+
+def _is_functools_partial_call(
+    bindings: ModuleBindingProof,
+    mod: ParsedModule,
+    call: ast.Call,
+) -> bool:
+    witness = bindings.reference_or_builtin_witness_at(mod, call.func, line=call.lineno)
+    return witness is not None and witness.qualified_name == "functools.partial"
+
+
+def _extract_partial_argument(
+    partial_call: ast.Call,
+    param_name: str,
+    call_pos: int | None,
+    partial_parent: ast.AST | None,
+) -> ast.expr | None:
+    """Extract the argument expression bound to `param_name` inside `functools.partial(fn, ...)`."""
+
+    bound_args = partial_call.args[1:]
+    if any(isinstance(arg, ast.Starred) for arg in bound_args) or any(
+        kw.arg is None for kw in partial_call.keywords
+    ):
+        raise NeedsInput(
+            f"line {partial_call.lineno} passes starred `*`/`**` arguments through `functools.partial`",
+            NeededInput.PROOF,
+        )
+    if call_pos is not None and call_pos < len(bound_args):
+        return bound_args[call_pos]
+    for kw in partial_call.keywords:
+        if kw.arg == param_name and isinstance(partial_parent, ast.Call | ast.keyword):
+            return kw.value
+    return None
+
+
+def _single_param_callback_lambda_name(
+    function: FunctionNode,
+    param_name: str,
+    skip_first_receiver: bool,
+    ref_node: ast.expr,
+    parent: ast.AST | None,
+    grandparent: ast.AST | None,
+) -> str | None:
+    """Return a non-colliding lambda parameter name when `ref_node` is a sync
+    single-parameter callback passed directly to an outer call (not a removal/
+    identity consumer such as `.disconnect(...)`)."""
+
+    if isinstance(function, ast.AsyncFunctionDef):
+        return None
+    if function.args.vararg is not None or function.args.kwarg is not None:
+        return None
+    all_pos = (*function.args.posonlyargs, *function.args.args)
+    non_receiver = (
+        *(all_pos[1:] if skip_first_receiver else all_pos),
+        *function.args.kwonlyargs,
+    )
+    if len(non_receiver) != 1 or non_receiver[0].arg != param_name:
+        return None
+    outer_call: ast.Call | None = None
+    if isinstance(parent, ast.Call) and ref_node in parent.args:
+        outer_call = parent
+    elif (
+        isinstance(parent, ast.keyword)
+        and parent.value is ref_node
+        and isinstance(grandparent, ast.Call)
+    ):
+        outer_call = grandparent
+    if outer_call is None:
+        return None
+    match outer_call.func:
+        case ast.Attribute(attr=attr) if attr in _IDENTITY_CALLBACK_CONSUMERS:
+            return None
+    used_names = {
+        node.id for node in ast.walk(ref_node) if isinstance(node, ast.Name)
+    }
+    for candidate in (param_name, f"_{param_name}", "_value"):
+        if candidate not in used_names:
+            return candidate
+    return "_callback_value"
+
+
 def _collect_closed_call_args(
     snapshot: CodemodSourceSnapshot,
     source_path: str,
@@ -2463,14 +2565,16 @@ def _collect_closed_call_args(
     call_pos: int | None,
     has_default: bool,
     hierarchy: _ResolvedThreadedHierarchy,
-) -> tuple[_RewrittenCallArg, ...]:
-    """Prove every reference to `function` across the scanned repo is a direct call
-    and collect every call site's argument expression for `param_name`."""
+) -> tuple[tuple[_RewrittenCallArg, ...], tuple[_CallbackAdapterArg, ...]]:
+    """Prove every reference to `function` across the scanned repo is a direct call,
+    a closed `functools.partial(...)` binding, or a wrappable sync callback, and
+    collect every call argument and callback adapter to rewrite."""
 
     is_private = function.name.startswith("_")
     bindings = snapshot.module_binding_proof
     source_module = snapshot.parsed_module_for_source_path(source_path)
     raw_args: list[tuple[str, ast.expr]] = []
+    callback_adapters: list[_CallbackAdapterArg] = []
     owner_symbol = enclosure.declaring_class_symbol(snapshot)
 
     if owner_symbol is None:
@@ -2505,6 +2609,34 @@ def _collect_closed_call_args(
                     continue
                 parent = node_index.parents.get(node)
                 if not (isinstance(parent, ast.Call) and parent.func is node):
+                    if (
+                        isinstance(parent, ast.Call)
+                        and parent.args
+                        and parent.args[0] is node
+                        and _is_functools_partial_call(bindings, mod, parent)
+                    ):
+                        partial_arg = _extract_partial_argument(
+                            parent,
+                            param_name,
+                            call_pos,
+                            node_index.parents.get(parent),
+                        )
+                        if partial_arg is not None:
+                            raw_args.append((mod.file_path, partial_arg))
+                            continue
+                    grandparent = (
+                        node_index.parents.get(parent) if parent is not None else None
+                    )
+                    lambda_param = _single_param_callback_lambda_name(
+                        function, param_name, False, node, parent, grandparent
+                    )
+                    if lambda_param is not None:
+                        callback_adapters.append(
+                            _CallbackAdapterArg(
+                                mod.file_path, node, lambda_param, has_default
+                            )
+                        )
+                        continue
                     raise NeedsInput(
                         f"{mod.file_path}:{node.lineno} references `{function.name}` as a value; callers are not closed",
                         NeededInput.PROOF,
@@ -2514,12 +2646,12 @@ def _collect_closed_call_args(
                 )
                 if arg_expr is not None:
                     raw_args.append((mod.file_path, arg_expr))
-        if not is_private and not raw_args:
+        if not is_private and not raw_args and not callback_adapters:
             raise NeedsInput(
                 f"public function `{function.name}` has no scanned callers; cannot prove callers are closed",
                 NeededInput.PROOF,
             )
-        return _classify_call_args_batched(snapshot, raw_args)
+        return _classify_call_args_batched(snapshot, raw_args), tuple(callback_adapters)
 
     index = snapshot.compact_class_index
     classes = index.classes_by_symbol
@@ -2537,7 +2669,7 @@ def _collect_closed_call_args(
     )
 
     # Pass 1: collect definite hits and defer receiver-type queries for one batched mypy call.
-    definite_hits: list[tuple[str, ast.Attribute, ast.Call | None]] = []
+    definite_hits: list[tuple[ParsedModule, ast.Attribute, ast.Call | None]] = []
     deferred_checks: list[tuple[ParsedModule, ast.Attribute, ast.Call | None, ReceiverSpan]] = []
     for mod in snapshot.parsed_modules:
         if function.name not in mod.source:
@@ -2575,19 +2707,19 @@ def _collect_closed_call_args(
                 )
             ):
                 if any(lo <= node.lineno <= hi for lo, hi in reaching_class_ranges):
-                    definite_hits.append((mod.file_path, node, parent_call))
+                    definite_hits.append((mod, node, parent_call))
                     continue
             if (
                 isinstance(node.value, ast.Name)
                 and node.value.id in local_owner_qualnames
             ):
-                definite_hits.append((mod.file_path, node, parent_call))
+                definite_hits.append((mod, node, parent_call))
                 continue
             witness = bindings.reference_or_builtin_witness_at(
                 mod, node.value, line=node.lineno
             )
             if witness is not None and witness.qualified_name in reaching_symbols:
-                definite_hits.append((mod.file_path, node, parent_call))
+                definite_hits.append((mod, node, parent_call))
                 continue
             deferred_checks.append(
                 (
@@ -2619,10 +2751,39 @@ def _collect_closed_call_args(
             method_name=function.name,
             line=node.lineno,
         ):
-            all_hits.append((mod.file_path, node, parent_call))
+            all_hits.append((mod, node, parent_call))
 
-    for file_path, node, parent_call in all_hits:
+    for mod, node, parent_call in all_hits:
+        file_path = mod.file_path
         if parent_call is None:
+            node_index = mod.fact(ModuleNodeIndex)
+            parent = node_index.parents.get(node)
+            if (
+                isinstance(parent, ast.Call)
+                and parent.args
+                and parent.args[0] is node
+                and _is_functools_partial_call(bindings, mod, parent)
+            ):
+                partial_arg = _extract_partial_argument(
+                    parent,
+                    param_name,
+                    call_pos,
+                    node_index.parents.get(parent),
+                )
+                if partial_arg is not None:
+                    raw_args.append((file_path, partial_arg))
+                    continue
+            grandparent = (
+                node_index.parents.get(parent) if parent is not None else None
+            )
+            lambda_param = _single_param_callback_lambda_name(
+                function, param_name, True, node, parent, grandparent
+            )
+            if lambda_param is not None:
+                callback_adapters.append(
+                    _CallbackAdapterArg(file_path, node, lambda_param, has_default)
+                )
+                continue
             raise NeedsInput(
                 f"{file_path}:{node.lineno} references `.{function.name}` as a value; callers are not closed",
                 NeededInput.PROOF,
@@ -2639,12 +2800,12 @@ def _collect_closed_call_args(
                 continue
             raw_args.append((file_path, arg_expr))
 
-    if not is_private and not raw_args:
+    if not is_private and not raw_args and not callback_adapters:
         raise NeedsInput(
             f"public method `{owner_qualname}.{function.name}` has no scanned callers; cannot prove callers are closed",
             NeededInput.PROOF,
         )
-    return _classify_call_args_batched(snapshot, raw_args)
+    return _classify_call_args_batched(snapshot, raw_args), tuple(callback_adapters)
 
 
 @dataclass(frozen=True)
@@ -2661,6 +2822,7 @@ class ThreadedAbsenceProof:
     family_docstring: str
     method_specs: tuple[_FamilyMethodSpec, ...]
     call_args: tuple[_RewrittenCallArg, ...]
+    callback_adapters: tuple[_CallbackAdapterArg, ...]
     passive_overrides: tuple[_PassiveOverrideParamEdit, ...]
     insert_before_stmt: ast.stmt
 
@@ -2772,7 +2934,7 @@ class ThreadedAbsenceProof:
                 NeededInput.PROOF,
             )
 
-        call_args = _collect_closed_call_args(
+        call_args, callback_adapters = _collect_closed_call_args(
             snapshot,
             source_path,
             enclosure,
@@ -2790,6 +2952,11 @@ class ThreadedAbsenceProof:
             for item in call_args
             if item.file_path != source_path
         ]
+        external_imports_needed.extend(
+            (adapter.file_path, (family_name,))
+            for adapter in callback_adapters
+            if adapter.file_path != source_path
+        )
         external_imports_needed.extend(
             (override.file_path, override.needed_family_names(family_name))
             for override in hierarchy.passive_overrides
@@ -2824,6 +2991,7 @@ class ThreadedAbsenceProof:
             family_docstring=family_docstring,
             method_specs=(*primary_specs, *hierarchy.branching_overrides),
             call_args=call_args,
+            callback_adapters=callback_adapters,
             passive_overrides=hierarchy.passive_overrides,
             insert_before_stmt=insert_before,
         )
@@ -2841,7 +3009,10 @@ class ThreadedAbsenceProof:
         rendered_specs: Sequence[tuple[_FamilyMethodSpec, ResolvedMethodAnnotations]],
     ) -> tuple[str, bool]:
         needs_abstractmethod = any(not spec.absent_is_noop for spec, _ in rendered_specs)
-        needs_from_optional = any(item.wrapping.uses_from_optional for item in self.call_args)
+        needs_from_optional = (
+            any(item.wrapping.uses_from_optional for item in self.call_args)
+            or bool(self.callback_adapters)
+        )
 
         base_lines = [
             f"class {self.family_name}(ABC):",
@@ -3067,6 +3238,29 @@ class ThreadedAbsenceProof:
                             ),
                             rationale=rationale,
                         )
+        for adapter in self.callback_adapters:
+            caller_source = snapshot.sources_by_file_path[adapter.file_path]
+            caller_geom = SourceTextGeometry(caller_source)
+            r_start, r_end = caller_geom.required_node_offsets(adapter.ref_expr)
+            replacements_by_file.setdefault(adapter.file_path, []).append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=r_start,
+                    end_offset=r_end,
+                    replacement_source=adapter.render(caller_source, self.family_name),
+                )
+            )
+            if adapter.file_path != self.source_path:
+                key = (adapter.file_path, self.family_name)
+                if key not in needed_caller_imports:
+                    needed_caller_imports[key] = ModuleImportMutation.from_source(
+                        file_path=adapter.file_path,
+                        import_source=import_graph.required_import_source(
+                            importing_file_path=adapter.file_path,
+                            imported_file_path=self.source_path,
+                            imported_name=self.family_name,
+                        ),
+                        rationale=rationale,
+                    )
 
         # Rewrite parameter annotations/defaults on passive overrides (stub/unused/del-only).
         for override in self.passive_overrides:
