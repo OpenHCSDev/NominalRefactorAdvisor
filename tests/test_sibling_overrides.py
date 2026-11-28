@@ -1755,3 +1755,52 @@ def test_builtin_exception_and_float_subclasses_keep_proved_mro(tmp_path: Path):
     for finding in findings:
         evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(finding, snap)
         assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+
+
+def test_replace_home_stub_refuses_when_ancestor_abstract_methods_are_implemented_on_home(
+    tmp_path: Path,
+):
+    """Reproduces `CodingTool._parse_resource` in agent-comms: an ancestor declares
+    `@abstractmethod` hooks that an intermediate base implements as concrete methods,
+    leaving `home`'s own `@abstractmethod` as the only remaining abstract method.
+    Concrete method overrides must clear ancestor abstract methods so `ReplaceHomeStub`
+    refuses flipping `AutoRegisterMeta` `home` concrete."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/tools.py": (
+                "from abc import ABC, abstractmethod\n"
+                "from metaclass_registry import AutoRegisterMeta\n\n\n"
+                "class FamilyMeta(AutoRegisterMeta):\n"
+                "    pass\n\n\n"
+                "class ToolRoot(ABC, metaclass=FamilyMeta):\n"
+                "    __registry_key__ = '_tool'\n\n"
+                "    @abstractmethod\n"
+                "    def create_call(self) -> str:\n"
+                "        ...\n\n\n"
+                "class ExecutableTool(ToolRoot):\n"
+                "    def create_call(self) -> str:\n"
+                "        return 'ok'\n\n\n"
+                "class CodingTool(ExecutableTool):\n"
+                "    @abstractmethod\n"
+                "    def _parse_resource(self) -> str | None:\n"
+                "        ...\n\n\n"
+                "class ReadTool(CodingTool):\n"
+                "    def _parse_resource(self) -> str | None:\n"
+                "        return None\n\n\n"
+                "class WriteTool(CodingTool):\n"
+                "    def _parse_resource(self) -> str | None:\n"
+                "        return None\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    finding = next(f for f in findings if "CodingTool._parse_resource" in f.summary)
+    snap = _snapshot(tmp_path)
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(finding, snap)
+    assert evaluation.recipe is None
+    assert "concrete" in evaluation.rejection_reason
+    assert "AutoRegisterMeta" in evaluation.rejection_reason
+
