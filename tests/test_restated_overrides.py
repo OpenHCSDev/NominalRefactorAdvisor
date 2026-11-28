@@ -546,3 +546,109 @@ def test_init_subclass_mro_dict_walk_scopes_to_owner_mro_universe(tmp_path: Path
     mixin_eval = _evaluation(tmp_path, "SharedMixin")
     assert mixin_eval.recipe is None
     assert "owner.__dict__" in mixin_eval.rejection_reason
+
+
+def test_keys_avoid_ignores_unrelated_class_and_non_string_writes(tmp_path: Path):
+    """Reproduces `ClassFact.slot` + `FakeLlama.slot` across `tests/test_context_state.py`:
+    `self.slot = 0`, closure `fake.slot = ...` (`fake = self`), and non-string writes
+    (`llama.slot = tokens` with `tokens: int` and `llama.slot = 0`) never collide with
+    `ClassFact.__get__` reading `owner.__dict__.get(self.slot)`, while a subclass of
+    `ClassFact` writing a conflicting string still blocks."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/fact.py": (
+                "class ClassFact:\n"
+                "    def __set_name__(self, owner, name: str) -> None:\n"
+                "        self.slot = f'_{name.lstrip(\"_\")}_derived'\n\n"
+                "    def __get__(self, instance, owner):\n"
+                "        return owner.__dict__.get(self.slot)\n\n\n"
+                "class FakeLlama:\n"
+                "    def __init__(self) -> None:\n"
+                "        self.slot = 0\n"
+                "        fake = self\n\n"
+                "        class Handler:\n"
+                "            def handle(self, n) -> None:\n"
+                "                fake.slot = n\n\n"
+                "def turn(llama, tokens: int = 100) -> None:\n"
+                "    llama.slot = tokens\n"
+                "    llama.slot = 0\n\n\n"
+                "class Base:\n"
+                "    def value(self) -> int:\n"
+                "        return 1\n\n\n"
+                "class Child(Base):\n"
+                "    def value(self) -> int:\n"
+                "        return 1\n"
+            ),
+        },
+    )
+    assert _evaluation(tmp_path, "Child").recipe is not None
+    # Negative control: a subclass of ClassFact writing a conflicting string key blocks.
+    fact_path = tmp_path / "pkg/fact.py"
+    fact_path.write_text(
+        fact_path.read_text()
+        + "\n\nclass BadFact(ClassFact):\n    def reset(self) -> None:\n        self.slot = 'value'\n"
+    )
+    blocked = _evaluation(tmp_path, "Child")
+    assert blocked.recipe is None
+    assert "owner.__dict__.get" in blocked.rejection_reason
+
+
+def test_values_filtered_to_types_and_pure_type_hints_assert_allow_method_deletion(
+    tmp_path: Path,
+):
+    """Reproduces `tests/test_field_codec.py:1256` (`pending.extend(vars(value).values())`
+    with `if not isinstance(value, type): continue`) and `tests/test_goal_runtime_annotations.py:255`
+    (`for name, member in vars(state).items(): ... assert get_type_hints(callback)`)."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/readers.py": (
+                "from inspect import isfunction\n"
+                "from typing import get_type_hints\n\n\n"
+                "def discover_types(root) -> set[type]:\n"
+                "    seen: set[type] = set()\n"
+                "    pending: list[object] = []\n"
+                "    pending.append(root)\n"
+                "    while pending:\n"
+                "        value = pending.pop()\n"
+                "        if not isinstance(value, type) or value in seen:\n"
+                "            continue\n"
+                "        seen.add(value)\n"
+                "        pending.extend(vars(value).values())\n"
+                "    return seen\n\n\n"
+                "def check_hints(state: type) -> None:\n"
+                "    for name, member in vars(state).items():\n"
+                "        match member:\n"
+                "            case classmethod(__func__=callback) | staticmethod(__func__=callback):\n"
+                "                pass\n"
+                "            case _:\n"
+                "                callback = member\n"
+                "        if isfunction(callback) and callback.__annotations__:\n"
+                "            assert get_type_hints(callback), f'{state.__name__}.{name}'\n\n\n"
+                "class Base:\n"
+                "    def value(self) -> int:\n"
+                "        return 1\n\n\n"
+                "class Child(Base):\n"
+                "    def value(self) -> int:\n"
+                "        return 1\n"
+            ),
+        },
+    )
+    assert _evaluation(tmp_path, "Child").recipe is not None
+    # Negative control: escaping `pending` (reading its length) stops `values_filtered_to_types`.
+    readers_path = tmp_path / "pkg/readers.py"
+    readers_path.write_text(
+        readers_path.read_text().replace(
+            "    return seen\n",
+            "    return seen if len(pending) == 0 else set()\n",
+        )
+    )
+    blocked = _evaluation(tmp_path, "Child")
+    assert blocked.recipe is None
+    assert "vars(value).values" in blocked.rejection_reason
+

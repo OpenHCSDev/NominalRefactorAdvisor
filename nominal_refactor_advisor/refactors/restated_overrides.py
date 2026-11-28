@@ -548,15 +548,23 @@ class OwnAnnotationKeys:
 
 
 @dataclass(frozen=True)
+class AttributeWrite:
+    """One attribute write site (`x.a = v`, `x.a += v`, or `setattr(x, 'a', v)`)."""
+
+    module: ParsedModule
+    enclosing_class: ast.ClassDef | None
+    receiver: ast.expr | None
+    value: ast.expr | None
+    is_self_write: bool
+
+
+@dataclass(frozen=True)
 class AttributeWriteIndex(ParsedModuleSetFact):
     """Every attribute write (`x.a = v`, `x.a += v`, `setattr(x, "a", v)`) across one
     state's modules, indexed by attribute name so `NamespaceReaders.keys_avoid` checks
     each attribute in O(writes of that attribute) instead of walking every module AST."""
 
-    writes_by_attribute: dict[str, tuple[tuple[str, ast.ClassDef | None, ast.expr | None], ...]]
-    """Maps `attr` to `(file_path, enclosing_class, self_assigned_value_or_none)` entries.
-    An entry has a non-None value only for plain `self.<attr> = value` inside a class;
-    any other target, `AugAssign`, or `setattr` records `None`."""
+    writes_by_attribute: dict[str, tuple[AttributeWrite, ...]]
 
     @staticmethod
     def enclosing_class(module: ParsedModule, node: ast.AST) -> ast.ClassDef | None:
@@ -570,9 +578,8 @@ class AttributeWriteIndex(ParsedModuleSetFact):
 
     @classmethod
     def derive(cls, modules: ParsedModuleSet) -> AttributeWriteIndex:
-        writes: dict[str, list[tuple[str, ast.ClassDef | None, ast.expr | None]]] = {}
+        writes: dict[str, list[AttributeWrite]] = {}
         for scanned in modules:
-            file_path = scanned.file_path
             index = scanned.syntax_index
             for _idx, node in index.indexed_nodes_of_type(ast.Assign):
                 value = node.value
@@ -585,18 +592,40 @@ class AttributeWriteIndex(ParsedModuleSetFact):
                             and target.value.id == "self"
                         )
                         writes.setdefault(target.attr, []).append(
-                            (file_path, owner, value if is_self else None)
+                            AttributeWrite(
+                                module=scanned,
+                                enclosing_class=owner,
+                                receiver=target.value,
+                                value=value,
+                                is_self_write=is_self,
+                            )
                         )
             for _idx, node in index.indexed_nodes_of_type(ast.AugAssign):
                 if isinstance(node.target, ast.Attribute):
-                    writes.setdefault(node.target.attr, []).append((file_path, None, None))
+                    writes.setdefault(node.target.attr, []).append(
+                        AttributeWrite(
+                            module=scanned,
+                            enclosing_class=cls.enclosing_class(scanned, node.target),
+                            receiver=node.target.value,
+                            value=None,
+                            is_self_write=False,
+                        )
+                    )
             for _idx, node in index.indexed_nodes_of_type(ast.Call):
                 match node:
                     case ast.Call(
                         func=ast.Name(id="setattr"),
-                        args=[_, ast.Constant(value=str() as name), *_],
+                        args=[receiver, ast.Constant(value=str() as name), *rest],
                     ):
-                        writes.setdefault(name, []).append((file_path, None, None))
+                        writes.setdefault(name, []).append(
+                            AttributeWrite(
+                                module=scanned,
+                                enclosing_class=cls.enclosing_class(scanned, node),
+                                receiver=receiver,
+                                value=rest[0] if len(rest) == 1 and not node.keywords else None,
+                                is_self_write=False,
+                            )
+                        )
         return cls({attr: tuple(entries) for attr, entries in writes.items()})
 
 
@@ -617,6 +646,8 @@ class NamespaceReaders(ClassAttributeReaders):
             if self.reaches(module, read, indexed)
             and not self.asks_another_key(module, read, parent, around, indexed, deleted)
             and not self.resolves_annotations_only(module, read, deleted)
+            and not self.values_filtered_to_types(module, read, parent, around, indexed, deleted)
+            and not self.asserts_type_hints_only(module, read, parent, around)
             for receiver in NamespaceReads.receiver(read)
         }
         if not open_reads:
@@ -786,10 +817,148 @@ class NamespaceReaders(ClassAttributeReaders):
                 case _:
                     return False
 
+    NON_STRING_BUILTINS: ClassVar[frozenset[str]] = frozenset(
+        {"int", "float", "bool", "bytes", "None"}
+    )
+    NON_TYPE_DECORATORS: ClassVar[frozenset[str]] = frozenset(
+        {"classmethod", "staticmethod", "property", "abstractmethod", "override", "cached_property"}
+    )
+
+    def _class_symbol(self, module: ParsedModule, node: ast.ClassDef) -> str | None:
+        lines = (node.lineno, *(decorator.lineno for decorator in node.decorator_list))
+        for indexed in self.snapshot.class_overlap_verdicts.class_index.classes_by_symbol.values():
+            if (
+                indexed.file_path == module.file_path
+                and indexed.simple_name == node.name
+                and indexed.line in lines
+            ):
+                return indexed.symbol
+        return None
+
+    def _class_node(self, indexed: CompactIndexedClass) -> ast.ClassDef | None:
+        module = self.snapshot.parsed_module_for_source_path(indexed.file_path)
+        for node in ast.walk(module.module):
+            if (
+                isinstance(node, ast.ClassDef)
+                and node.name == indexed.simple_name
+                and indexed.line
+                in (node.lineno, *(decorator.lineno for decorator in node.decorator_list))
+            ):
+                return node
+        return None
+
+    @classmethod
+    def _is_non_string_annotation(cls, annotation: ast.expr | None) -> bool:
+        match annotation:
+            case ast.Name(id=name):
+                return name in cls.NON_STRING_BUILTINS
+            case ast.Constant(value=None):
+                return True
+            case ast.BinOp(op=ast.BitOr(), left=left, right=right):
+                return cls._is_non_string_annotation(left) and cls._is_non_string_annotation(right)
+        return False
+
+    @classmethod
+    def non_string_value(cls, module: ParsedModule, value: ast.expr) -> bool:
+        """Whether `value` is provably never a `str` (so it can never match a deleted
+        class-namespace identifier key)."""
+
+        match value:
+            case ast.Constant(value=constant):
+                return not isinstance(constant, str)
+            case ast.UnaryOp(op=ast.UAdd() | ast.USub() | ast.Invert() | ast.Not()):
+                return True
+            case ast.Name(id=name):
+                parents = module.syntax_index.parent_index
+                scope: ast.AST | None = parents.get(value)
+                while scope is not None and not isinstance(
+                    scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+                ):
+                    scope = parents.get(scope)
+                if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return False
+                arguments = scope.args
+                annotations = [
+                    argument.annotation
+                    for argument in (
+                        *arguments.posonlyargs,
+                        *arguments.args,
+                        *arguments.kwonlyargs,
+                    )
+                    if argument.arg == name
+                ]
+                if not annotations or not all(
+                    cls._is_non_string_annotation(annotation) for annotation in annotations
+                ):
+                    return False
+                return not any(
+                    isinstance(node, ast.Name)
+                    and node.id == name
+                    and isinstance(node.ctx, (ast.Store, ast.Del))
+                    for node in ast.walk(scope)
+                )
+        return False
+
+    @staticmethod
+    def _self_alias_class(module: ParsedModule, receiver: ast.Name) -> ast.ClassDef | None:
+        """When `receiver` is a closure-captured alias bound once to `self` in an enclosing
+        method (`fake = self`), return that enclosing method's `ClassDef`."""
+
+        parents = module.syntax_index.parent_index
+        scope: ast.AST | None = parents.get(receiver)
+        while scope is not None:
+            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                stores = [
+                    node
+                    for node in ast.walk(scope)
+                    if isinstance(node, ast.Name)
+                    and node.id == receiver.id
+                    and isinstance(node.ctx, (ast.Store, ast.Del))
+                ]
+                if len(stores) == 1:
+                    assigned = parents.get(stores[0])
+                    if (
+                        isinstance(assigned, ast.Assign)
+                        and assigned.targets == [stores[0]]
+                        and isinstance(assigned.value, ast.Name)
+                        and assigned.value.id == "self"
+                    ):
+                        enclosing = AttributeWriteIndex.enclosing_class(module, assigned)
+                        if enclosing is not None:
+                            return enclosing
+                    return None
+                if stores:
+                    return None
+            scope = parents.get(scope)
+        return None
+
+    def _write_receiver_outside_universe(
+        self, entry: AttributeWrite, owner_mro_universe: frozenset[str] | None
+    ) -> bool:
+        if owner_mro_universe is None:
+            return False
+        if entry.is_self_write and entry.enclosing_class is not None:
+            other_symbol = self._class_symbol(entry.module, entry.enclosing_class)
+            return other_symbol is not None and other_symbol not in owner_mro_universe
+        if isinstance(entry.receiver, ast.Name):
+            alias_owner = self._self_alias_class(entry.module, entry.receiver)
+            if alias_owner is not None:
+                other_symbol = self._class_symbol(entry.module, alias_owner)
+                return other_symbol is not None and other_symbol not in owner_mro_universe
+        return False
+
+    def _write_value_avoids(self, entry: AttributeWrite, deleted: frozenset[str]) -> bool:
+        if entry.value is None:
+            return False
+        return self.text_avoids(entry.value, deleted) or self.non_string_value(
+            entry.module, entry.value
+        )
+
     def keys_avoid(self, module: ParsedModule, read: ast.expr, attribute: str, deleted: frozenset[str]) -> bool:
-        """Every write of `attribute` in the repository is `self.<attribute> = f"..."`
-        inside the class that reads it, and each written text starts or ends with a
-        constant that no deleted name starts or ends with."""
+        """Every write of `attribute` that can reach the reading class's `self` writes a key
+        provably disjoint from `deleted` (either a formatted text whose prefix/suffix avoids
+        `deleted`, or a non-`str` value), and writes on unrelated classes' `self` or
+        `self`-aliases cannot affect it."""
 
         owner = AttributeWriteIndex.enclosing_class(module, read)
         if owner is None:
@@ -799,13 +968,273 @@ class NamespaceReaders(ClassAttributeReaders):
         )
         if not entries:
             return False
-        return all(
-            entry_path == module.file_path
-            and entry_owner is owner
-            and entry_value is not None
-            and self.text_avoids(entry_value, deleted)
-            for entry_path, entry_owner, entry_value in entries
+        owner_symbol = self._class_symbol(module, owner)
+        owner_mro_universe = (
+            None
+            if owner_symbol is None
+            else self.snapshot.class_overlap_verdicts.mro_universe_for_family(owner_symbol)
         )
+        saw_owner_write = False
+        for entry in entries:
+            is_same_owner = (
+                entry.module.file_path == module.file_path
+                and entry.enclosing_class is owner
+                and entry.is_self_write
+            )
+            if is_same_owner:
+                saw_owner_write = True
+                if not self._write_value_avoids(entry, deleted):
+                    return False
+                continue
+            if self._write_receiver_outside_universe(entry, owner_mro_universe):
+                continue
+            if self._write_value_avoids(entry, deleted):
+                continue
+            return False
+        return saw_owner_write
+
+    def deleted_are_non_types(
+        self, indexed: CompactIndexedClass, deleted: frozenset[str]
+    ) -> bool:
+        """Whether every member in `deleted` on `indexed` is a plain or standard-decorated
+        function/method/property (so never `isinstance(..., type)`)."""
+
+        node = self._class_node(indexed)
+        if node is None or not deleted:
+            return False
+        matched: set[str] = set()
+        for statement in node.body:
+            match statement:
+                case ast.FunctionDef(name=name, decorator_list=decorators) | ast.AsyncFunctionDef(
+                    name=name, decorator_list=decorators
+                ) if name in deleted:
+                    for decorator in decorators:
+                        match decorator:
+                            case ast.Name(id=dec_name) | ast.Attribute(attr=dec_name) if (
+                                dec_name in self.NON_TYPE_DECORATORS
+                            ):
+                                continue
+                            case _:
+                                return False
+                    matched.add(name)
+                case ast.ClassDef(name=name) if name in deleted:
+                    return False
+                case ast.Assign(targets=targets):
+                    if any(
+                        isinstance(target, ast.Name) and target.id in deleted
+                        for target in targets
+                    ):
+                        return False
+                case ast.AnnAssign(target=ast.Name(id=name)) if name in deleted:
+                    return False
+        return matched == deleted
+
+    @staticmethod
+    def _is_isinstance_type_check(expr: ast.expr, var_name: str) -> bool:
+        match expr:
+            case ast.Call(
+                func=ast.Name(id="isinstance"),
+                args=[ast.Name(id=checked), ast.Name(id="type")],
+                keywords=[],
+            ) if checked == var_name:
+                return True
+        return False
+
+    @classmethod
+    def _skips_non_types(cls, test: ast.expr, var_name: str) -> bool:
+        match test:
+            case ast.UnaryOp(op=ast.Not(), operand=operand):
+                return cls._is_isinstance_type_check(operand, var_name)
+            case ast.BoolOp(op=ast.Or(), values=[first, *_]):
+                return cls._skips_non_types(first, var_name)
+        return False
+
+    @classmethod
+    def _worklist_only_feeds_type_filtered_pop(
+        cls,
+        scope: ast.FunctionDef | ast.AsyncFunctionDef,
+        parents: dict[ast.AST, ast.AST],
+        worklist: str,
+        loop: ast.While,
+        pop_assign: ast.Assign,
+    ) -> bool:
+        for node in ast.walk(scope):
+            if not (isinstance(node, ast.Name) and node.id == worklist):
+                continue
+            parent = parents.get(node)
+            if isinstance(node.ctx, ast.Store):
+                match parent:
+                    case ast.Assign(targets=[target], value=ast.List(elts=[])) if target is node:
+                        continue
+                    case ast.AnnAssign(target=target, value=ast.List(elts=[])) if target is node:
+                        continue
+                return False
+            if parent is loop and loop.test is node:
+                continue
+            match parent:
+                case ast.Attribute(value=target, attr="pop") if target is node:
+                    call = parents.get(parent)
+                    if (
+                        isinstance(call, ast.Call)
+                        and call.func is parent
+                        and not call.args
+                        and not call.keywords
+                        and parents.get(call) is pop_assign
+                        and pop_assign.value is call
+                    ):
+                        continue
+                case ast.Attribute(value=target, attr="extend" | "append") if target is node:
+                    call = parents.get(parent)
+                    if (
+                        isinstance(call, ast.Call)
+                        and call.func is parent
+                        and isinstance(parents.get(call), ast.Expr)
+                    ):
+                        continue
+            return False
+        return True
+
+    def values_filtered_to_types(
+        self,
+        module: ParsedModule,
+        read: ast.expr,
+        parent: ast.AST | None,
+        around: ast.AST | None,
+        indexed: CompactIndexedClass,
+        deleted: frozenset[str],
+    ) -> bool:
+        """`vars(X).values()` feeds only a loop or worklist that skips every non-`type`
+        element via `isinstance(v, type)`, and every deleted member is a non-`type` method
+        or property."""
+
+        match parent, around:
+            case (
+                ast.Attribute(value=target, attr="values"),
+                ast.Call(func=func, args=[], keywords=[]),
+            ) if target is read and func is parent:
+                pass
+            case _:
+                return False
+        if not self.deleted_are_non_types(indexed, deleted):
+            return False
+        parents = module.syntax_index.parent_index
+        enclosing = parents.get(around)
+        match enclosing:
+            case ast.For(target=ast.Name(id=elem), iter=iterated, body=[ast.If(test=test, body=[ast.Continue()], orelse=[]), *_]) if iterated is around:
+                return self._skips_non_types(test, elem)
+            case ast.comprehension(target=ast.Name(id=elem), iter=iterated, ifs=[first_if, *_]) if iterated is around:
+                return self._is_isinstance_type_check(first_if, elem)
+            case ast.Call(
+                func=ast.Attribute(value=ast.Name(id=worklist), attr="extend"),
+                args=[arg],
+                keywords=[],
+            ) if arg is around and isinstance(parents.get(enclosing), ast.Expr):
+                scope: ast.AST | None = parents.get(enclosing)
+                loop: ast.While | None = None
+                while scope is not None and not isinstance(
+                    scope, (ast.FunctionDef, ast.AsyncFunctionDef)
+                ):
+                    if isinstance(scope, ast.While) and isinstance(scope.test, ast.Name) and scope.test.id == worklist:
+                        loop = scope
+                    scope = parents.get(scope)
+                if (
+                    loop is None
+                    or not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    or len(loop.body) < 2
+                ):
+                    return False
+                match loop.body[0], loop.body[1]:
+                    case (
+                        ast.Assign(
+                            targets=[ast.Name(id=elem)],
+                            value=ast.Call(
+                                func=ast.Attribute(value=ast.Name(id=popped), attr="pop"),
+                                args=[],
+                                keywords=[],
+                            ),
+                        ) as pop_assign,
+                        ast.If(test=test, body=[ast.Continue()], orelse=[]),
+                    ) if popped == worklist and self._skips_non_types(test, elem):
+                        return self._worklist_only_feeds_type_filtered_pop(
+                            scope, parents, worklist, loop, pop_assign
+                        )
+        return False
+
+    @staticmethod
+    def _is_pure_type_hints_assert_body(statements: list[ast.stmt]) -> tuple[bool, bool]:
+        """Returns `(all_pure, saw_type_hints_assert)` for a loop body that only unwraps
+        members and asserts `get_type_hints(...)` with no mutations, returns, or other calls."""
+
+        saw_assert = False
+        allowed_calls = frozenset({"get_type_hints", "isfunction"})
+        for statement in statements:
+            match statement:
+                case ast.Pass():
+                    continue
+                case ast.Assign(targets=[ast.Name()], value=value):
+                    if any(isinstance(inner, ast.Call) for inner in ast.walk(value)):
+                        return False, False
+                case ast.Match(subject=ast.Name(), cases=cases):
+                    for case in cases:
+                        if case.guard is not None:
+                            return False, False
+                        ok, inner_assert = NamespaceReaders._is_pure_type_hints_assert_body(
+                            case.body
+                        )
+                        if not ok:
+                            return False, False
+                        saw_assert = saw_assert or inner_assert
+                case ast.If(test=test, body=body, orelse=orelse):
+                    for inner in ast.walk(test):
+                        if isinstance(inner, ast.Call):
+                            match inner.func:
+                                case ast.Name(id=fn) | ast.Attribute(attr=fn) if fn in allowed_calls:
+                                    continue
+                                case _:
+                                    return False, False
+                    ok_body, body_assert = NamespaceReaders._is_pure_type_hints_assert_body(body)
+                    ok_else, else_assert = NamespaceReaders._is_pure_type_hints_assert_body(orelse)
+                    if not (ok_body and ok_else):
+                        return False, False
+                    saw_assert = saw_assert or body_assert or else_assert
+                case ast.Assert(test=ast.Call(func=ast.Name(id="get_type_hints") | ast.Attribute(attr="get_type_hints")), msg=msg):
+                    if msg is not None and any(isinstance(inner, ast.Call) for inner in ast.walk(msg)):
+                        return False, False
+                    saw_assert = True
+                case _:
+                    return False, False
+        return True, saw_assert
+
+    def asserts_type_hints_only(
+        self,
+        module: ParsedModule,
+        read: ast.expr,
+        parent: ast.AST | None,
+        around: ast.AST | None,
+    ) -> bool:
+        """`for name, member in vars(cls).items(): ... assert get_type_hints(callback)`
+        only checks that existing members' annotations resolve, with no side effects,
+        counts, or return values that deleting a member from `vars(cls)` can break."""
+
+        match parent, around:
+            case (
+                ast.Attribute(value=target, attr="items"),
+                ast.Call(func=func, args=[], keywords=[]),
+            ) if target is read and func is parent:
+                pass
+            case _:
+                return False
+        loop = module.syntax_index.parent_index.get(around)
+        match loop:
+            case ast.For(
+                target=ast.Tuple(elts=[ast.Name(), ast.Name()]),
+                iter=iterated,
+                body=body,
+                orelse=[],
+            ) if iterated is around:
+                ok, saw_assert = self._is_pure_type_hints_assert_body(body)
+                return ok and saw_assert
+        return False
 
     def local_text_avoids(self, module: ParsedModule, read: ast.expr, name: str, deleted: frozenset[str]) -> bool:
         """The key is a local of the function the read stands in, bound there once,
