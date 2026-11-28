@@ -707,6 +707,20 @@ class NamespaceReaders(ClassAttributeReaders):
                 return isinstance(around, ast.Call) and around.func is parent and bool(around.args) and other(
                     around.args[0]
                 )
+            case ast.Match(subject=value, cases=cases) if value is read:
+                def mapping_case_asks_other(pattern: ast.pattern) -> bool:
+                    match pattern:
+                        case ast.MatchAs(pattern=None, name=None):
+                            return True
+                        case ast.MatchMapping(keys=keys, rest=None):
+                            return all(other(key) for key in keys)
+                        case ast.MatchOr(patterns=alts):
+                            return all(mapping_case_asks_other(alt) for alt in alts)
+                    return False
+
+                return bool(cases) and all(
+                    mapping_case_asks_other(case.pattern) for case in cases
+                )
             case ast.comprehension(iter=iterated, target=ast.Name(id=element), ifs=[]) if iterated is read:
                 # `"k" in {name for c in order for name in vars(c)}`: the names are
                 # collected only to ask whether one constant is among them.

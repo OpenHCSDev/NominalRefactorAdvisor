@@ -56,9 +56,9 @@ class BaseListReads(ParsedModuleSetFact):
                     args=[ast.Constant(value=str() as key), *_],
                 ) if key in BASES_ATTRIBUTES:
                     yield node
-                case ast.Subscript(slice=ast.Constant(value=str() as key)) if (
-                    key in BASES_ATTRIBUTES
-                ):
+                case ast.Subscript(
+                    slice=ast.Constant(value=str() as key), ctx=ast.Load()
+                ) if key in BASES_ATTRIBUTES:
                     yield node
 
 
@@ -679,6 +679,8 @@ class BasesReaders(ClassAttributeReaders):
         for module, read, parent in reads:
             if not self.reaches(module, read, indexed):
                 continue
+            if self._pydantic_v2_read_unaffected(module, indexed, orders):
+                continue
             if not self.unaffected(module, read, parent, orders):
                 raise NeedsInput(
                     f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` "
@@ -686,6 +688,54 @@ class BasesReaders(ClassAttributeReaders):
                     f"from `{indexed.qualname}` could change what it sees",
                     NeededInput.PROOF,
                 )
+
+    def _pydantic_v2_read_unaffected(
+        self,
+        module: ParsedModule,
+        indexed: CompactIndexedClass,
+        orders: dict[str, tuple[str, ...]],
+    ) -> bool:
+        """Pydantic v2 internal base readers that leave a non-`BaseModel`, non-`Generic`
+        base drop on an ordinary v2 `BaseModel` subclass unchanged:
+        - `pydantic._internal._decorators`: `get_bases` runs only for `TypedDict` (regular
+          classes take `tp.__mro__`) or pydantic dataclasses;
+        - `pydantic._internal._fields`: `collect_model_fields` only merges
+          `getattr(base, '__pydantic_fields__', None)` across `cls.__bases__`;
+        - `pydantic.dataclasses` and `pydantic.v1.*`: disjoint from v2 `BaseModel`."""
+
+        mod = module.module_name
+        if not (
+            mod
+            in (
+                "pydantic._internal._decorators",
+                "pydantic._internal._fields",
+                "pydantic.dataclasses",
+            )
+            or mod.startswith("pydantic.v1.")
+        ):
+            return False
+        verdicts = self.snapshot.class_overlap_verdicts
+        try:
+            indexed_order = verdicts.linearized(indexed.symbol)
+        except NeedsInput:
+            return False
+        if "pydantic.main.BaseModel" not in indexed_order:
+            return False
+        if "typing.TypedDict" in indexed_order or "typing_extensions.TypedDict" in indexed_order:
+            return False
+        node = ResolvedClassTarget.from_rewrite_target(
+            self.snapshot,
+            SourceRewriteTarget(
+                file_path=indexed.file_path, qualname=indexed.qualname
+            ),
+        ).node
+        if node.decorator_list:
+            return False
+        return all(
+            symbol != "typing.Generic"
+            and "pydantic.main.BaseModel" not in order
+            for symbol, order in orders.items()
+        )
 
     def unaffected(
         self,

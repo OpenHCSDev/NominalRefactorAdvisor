@@ -349,3 +349,66 @@ def test_descendant_declaring_projected_field_still_refuses(
         assert False, "should have refused"
     except ValueError as e:
         assert "descendants declaring projected fields" in str(e)
+
+
+def test_extract_mixin_unpromotable_decorator_stops_with_needs_input_not_crash(
+    tmp_path: Path,
+) -> None:
+    """Reproduces `ClosedPullRequestFields` (`closed_time` decorated with `@cached_property`):
+    `movable_members` must turn `require_safe_move`'s `ValueError` into `NeedsInput` instead of
+    crashing `--codemod-synthesize-plan`."""
+
+    from nominal_refactor_advisor.detectors._base import DetectorConfig
+    from nominal_refactor_advisor.detectors._class_overlap import MissingMixinDetector
+    from nominal_refactor_advisor.needed_input import NeededInput
+    from nominal_refactor_advisor.owner_picks import OwnerPick, OwnerPicks
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "rows.py").write_text(
+        "from dataclasses import dataclass\n"
+        "from functools import cached_property\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RowA:\n"
+        "    closed_at: str\n"
+        "    head: str\n\n"
+        "    @cached_property\n"
+        "    def closed_time(self) -> int:\n"
+        "        return len(self.closed_at)\n\n"
+        "    def as_closed(self) -> tuple[object, ...]:\n"
+        "        return (self,)\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RowB:\n"
+        "    closed_at: str\n"
+        "    branch: str\n\n"
+        "    @cached_property\n"
+        "    def closed_time(self) -> int:\n"
+        "        return len(self.closed_at)\n\n"
+        "    def as_closed(self) -> tuple[object, ...]:\n"
+        "        return (self,)\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    findings = list(MissingMixinDetector().detect(snapshot.parsed_modules, DetectorConfig()))
+    assert findings
+    finding = findings[0]
+    candidate = next(c for c in finding.metrics.owner_candidates if c.permitted)
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=finding.stable_id,
+                owner=candidate.candidate_id,
+                because=candidate.receipts[0].kind.value,
+                name="ClosedRowFields",
+                judgement="Shared closing fields.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(findings)
+    evaluation = MissingMixinDetector().evaluate_recipe_for_finding(picked[0], snapshot)
+    assert evaluation.recipe is None
+    assert "custom_method_decorator" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs
+
