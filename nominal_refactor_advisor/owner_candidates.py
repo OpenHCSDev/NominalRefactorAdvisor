@@ -58,6 +58,7 @@ from nominal_refactor_advisor.receipts import (
     ScoredByReceipts,
 )
 from nominal_refactor_advisor.models import (
+    ConsumerMethodPick,
     DeclaredBasePick,
     DeclaredBasePickMetrics,
     SourceLocation,
@@ -389,6 +390,8 @@ class OwnerPick(SemanticRecord):
     """For a hoisting owner, the class the inherited names are hoisted into."""
     hoisted_judgement: str | None = None
     """What that hoisted class is, in one sentence: its docstring."""
+    consumer_methods: tuple[ConsumerMethodPick, ...] = ()
+    """Per-branch method picks when one finding pushes multiple embedded branches."""
 
     def resolved(self, candidates: Sequence[OwnerCandidate]) -> OwnerPickResolution:
         """This pick against one finding's candidates: the one place a picks
@@ -423,6 +426,27 @@ class OwnerPick(SemanticRecord):
         owner_label = finding.metrics.base_pick_owner_label() if isinstance(finding.metrics, DeclaredBasePickMetrics) else 'declaring family'
         if expected_owner is None or self.owner != expected_owner:
             return (OwnerPickOutcome(finding.stable_id, 'rejected', f'`{self.owner}` is not the {owner_label} `{expected_owner}` for this finding'), None)
+        if self.consumer_methods:
+            if any(not method.name or not method.judgement for method in self.consumer_methods):
+                return (
+                    OwnerPickOutcome(
+                        finding.stable_id,
+                        'rejected',
+                        'each consumer method pick needs a method name and one-line judgement',
+                    ),
+                    None,
+                )
+            names = ', '.join(method.name for method in self.consumer_methods)
+            return (
+                OwnerPickOutcome(finding.stable_id, 'picked', f'methods `{names}`'),
+                DeclaredBasePick(
+                    self.name or self.consumer_methods[0].name,
+                    self.judgement or self.consumer_methods[0].judgement,
+                    hoisted_name=self.hoisted_name,
+                    hoisted_judgement=self.hoisted_judgement,
+                    consumer_methods=self.consumer_methods,
+                ),
+            )
         if not self.name or not self.judgement:
             return (OwnerPickOutcome(finding.stable_id, 'rejected', 'a new base needs its class name and one-line judgement'), None)
         return (

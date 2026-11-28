@@ -796,6 +796,16 @@ class ConstructorOwnedMappingMetrics(MappingMetrics):
 
 
 @dataclass(frozen=True)
+class ConsumerMethodPick(SemanticRecord):
+    """One embedded branch's chosen polymorphic method name and docstring."""
+
+    line: int
+    name: str
+    judgement: str
+    symbol: str | None = None
+
+
+@dataclass(frozen=True)
 class DeclaredBasePick(SemanticRecord):
     """A picker's new base for the classes one finding names: its class name and
     the one sentence its docstring says they share. Naming a new identity is the
@@ -805,6 +815,7 @@ class DeclaredBasePick(SemanticRecord):
     judgement: str
     hoisted_name: str | None = None
     hoisted_judgement: str | None = None
+    consumer_methods: tuple[ConsumerMethodPick, ...] = ()
 
 
 @dataclass(frozen=True)
