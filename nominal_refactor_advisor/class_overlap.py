@@ -1148,6 +1148,43 @@ class ClassOverlapVerdicts(DeclaredC3):
     class_index: CompactClassFamilyIndex
 
     @cached_property
+    def _family_mro_universes(self) -> dict[str, frozenset[str] | None]:
+        return {}
+
+    @cached_property
+    def _attribute_read_scopes(
+        self,
+    ) -> dict[tuple[str, int, int], tuple[str | None, str | None]]:
+        return {}
+
+    def mro_universe_for_family(self, family: str) -> frozenset[str] | None:
+        """Every scanned class symbol that can appear in `cls.__mro__` for `cls`
+        equal to `family` or any scanned descendant of `family`, or `None` when
+        `family` is outside the scan or any reachable scanned class has
+        incomplete base references."""
+
+        if family in self._family_mro_universes:
+            return self._family_mro_universes[family]
+        if self.class_index.class_for(family) is None:
+            self._family_mro_universes[family] = None
+            return None
+        scanned: set[str] = set()
+        for member in (family, *self.class_index.descendant_symbols(family)):
+            for symbol in (member, *self.class_index.ancestor_symbols(member)):
+                if symbol in scanned:
+                    continue
+                indexed = self.class_index.class_for(symbol)
+                if indexed is None:
+                    continue
+                if not indexed.base_references_are_complete:
+                    self._family_mro_universes[family] = None
+                    return None
+                scanned.add(symbol)
+        result = frozenset(scanned)
+        self._family_mro_universes[family] = result
+        return result
+
+    @cached_property
     def _is_settled_projections(self) -> bool:
         return not any(
             p.has_unsettled_field_declarations for p in self.projections

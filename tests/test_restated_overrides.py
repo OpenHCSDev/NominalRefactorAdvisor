@@ -492,3 +492,57 @@ def test_generic_specialization_and_self_return_allow_restated_override_deletion
     assert [f.primary_evidence.symbol for f in _findings(tmp_path)] == ["RootStore"]
     evaluation = _evaluation(tmp_path, "RootStore")
     assert evaluation.recipe is not None, evaluation.rejection_reason
+
+
+def test_init_subclass_mro_dict_walk_scopes_to_owner_mro_universe(tmp_path: Path):
+    """Reproduces agent-comms `FieldRepresentation.__init_subclass__`: a filtered
+    `cls.__mro__` walk reading `owner.__dict__` only reaches classes in the owner's
+    MRO universe (its descendants and their ancestors), never unrelated families,
+    while keeping both subclasses and mixins inherited by subclasses protected."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/codec.py": (
+                "class FieldRep:\n"
+                "    _decls = ()\n"
+                "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+                "        super().__init_subclass__(**kwargs)\n"
+                "        base_mro = FieldRep.__mro__\n"
+                "        added = tuple(owner for owner in cls.__mro__ if owner not in base_mro)\n"
+                "        if all(\n"
+                "            not any(getattr(value, '__handled__', ()) for value in owner.__dict__.values())\n"
+                "            and not any(name in owner.__dict__ for name, _ in cls._decls)\n"
+                "            for owner in added\n"
+                "        ):\n"
+                "            cls._fast = True\n\n\n"
+                "class UnrelatedBase:\n"
+                "    def flag(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class UnrelatedChild(UnrelatedBase):\n"
+                "    def flag(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class MixinBase:\n"
+                "    def tag(self) -> str:\n"
+                "        return 'x'\n\n\n"
+                "class SharedMixin(MixinBase):\n"
+                "    def tag(self) -> str:\n"
+                "        return 'x'\n\n\n"
+                "class SubRep(SharedMixin, FieldRep):\n"
+                "    def flag(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class SubRepChild(SubRep):\n"
+                "    def flag(self) -> bool:\n"
+                "        return True\n"
+            ),
+        },
+    )
+    unrelated_eval = _evaluation(tmp_path, "UnrelatedChild")
+    assert unrelated_eval.recipe is not None, unrelated_eval.rejection_reason
+    sub_rep_eval = _evaluation(tmp_path, "SubRepChild")
+    assert sub_rep_eval.recipe is None
+    assert "owner.__dict__" in sub_rep_eval.rejection_reason
+    mixin_eval = _evaluation(tmp_path, "SharedMixin")
+    assert mixin_eval.recipe is None
+    assert "owner.__dict__" in mixin_eval.rejection_reason

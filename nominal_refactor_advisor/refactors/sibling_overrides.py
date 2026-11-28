@@ -155,7 +155,17 @@ class SiblingOverrideCandidate:
         for child, restatement in zip(children, restated):
             ancestry = require_static_c3(snapshot, child.facts)
             order = verdicts.linearized(child.symbol)
-            proof = MemberDeletionCreationProof(snapshot, child.facts, ancestry, f'`{child.qualname}.{member_name}`', names, frozenset(), MroWalk(order, order, child.symbol, names))
+            proof = MemberDeletionCreationProof(
+                snapshot,
+                child.facts,
+                ancestry,
+                f'`{child.qualname}.{member_name}`',
+                names,
+                frozenset(),
+                MroWalk(order, order, child.symbol, names),
+                bases_modified=True,
+                changed_direct_bases=rebase.changed_direct_bases(),
+            )
             for statement in restatement.statements:
                 RestatedOverrideDeletion.require_once_per_class(proof, child, statement)
             RestatedOverrideDeletion.require_plain_decorators(proof, child)
@@ -1399,6 +1409,9 @@ class SiblingBaseRebase(ABC):
         del child_index
         return None
 
+    def changed_direct_bases(self) -> frozenset[str]:
+        return frozenset()
+
 
 @dataclass(frozen=True)
 class DirectBaseRebase(SiblingBaseRebase):
@@ -1437,6 +1450,9 @@ class DirectBaseRebase(SiblingBaseRebase):
 
     def direct_base_spelling_for(self, child_index: int) -> str | None:
         return ast.unparse(self.base_exprs[child_index])
+
+    def changed_direct_bases(self) -> frozenset[str]:
+        return frozenset((self.parent.symbol,))
 
 
 @dataclass(frozen=True)
