@@ -2481,6 +2481,83 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
     assert module_path.read_text(encoding="utf-8") == original_source
 
 
+def test_synthesized_plan_out_emits_clean_frontier_when_sibling_needs_input(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When ready findings form a clean frontier branch alongside a `needs_input`
+    sibling, `--codemod-plan-out` writes that clean plan document and exits 0
+    while still reporting the `needs_input` sibling in stdout."""
+
+    from nominal_refactor_advisor.cli import CodemodExecutionMode
+    from nominal_refactor_advisor.cli import CodemodPlanExecutionRequest
+    from nominal_refactor_advisor.cli import FindingRecipePlanSynthesisExecution
+    from nominal_refactor_advisor.codemod import FindingRecipePlan
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesisRecord
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesisReport
+    from nominal_refactor_advisor.codemod import RejectedRecipeEvaluation
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
+    from nominal_refactor_advisor.needed_input import NeededInput
+
+    module_path = tmp_path / "pkg/mod.py"
+    plan_path = tmp_path / "frontier-plan.json"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+    candidate = _direct_recipe_candidate(
+        detector_id="ready_fix",
+        file_path=module_path.as_posix(),
+        subject_name="value",
+        old_source="value = 1",
+        new_source="value = 2",
+        before=10,
+        after=1,
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, ())
+    batch_result = _direct_recipe_batch_result((candidate,), snapshot)
+    needs_input_finding = _finding_spec(
+        PatternId.FOREIGN_ABSENCE_PROBE,
+        "Sibling needs input",
+        "needs explicit owner choice",
+        "select owner",
+        "owner unchosen",
+    ).build("sibling_needs_input", "needs owner pick", ())
+    needs_input_record = FindingRecipeSynthesisRecord(
+        finding=needs_input_finding,
+        evaluation=RejectedRecipeEvaluation(
+            evaluation_declaration_type=FindingRecipePlan,
+            reason="needs owner pick",
+            needs=(NeededInput.OWNER_PICK,),
+        ),
+    )
+    records = (*batch_result.records, needs_input_record)
+    plan = FindingRecipePlan(
+        document=CodemodPlanDocument(recipes=batch_result.candidate_recipes),
+        trajectory_frontier=batch_result.trajectory_frontier,
+        report=FindingRecipeSynthesisReport(records),
+    )
+    execution = FindingRecipePlanSynthesisExecution(
+        snapshot=snapshot,
+        execution_request=CodemodPlanExecutionRequest(
+            sequence=CodemodPlanSequence.from_document(plan.document),
+            mode=CodemodExecutionMode.NONE,
+        ),
+        plan_out=plan_path,
+        workflow_scan=CodemodWorkflowScan(modules=modules, findings=[]),
+        plan=plan,
+    )
+
+    exit_code = execution.run()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert plan_path.exists()
+    written_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert len(written_plan["recipes"]) == 1
+    assert written_plan["recipes"][0]["recipe_id"] == candidate.record.recipe_id
+    assert payload["synthesis_report"]["candidate_count"] == 1
+    assert payload["synthesis_report"]["needs_input_count"] == 1
+
+
 def test_semantic_descent_context_does_not_guess_an_authority_claim(
     tmp_path: Path,
 ) -> None:

@@ -3725,29 +3725,39 @@ class CodemodSynthesisExecution(
             "projected_findings": json_report_object(report),
         }
 
+    def _emit_application_blocked(
+        self,
+        synthesis_report: FindingRecipeSynthesisReport,
+    ) -> int:
+        print(
+            json.dumps(
+                {
+                    **self.unexecuted_payload(),
+                    "application_blocked": True,
+                    "application_block_reason": (
+                        synthesis_report.application_block_reason
+                    ),
+                },
+                indent=2,
+            )
+        )
+        return 1
+
     def run(self) -> int:
         synthesis_report = self.finding_plan.report
-        if not synthesis_report.application_blocked:
+        if (
+            self.execution_request.mode.applies_changes
+            and synthesis_report.application_blocked
+        ):
+            return self._emit_application_blocked(synthesis_report)
+        if self.plan_out is not None:
+            exportable = self.finding_plan.exportable_plan_document
+            if exportable is None:
+                return self._emit_application_blocked(synthesis_report)
             write_cli_json_artifact(
                 self.plan_out,
-                json_report_object(self.finding_plan.document),
+                json_report_object(exportable),
             )
-        if (
-            self.execution_request.mode.applies_changes or self.plan_out is not None
-        ) and synthesis_report.application_blocked:
-            print(
-                json.dumps(
-                    {
-                        **self.unexecuted_payload(),
-                        "application_blocked": True,
-                        "application_block_reason": (
-                            synthesis_report.application_block_reason
-                        ),
-                    },
-                    indent=2,
-                )
-            )
-            return 1
         if not self.execution_request.mode.requested:
             print(json.dumps(self.unexecuted_payload(), indent=2))
             return 0

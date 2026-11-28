@@ -19,9 +19,11 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
+    ParsedModuleFact,
     ParsedModuleSet,
     ParsedModuleSetFact,
 )
@@ -35,6 +37,7 @@ from nominal_refactor_advisor.codemod_imports import (
     node_contains_comment,
 )
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit, SourceSpanEdit
+from nominal_refactor_advisor.declared_root import DeclaredRoot, ForbiddenImportEdge
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.observation_families import ShapeFamily
@@ -249,6 +252,22 @@ class HiddenImport(ABC):
 
         raise NotImplementedError
 
+    def require_no_module_setup_before_import(self) -> None:
+        """Refuse promotion when module top-level code (including `if __name__ == "__main__":`)
+        mutates `sys.path` or `os.environ` before this import: promoting to the top import
+        block would execute the import before that script setup."""
+
+        setup = self.module.fact(_ModuleTopLevelSetupChanges).first_before(
+            self.statement.lineno
+        )
+        if setup is not None:
+            changed_line, kind = setup
+            raise NeedsInput(
+                f"module setup changes `{kind}` at line {changed_line} before this import; "
+                "at the module's top it would run before that setup",
+                NeededInput.SOURCE_CHANGE,
+            )
+
     def require_promotable(self, scope: RuntimeBindings) -> None:
         """Raises, naming the input it needs, when moving this import to the
         module's top would change what a name means."""
@@ -323,6 +342,7 @@ class GuardedImport(HiddenImport):
     guard: ast.If
 
     def require_static_promotable(self) -> None:
+        self.require_no_module_setup_before_import()
         if not isinstance(self.statement, ast.ImportFrom) or any(alias.asname for alias in self.statement.names):
             raise NeedsInput(
                 "only an unaliased guarded `from ... import` moves out of its guard",
@@ -397,6 +417,7 @@ class LocalImport(HiddenImport):
         )
 
     def require_static_promotable(self) -> None:
+        self.require_no_module_setup_before_import()
         ancestors = self.ancestors
         within = ancestors[: ancestors.index(self.function)]
         if any(isinstance(ancestor, ast.ClassDef) for ancestor in within):
@@ -417,16 +438,19 @@ class LocalImport(HiddenImport):
             raise NeedsInput("another statement shares its lines", NeededInput.OPERATION)
         changed = next(
             (
-                node.lineno
+                (node.lineno, kind)
                 for node in ast.walk(self.function)
-                if isinstance(node, ast.stmt | ast.expr) and node.lineno < first and changes_import_path(node)
+                if isinstance(node, ast.stmt | ast.expr)
+                and node.lineno < first
+                and (kind := import_runtime_setup_change(node)) is not None
             ),
             None,
         )
         if changed is not None:
+            changed_line, kind = changed
             raise NeedsInput(
-                f"it runs after `{self.function.name}` changes `sys.path` at line {changed}; at the "
-                "module's top it would run before, so the path setup moves to load time first",
+                f"it runs after `{self.function.name}` changes `{kind}` at line {changed_line}; at the "
+                "module's top it would run before, so the setup moves to load time first",
                 NeededInput.SOURCE_CHANGE,
             )
         others, imported = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings(self.function.body)
@@ -479,28 +503,166 @@ class LocalImport(HiddenImport):
 
 
 SYS_PATH_CHANGES = frozenset({"insert", "append", "extend", "remove", "pop", "clear"})
+OS_ENVIRON_CHANGES = frozenset({"setdefault", "update", "pop", "popitem", "clear"})
+OS_ENV_CALLS = frozenset({"putenv", "unsetenv"})
+
+
+def _is_sys_path(expr: ast.expr) -> bool:
+    return (
+        isinstance(expr, ast.Attribute)
+        and expr.attr == "path"
+        and isinstance(expr.value, ast.Name)
+        and expr.value.id == "sys"
+    )
+
+
+def _is_os_environ(expr: ast.expr) -> bool:
+    return (
+        isinstance(expr, ast.Attribute)
+        and expr.attr == "environ"
+        and isinstance(expr.value, ast.Name)
+        and expr.value.id == "os"
+    )
+
+
+def import_runtime_setup_change(node: ast.AST) -> str | None:
+    """Return ``'sys.path'`` or ``'os.environ'`` when ``node`` mutates import-path
+    or environment state that a later import can depend on."""
+
+    match node:
+        case ast.Call(func=ast.Attribute(value=target, attr=method)):
+            if method in SYS_PATH_CHANGES and _is_sys_path(target):
+                return "sys.path"
+            if method in OS_ENVIRON_CHANGES and _is_os_environ(target):
+                return "os.environ"
+            if method in OS_ENV_CALLS and isinstance(target, ast.Name) and target.id == "os":
+                return "os.environ"
+        case ast.Assign(targets=targets):
+            for target in targets:
+                if _is_sys_path(target) or isinstance(target, ast.Subscript) and _is_sys_path(target.value):
+                    return "sys.path"
+                if isinstance(target, ast.Subscript) and _is_os_environ(target.value):
+                    return "os.environ"
+        case ast.AugAssign(target=target):
+            if _is_sys_path(target):
+                return "sys.path"
+        case ast.Delete(targets=targets):
+            for target in targets:
+                if isinstance(target, ast.Subscript) and _is_sys_path(target.value):
+                    return "sys.path"
+                if isinstance(target, ast.Subscript) and _is_os_environ(target.value):
+                    return "os.environ"
+    return None
 
 
 def changes_import_path(node: ast.AST) -> bool:
     """`sys.path.insert(...)` and its kin, or an assignment to `sys.path` or one
     of its items: what an import after it may need in order to resolve."""
 
-    def is_sys_path(expr: ast.expr) -> bool:
-        return (
-            isinstance(expr, ast.Attribute)
-            and expr.attr == "path"
-            and isinstance(expr.value, ast.Name)
-            and expr.value.id == "sys"
-        )
+    return import_runtime_setup_change(node) == "sys.path"
 
-    match node:
-        case ast.Call(func=ast.Attribute(value=target, attr=method)) if method in SYS_PATH_CHANGES:
-            return is_sys_path(target)
-        case ast.Assign(targets=targets):
-            return any(is_sys_path(t) or isinstance(t, ast.Subscript) and is_sys_path(t.value) for t in targets)
-        case ast.AugAssign(target=target):
-            return is_sys_path(target)
-    return False
+
+@dataclass(frozen=True)
+class _ModuleTopLevelSetupChanges(ParsedModuleFact):
+    """Module top-level `sys.path` / `os.environ` mutations (including inside
+    `if __name__ == "__main__":` and other module-level control blocks), sorted
+    by line number."""
+
+    changes: tuple[tuple[int, str], ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> _ModuleTopLevelSetupChanges:
+        found: list[tuple[int, str]] = []
+
+        def walk(nodes: Iterable[ast.AST]) -> None:
+            for node in nodes:
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                    continue
+                if isinstance(node, ast.stmt | ast.expr):
+                    kind = import_runtime_setup_change(node)
+                    if kind is not None:
+                        found.append((node.lineno, kind))
+                walk(ast.iter_child_nodes(node))
+
+        walk(parsed_module.module.body)
+        found.sort()
+        return cls(tuple(found))
+
+    def first_before(self, line: int) -> tuple[int, str] | None:
+        for changed_line, kind in self.changes:
+            if changed_line < line:
+                return (changed_line, kind)
+        return None
+
+
+def _forbidden_edges_for_paths(
+    file_paths: Iterable[str],
+) -> tuple[ForbiddenImportEdge, ...]:
+    """Distinct declared forbidden import edges for the repositories containing ``file_paths``."""
+
+    seen_dirs: set[Path] = set()
+    seen_pyprojects: set[Path] = set()
+    edges: list[ForbiddenImportEdge] = []
+    seen_edges: set[ForbiddenImportEdge] = set()
+    for raw_path in file_paths:
+        parent = Path(raw_path).parent
+        if parent in seen_dirs:
+            continue
+        seen_dirs.add(parent)
+        pyproject = DeclaredRoot.nearest_pyproject(parent)
+        if pyproject is None or pyproject in seen_pyprojects:
+            continue
+        seen_pyprojects.add(pyproject)
+        for edge in DeclaredRoot.forbidden_imports_for(pyproject):
+            if edge not in seen_edges:
+                seen_edges.add(edge)
+                edges.append(edge)
+    return tuple(edges)
+
+
+def _forbidden_edge_violation(
+    importing_module: str,
+    targets: frozenset[str],
+    bindings: tuple[ImportedBinding, ...],
+    known: frozenset[str],
+    reachable_from: Callable[[str], frozenset[str]],
+    top_level_by_module: Mapping[str, tuple[str, ...]],
+    edges: tuple[ForbiddenImportEdge, ...],
+) -> tuple[str, str, ForbiddenImportEdge] | None:
+    """Return ``(importer, loaded, edge)`` if promoting ``targets`` into
+    ``importing_module`` would make ``importer`` (``importing_module`` or a
+    module that already loads it) transitively load ``loaded`` across ``edge``."""
+
+    if not edges:
+        return None
+    affected_importers = {importing_module}
+    for candidate in known:
+        if candidate != importing_module and importing_module in reachable_from(candidate):
+            affected_importers.add(candidate)
+    active_edges = tuple(
+        (importer, edge)
+        for importer in sorted(affected_importers)
+        for edge in edges
+        if edge.applies_to(importer)
+    )
+    if not active_edges:
+        return None
+    triggered = known_import_targets(targets, known) - {importing_module}
+    loaded_scanned: set[str] = set(triggered)
+    for started in triggered:
+        loaded_scanned.update(reachable_from(started))
+    loaded_all: set[str] = set(loaded_scanned)
+    for binding in bindings:
+        if binding.module:
+            loaded_all.add(binding.module)
+    for loaded_mod in loaded_scanned:
+        loaded_all.update(top_level_by_module.get(loaded_mod, ()))
+    ordered_loaded = sorted(loaded_all)
+    for importer, edge in active_edges:
+        for loaded_mod in ordered_loaded:
+            if edge.forbids(loaded_mod):
+                return importer, loaded_mod, edge
+    return None
 
 
 class HiddenImportRefusal(ABC):
@@ -547,6 +709,26 @@ class UnscannedImportBridge(HiddenImportRefusal):
             f"at load; scan the enclosing package (`--context-root`) to prove it does not "
             f"reach `{self.hidden.module.module_name}`",
             NeededInput.PROOF,
+        )
+
+
+@dataclass(frozen=True)
+class CrossesForbiddenImportEdge(HiddenImportRefusal):
+    """Promoting the import crosses a repository-declared architectural layer
+    boundary in `[tool.nominal-refactor-advisor] forbidden-imports`."""
+
+    hidden: HiddenImport
+    importer: str
+    loaded: str
+    edge: ForbiddenImportEdge
+
+    @property
+    def need(self) -> NeedsInput:
+        return NeedsInput(
+            f"{self.hidden.location}: promoting this import makes `{self.importer}` load "
+            f"`{self.loaded}`, violating forbidden import edge "
+            f"`{self.edge.source_prefix}` -> `{self.edge.target_prefix}`",
+            NeededInput.SOURCE_CHANGE,
         )
 
 
@@ -620,16 +802,23 @@ class HiddenImportPlan(ParsedModuleSetFact):
     def derive(cls, modules: ParsedModuleSet) -> HiddenImportPlan:
         graph = SourceModuleImportGraph.of_modules(modules)
         known = graph.known_module_names
+        top_level_by_module = {
+            module.module_name: top_level_imported_modules(module)
+            for module in modules
+        }
         unscanned_by_module = {
-            module.module_name: tuple(
+            module_name: tuple(
                 sorted(
                     imported
-                    for imported in top_level_imported_modules(module)
+                    for imported in imported_modules
                     if imported not in known
                 )
             )
-            for module in modules
+            for module_name, imported_modules in top_level_by_module.items()
         }
+        forbidden_edges = _forbidden_edges_for_paths(
+            module.file_path for module in modules
+        )
         accepted: list[HiddenImport] = []
         refused: list[HiddenImportRefusal] = []
         scopes: dict[str, RuntimeBindings] = {}
@@ -666,6 +855,18 @@ class HiddenImportPlan(ParsedModuleSetFact):
                 )
                 if bridge is not None:
                     refused.append(UnscannedImportBridge(hidden, *bridge))
+                    continue
+                violation = _forbidden_edge_violation(
+                    module.module_name,
+                    hidden.targets,
+                    hidden.bindings,
+                    known,
+                    graph.reachable_modules,
+                    top_level_by_module,
+                    forbidden_edges,
+                )
+                if violation is not None:
+                    refused.append(CrossesForbiddenImportEdge(hidden, *violation))
                     continue
                 accepted.append(hidden)
                 graph = graph.with_edges(module.module_name, hidden.targets)
@@ -816,6 +1017,7 @@ class _CompactHiddenImportBaseline:
     unscanned_by_module: dict[str, tuple[str, ...]]
     initial_reach_mask: tuple[int | None, ...]
     referenced_export_members: dict[str, frozenset[str]]
+    forbidden_edges: tuple[ForbiddenImportEdge, ...]
     plan: CompactHiddenImportPlan
 
 
@@ -851,7 +1053,19 @@ class CompactHiddenImportPlan:
         if ScanCache.active() is not None:
             base = _base_hidden_import_plan_slot()[0]
         known = frozenset(projection.module_name for projection in projections)
-        if base is not None and known == base.known and len(projections) == len(base.by_path):
+        forbidden_edges = _forbidden_edges_for_paths(
+            projection.file_path for projection in projections
+        )
+        top_level_by_module = {
+            projection.module_name: projection.top_level_imported_modules
+            for projection in projections
+        }
+        if (
+            base is not None
+            and known == base.known
+            and len(projections) == len(base.by_path)
+            and forbidden_edges == base.forbidden_edges
+        ):
             changed = [
                 p
                 for p in projections
@@ -1137,6 +1351,17 @@ class CompactHiddenImportPlan:
                     ):
                         unpromotable_count += 1
                         continue
+                if forbidden_edges and _forbidden_edge_violation(
+                    mod,
+                    targets,
+                    hidden.bindings,
+                    known,
+                    reachable_from,
+                    top_level_by_module,
+                    forbidden_edges,
+                ) is not None:
+                    unpromotable_count += 1
+                    continue
                 accepted_lines.append(hidden.lineno)
                 target_mask = 0
                 for target in targets:
@@ -1193,6 +1418,7 @@ class CompactHiddenImportPlan:
                         mod: frozenset(members)
                         for mod, members in referenced_exports.items()
                     },
+                    forbidden_edges=forbidden_edges,
                     plan=built,
                 )
         return built
@@ -1204,6 +1430,7 @@ __all__ = (
     "CompactHiddenImport",
     "CompactHiddenImportModuleSummary",
     "CompactHiddenImportPlan",
+    "CrossesForbiddenImportEdge",
     "GuardedImport",
     "HiddenImport",
     "HiddenImportModuleFacts",
