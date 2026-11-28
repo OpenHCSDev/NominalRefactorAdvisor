@@ -167,3 +167,56 @@ def test_subclasses_of_fast_path_types_relocate_like_their_bases(tmp_path: Path)
     assert StableCacheValue.of(first_values[4], first).form == (
         StableCacheValue.of(first_values[5], first).form
     )
+
+
+def test_relative_path_entry_does_not_poison_checkout_relocated_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A relative-path scan writes relative file_path strings inside its collected
+    items; it must not share the checkout-relocated cache slot that absolute-path
+    scans read and rebase (otherwise absolute scans get relative file_path hits
+    and fail ClassFamilyIndex.symbol_for lookups)."""
+
+    cache_dir = tmp_path / "collected-family"
+    checkout = _checkout(tmp_path, "repo")
+    monkeypatch.chdir(checkout)
+    rel_path = Path("pkg/mod.py")
+    abs_path = checkout / "pkg" / "mod.py"
+
+    (rel_module,) = (
+        module
+        for module in parse_python_modules(Path("pkg"), use_parse_cache=False)
+        if module.module_name == "pkg.mod"
+    )
+    rel_items = tuple(CompactModuleClassProjectionFamily.collect(rel_module))
+    assert rel_items[0].file_path == "pkg/mod.py"
+
+    rel_context = CollectedFamilyCacheContext.from_source(
+        path=rel_path,
+        module_name="pkg.mod",
+        source=abs_path.read_text(),
+        family_cache_dir=cache_dir,
+    )
+    abs_context = CollectedFamilyCacheContext.from_source(
+        path=abs_path,
+        module_name="pkg.mod",
+        source=abs_path.read_text(),
+        family_cache_dir=cache_dir,
+    )
+
+    assert rel_context.relocation is None
+    assert abs_context.relocation == CheckoutRelocation(checkout)
+    assert rel_context.identity_path_text != abs_context.identity_path_text
+    assert rel_context.store_items(CompactModuleClassProjectionFamily, rel_items)
+
+    # An absolute-path lookup must miss the relative-path entry rather than
+    # returning an item carrying relative file_path="pkg/mod.py".
+    assert abs_context.load_items(CompactModuleClassProjectionFamily) is None
+    assert rel_context.load_items(CompactModuleClassProjectionFamily) == rel_items
+
+    abs_items = _collected(checkout)
+    assert abs_context.store_items(CompactModuleClassProjectionFamily, abs_items)
+    loaded_abs = abs_context.load_items(CompactModuleClassProjectionFamily)
+    assert loaded_abs == abs_items
+    assert loaded_abs is not None
+    assert loaded_abs[0].file_path == str(abs_path)
