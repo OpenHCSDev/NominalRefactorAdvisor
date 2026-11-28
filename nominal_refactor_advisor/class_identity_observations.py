@@ -1503,7 +1503,7 @@ class FlattenedSpelling(IdentitySpelling):
                 location for _value, location in identities.own_spellings(resolved, found)
             )
             if not own and resolved in identities.classes:
-                own = (identities.classes[resolved],)
+                own = identities.classes[resolved]
             declared_at = own[:LISTED_DECLARATIONS]
         else:
             declared_at = ()

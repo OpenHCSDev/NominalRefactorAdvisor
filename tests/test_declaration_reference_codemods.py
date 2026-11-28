@@ -196,7 +196,9 @@ def test_flattened_declared_name_does_not_leak_unrelated_families_into_evidence(
                 "        emit(model.declared_name)\n\n"
                 "    def read_untyped(self, objs) -> None:\n"
                 "        for obj in objs:\n"
-                "            emit(obj.declared_name)\n"
+                "            emit(obj.declared_name)\n\n"
+                "    def read_leaf(self) -> None:\n"
+                "        emit(BetaSmall.declared_name)\n"
             ),
         },
     )
@@ -210,6 +212,12 @@ def test_flattened_declared_name_does_not_leak_unrelated_families_into_evidence(
         "Consumer.read_typed",
         "BetaSmall",
         "BetaLarge",
+    }
+
+    leaf = findings["Consumer.read_leaf"]
+    assert {loc.symbol for loc in leaf.evidence} == {
+        "Consumer.read_leaf",
+        "BetaSmall",
     }
 
     untyped = findings["Consumer.read_untyped"]
