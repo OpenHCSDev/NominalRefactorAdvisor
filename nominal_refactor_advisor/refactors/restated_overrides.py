@@ -1030,20 +1030,30 @@ class RestatedOverrideDeletion:
                 NeededInput.PROOF,
             )
 
+    _RICH_REPR_AUTO_SENSITIVE = frozenset({"__rich_repr__", "__repr__", "__init__"})
+
     @staticmethod
     def require_plain_decorators(proof: ClassCreationProof, overlap: OverlapClass) -> None:
         """A class decorator may read the namespace it receives; `dataclass` reads
-        only annotated names and the methods it generates, neither of which a
-        deletion here takes."""
+        only annotated names and the methods it generates, and `rich.repr.auto`
+        reads only `__rich_repr__` / `__init__` and writes `__repr__` /
+        `__rich_repr__`, none of which an unrelated deletion here touches."""
 
         for decorator in overlap.node.decorator_list:
             called = decorator.func if isinstance(decorator, ast.Call) else decorator
-            if proof.qualified(overlap.facts, called, decorator.lineno) != "dataclasses.dataclass":
-                raise NeedsInput(
-                    f"`{overlap.qualname}` is decorated by `{ast.unparse(decorator)}`, which may read "
-                    "its namespace: NRA needs a proof that deleting members leaves it unchanged",
-                    NeededInput.PROOF,
-                )
+            qualified = proof.qualified(overlap.facts, called, decorator.lineno)
+            if qualified == "dataclasses.dataclass":
+                continue
+            if (
+                qualified == "rich.repr.auto"
+                and not (proof.moved & RestatedOverrideDeletion._RICH_REPR_AUTO_SENSITIVE)
+            ):
+                continue
+            raise NeedsInput(
+                f"`{overlap.qualname}` is decorated by `{ast.unparse(decorator)}`, which may read "
+                "its namespace: NRA needs a proof that deleting members leaves it unchanged",
+                NeededInput.PROOF,
+            )
 
     def edits(self, snapshot: CodemodSourceSnapshot, rationale: str) -> tuple[NominalSourceEdit, ...]:
         deletion = StatementDeletionSource(

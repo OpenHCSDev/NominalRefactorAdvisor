@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import (
     PythonSourcePathPolicy,
     parse_python_modules,
@@ -19,6 +21,14 @@ from nominal_refactor_advisor.detectors._sibling_overrides import (
 from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.owner_picks import OwnerPick, OwnerPicks
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactors.class_creation import (
+    ClassCreationProof,
+    MroWalk,
+)
+from nominal_refactor_advisor.refactors.class_overlap import NeedsInput, OverlapClass
+from nominal_refactor_advisor.refactors.restated_overrides import (
+    RestatedOverrideDeletion,
+)
 from nominal_refactor_advisor.refactors.sibling_overrides import (
     ExtractSiblingOverrideBaseOperation,
     LiftSiblingOverrideOperation,
@@ -1940,6 +1950,81 @@ def test_match_vars_constant_key_mapping_allows_unrelated_sibling_override_lift(
     evaluation2 = SiblingOverrideDetector().evaluate_recipe_for_finding(picked2[0], _snapshot(tmp_path))
     assert evaluation2.recipe is None
     assert "reads a class namespace" in evaluation2.rejection_reason
+
+
+def test_rich_repr_auto_allows_unrelated_member_lift_and_refuses_rich_repr(tmp_path: Path):
+    """Reproduces `ANSIContent` / `ANSICursor` decorated with `@rich.repr.auto` in
+    `comms-tui`: `rich.repr.auto` only reads `__rich_repr__` / `__init__` and writes
+    `__repr__` / `__rich_repr__`, so lifting an unrelated override is proved while
+    `require_plain_decorators` still refuses when `__rich_repr__` / `__repr__` /
+    `__init__` is in `proof.moved`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/ansi.py": (
+                "import rich.repr\n\n\n"
+                "class Command:\n"
+                "    def apply_hidden(self) -> int:\n"
+                "        return 1\n\n"
+                "    def __rich_repr__(self):\n"
+                "        yield 'base'\n\n\n"
+                "@rich.repr.auto\n"
+                "class ContentCommand(Command):\n"
+                "    def apply_hidden(self) -> int:\n"
+                "        return 0\n\n"
+                "    def __rich_repr__(self):\n"
+                "        yield 'same'\n\n\n"
+                "@rich.repr.auto\n"
+                "class CursorCommand(Command):\n"
+                "    def apply_hidden(self) -> int:\n"
+                "        return 0\n\n"
+                "    def __rich_repr__(self):\n"
+                "        yield 'same'\n\n\n"
+                "class StyleCommand(Command):\n"
+                "    def apply_hidden(self) -> int:\n"
+                "        return 2\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    hidden_finding = next(f for f in findings if "apply_hidden" in f.summary)
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=hidden_finding.stable_id,
+                owner="Command",
+                because="visible only commands",
+                name="VisibleOnlyCommand",
+                judgement="Commands skipped when output is hidden.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    by_id = {f.stable_id: f for f in picked}
+    snap = _snapshot(tmp_path)
+
+    hidden_eval = SiblingOverrideDetector().evaluate_recipe_for_finding(by_id[hidden_finding.stable_id], snap)
+    assert hidden_eval.executable_recipe is not None, hidden_eval.rejection_reason
+
+    content = OverlapClass.for_symbol(snap, "pkg.ansi.ContentCommand")
+    order = snap.class_overlap_verdicts.linearized(content.symbol)
+    for sensitive in ("__rich_repr__", "__repr__", "__init__"):
+        proof = ClassCreationProof(
+            snap,
+            content.facts,
+            (content.facts,),
+            f"`ContentCommand.{sensitive}`",
+            frozenset((sensitive,)),
+            frozenset(),
+            MroWalk(order, order, content.symbol, frozenset((sensitive,))),
+        )
+        with pytest.raises(NeedsInput, match="decorated by"):
+            RestatedOverrideDeletion.require_plain_decorators(proof, content)
+
 
 
 
