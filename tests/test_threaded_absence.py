@@ -939,3 +939,95 @@ def test_threaded_absence_declared_receiver_proof_clears_installed_non_protocol_
         findings_proto[0], snap_proto
     )
     assert NeededInput.PROOF in eval_proto.needs, eval_proto.reason
+
+
+def test_threaded_absence_closes_functools_partial_and_sync_callbacks(
+    tmp_path: Path,
+) -> None:
+    """`functools.partial(self._fn, arg)` rewrites the bound argument directly,
+    sync single-param callbacks (like `push_screen(..., self.picked_bus)` or
+    `AnimationClock(self._schedule_animation)`) adapt at the boundary via
+    `from_optional`, while `.disconnect(...)` and `async def` callbacks stay refused."""
+
+    source = (
+        "from __future__ import annotations\n"
+        "from functools import partial\n\n\n"
+        "def register(cb) -> None:\n"
+        "    cb(None)\n"
+        "    cb(0.016)\n\n\n"
+        "def run_later(cb) -> None:\n"
+        "    cb()\n\n\n"
+        "class Window:\n"
+        "    def __init__(self) -> None:\n"
+        "        self.events: list[str] = []\n"
+        "        register(self._schedule_animation)\n"
+        "        run_later(partial(self._schedule_animation, None))\n"
+        "        run_later(partial(self._schedule_animation, 0.032))\n\n"
+        "    def _schedule_animation(self, interval: float | None) -> None:\n"
+        "        if interval is None:\n"
+        "            self.events.append('stop')\n"
+        "        else:\n"
+        "            self.events.append(f'start:{interval}')\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/window.py": source})
+    _modules, snap, findings = _scan(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="Window._schedule_animation",
+                because="animation schedule absence belongs on a nominal family",
+                name="AnimationSchedule",
+                judgement="Nominal animation schedule deciding start vs stop.",
+                hoisted_name="apply_schedule",
+                hoisted_judgement="Apply this schedule to the window timer.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(findings)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 1
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean, sim.preflight_report
+    rewritten = sim.simulation.rewritten_sources[str(tmp_path / "pkg/window.py")]
+    assert "register(lambda interval: self._schedule_animation(AnimationSchedule.from_optional(interval)))" in rewritten
+    assert "partial(self._schedule_animation, AbsentAnimationSchedule())" in rewritten
+    assert "partial(self._schedule_animation, HeldAnimationSchedule(0.032))" in rewritten
+
+    ns: dict[str, object] = {}
+    exec(compile(rewritten, "window.py", "exec"), ns)
+    window_cls = ns["Window"]
+    win = window_cls()  # type: ignore[operator]
+    assert win.events == ["stop", "start:0.016", "stop", "start:0.032"]
+
+    # An `async def` callback cannot be wrapped in a sync lambda (breaks iscoroutinefunction).
+    async_root = tmp_path / "async_cb"
+    _write(
+        async_root,
+        {
+            "pkg/__init__.py": "",
+            "pkg/menu.py": (
+                "from __future__ import annotations\n\n"
+                "def show_menu(callback) -> None:\n"
+                "    del callback\n\n"
+                "class Button:\n"
+                "    def open(self) -> None:\n"
+                "        show_menu(callback=self.chosen)\n\n"
+                "    async def chosen(self, action: str | None) -> None:\n"
+                "        if action is not None:\n"
+                "            print(action)\n"
+            ),
+        },
+    )
+    _, async_snap, async_findings = _scan(async_root)
+    assert len(async_findings) == 1
+    async_eval = ThreadedAbsenceDetector().evaluate_recipe_for_finding(
+        async_findings[0], async_snap
+    )
+    assert NeededInput.PROOF in async_eval.needs
+    assert "as a value; callers are not closed" in async_eval.reason
+

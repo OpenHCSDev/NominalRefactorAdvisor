@@ -823,6 +823,9 @@ class DeclaredReceiverTyping:
     type_variables_by_module: Mapping[str, tuple[str, ...]]
     declarations: StubDeclarations
     type_aliases_by_module: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    annotation_aliases_by_module: Mapping[str, Mapping[str, str]] = field(
+        default_factory=dict
+    )
 
     @classmethod
     def from_projections(
@@ -879,6 +882,13 @@ class DeclaredReceiverTyping:
                 projection.module_name: dict(projection.type_aliases)
                 for projection in projections
                 if projection.type_aliases
+            },
+            annotation_aliases_by_module={
+                projection.module_name: {
+                    **dict(projection.type_checking_import_aliases),
+                    **dict(projection.import_aliases),
+                }
+                for projection in projections
             },
         )
 
@@ -1053,7 +1063,11 @@ class DeclaredReceiverTyping:
             if qualified in self.class_index.classes_by_symbol:
                 return ScannedClass(qualified)
             owner, _, name = qualified.rpartition(".")
-            following = self.aliases_by_module.get(owner, {}).get(name, qualified)
+            following = self.aliases_by_module.get(owner, {}).get(name)
+            if following is None:
+                following = self.annotation_aliases_by_module.get(owner, {}).get(
+                    name, qualified
+                )
             if following == qualified:
                 break
             qualified = following
@@ -1164,11 +1178,14 @@ class DeclaredReceiverTyping:
             f"`await {'.'.join(parts)}(...)` calls no annotated async function"
         )
 
-    def qualified(self, module_name: str, parts: tuple[str, ...]) -> str:
-        """The qualified name a module-level name chain spells."""
-
+    def _qualified_in(
+        self,
+        module_name: str,
+        parts: tuple[str, ...],
+        aliases_map: Mapping[str, Mapping[str, str]],
+    ) -> str:
         head, *rest = parts
-        aliases = self.aliases_by_module.get(module_name)
+        aliases = aliases_map.get(module_name)
         if aliases is None:
             aliases = (
                 InstalledClassDeclarations.import_aliases_map(module_name)
@@ -1182,6 +1199,34 @@ class DeclaredReceiverTyping:
         ):
             return ".".join((module_name, *parts))
         return ".".join(("builtins", *parts))
+
+    def qualified(self, module_name: str, parts: tuple[str, ...]) -> str:
+        """The qualified name a module-level name chain spells at runtime."""
+
+        return self._qualified_in(module_name, parts, self.aliases_by_module)
+
+    def annotation_qualified(self, module_name: str, parts: tuple[str, ...]) -> str:
+        """The qualified name a module-level annotation spells, including `if TYPE_CHECKING:` imports."""
+
+        return self._qualified_in(
+            module_name,
+            parts,
+            self.annotation_aliases_by_module or self.aliases_by_module,
+        )
+
+    def annotation_class_symbol(
+        self, module_name: str, parts: tuple[str, ...]
+    ) -> ScannedClassLookup:
+        """The scanned or stub class an annotation name chain names, including `if TYPE_CHECKING:` imports."""
+
+        match self.resolver.symbol_for(
+            module_name=module_name,
+            reference_parts=parts,
+            allow_unique_unqualified=False,
+        ):
+            case str() as symbol:
+                return ScannedClass(symbol)
+        return self.chased(self.annotation_qualified(module_name, parts))
 
     @cached_property
     def scanned_roots(self) -> frozenset[str]:
@@ -1225,14 +1270,16 @@ class DeclaredReceiverTyping:
         parts = _reference_parts(annotation)
         if not parts:
             return UndeclaredType(f"annotation `{ast.unparse(annotation)}` names no type")
-        qualified = self.qualified(module_name, parts)
+        qualified = self.annotation_qualified(module_name, parts)
         if qualified in scope.parameters:
             return scope.parameters[qualified]
         if qualified in SELF_SPELLINGS:
             return scope.self_type
         if qualified in ANY_SPELLINGS:
             return UndeclaredType("`Any` declares no type")
-        return self.class_symbol(module_name, parts).annotation_instance(self, scope)
+        return self.annotation_class_symbol(module_name, parts).annotation_instance(
+            self, scope
+        )
 
     def subscripted_type(
         self,
@@ -1247,7 +1294,9 @@ class DeclaredReceiverTyping:
             return UndeclaredType(f"annotation `{ast.unparse(head)}[...]` names no type")
         typed = [self.annotation_type(module_name, item, scope) for item in items]
         assert isinstance(head, ast.Name | ast.Attribute)
-        return AnnotationHead.spelled_as(self.qualified(module_name, parts)).declared(
+        return AnnotationHead.spelled_as(
+            self.annotation_qualified(module_name, parts)
+        ).declared(
             items, typed, self, lambda: self.named_type(module_name, head, scope)
         )
 
@@ -1578,6 +1627,9 @@ class _InstanceMemberRead(_MemberRead):
                     return self.typing.annotation_source_type(
                         owner.module_name, source, self.scope(owner)
                     )
+            for attr_name, callee_parts in owner.init_attribute_calls:
+                if attr_name == self.name:
+                    return self.typing.called_reference(owner.module_name, callee_parts)
         return None
 
     def missing(self) -> DeclaredType:
