@@ -513,6 +513,9 @@ class PrefixGuardedAndAssigningAbsenceBranchSite(AssigningAbsenceBranchSite):
 
     guard_expr: ast.expr = ast.Constant(value=True)
 
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return (self.guard_expr,)
+
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
         return (
             f"if {ast.unparse(self.guard_expr)}:\n"
@@ -569,6 +572,17 @@ class ElifAbsenceBranchSite(AbsenceBranchSite):
     @property
     def is_void_method(self) -> bool:
         return self.inner.is_void_method
+
+    @property
+    def returns_bool(self) -> bool:
+        return self.inner.returns_bool
+
+    @property
+    def reassigned_target(self) -> str | None:
+        return self.inner.reassigned_target
+
+    def guard_exprs(self) -> tuple[ast.expr, ...]:
+        return self.inner.guard_exprs()
 
     def with_assigning_target(
         self,
