@@ -1525,7 +1525,11 @@ class SiblingOverrideLift(SiblingOverrideMove):
             indexed = verdicts.ancestor(symbol)
             if indexed is None:
                 continue
-            declared = frozenset(decl.name for decl in indexed.direct_member_declarations)
+            declared = (
+                frozenset(decl.name for decl in indexed.body_declarations)
+                | frozenset(decl.name for decl in indexed.direct_member_declarations)
+                | frozenset(indexed.method_names)
+            )
             abstract_names = frozenset(indexed.abstract_method_names)
             remaining_abstract -= declared - abstract_names
             if symbol == home.symbol:
