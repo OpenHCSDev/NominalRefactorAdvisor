@@ -284,3 +284,101 @@ def test_a_metaclass_handing_its_bases_on_keeps_the_order(tmp_path: Path):
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": _rebasing("bases")})
     (finding,) = _findings(tmp_path)
     assert finding.primary_evidence.symbol == "Member"
+
+
+DECLARED_FAMILIES = (
+    "from abc import ABC, ABCMeta\n\n\n"
+    "def handles(kind):\n    def mark(function):\n        function.handled = kind\n        return function\n\n    return mark\n\n\n"
+    "class Dispatch:\n    @classmethod\n    def handler_for(cls, kind):\n"
+    "        for ancestor in kind.__mro__:\n            for value in vars(cls).values():\n"
+    "                if getattr(value, 'handled', None) is ancestor:\n                    return value.__func__\n"
+    "        raise TypeError(kind)\n\n\n"
+    "class FamilyMeta(ABCMeta):\n"
+    "    def __new__(mcs, name, bases, namespace, *, affix=None, **kwargs):\n"
+    "        family_bases = FamilyBases.of(bases)\n"
+    "        roots = {base.family_root for base in family_bases if base is not DeclaredFamily}\n"
+    "        if len(roots) > 1:\n"
+    "            raise TypeError('two families')\n"
+    "        is_root = affix is not None or '__registry__' in namespace or (not roots and bool(family_bases))\n"
+    "        cls = super().__new__(mcs, name, bases, namespace, **kwargs)\n"
+    "        if is_root:\n"
+    "            cls.family_root = cls\n"
+    "        else:\n"
+    "            for family_root in roots:\n"
+    "                cls.family_root = family_root\n"
+    "        return cls\n\n\n"
+    "class FamilyBases(Dispatch):\n"
+    "    @handles(FamilyMeta)\n"
+    "    @staticmethod\n"
+    "    def declared(base):\n"
+    "        return (base,)\n\n"
+    "    @handles(type)\n"
+    "    @staticmethod\n"
+    "    def plain(base):\n"
+    "        return ()\n\n"
+    "    @classmethod\n"
+    "    def of(cls, bases):\n"
+    "        return tuple(family for base in bases for family in cls.handler_for(type(base))(base))\n\n\n"
+    "class DeclaredFamily(ABC, metaclass=FamilyMeta):\n"
+    "    pass\n\n\n"
+    "class PlainTable(ABC):\n"
+    "    pass\n\n\n"
+    "class DurableFile(DeclaredFamily):\n"
+    "    pass\n\n\n"
+    "class DurableTable(DurableFile, PlainTable):\n"
+    "    pass\n\n\n"
+    "class FileRow(DurableTable, PlainTable):\n"
+    "    pass\n\n\n"
+    "class Outcome(DeclaredFamily):\n"
+    "    pass\n\n\n"
+    "class FailedOutcome(Outcome):\n"
+    "    pass\n\n\n"
+    "class DetachedOutcome(FailedOutcome, Outcome):\n"
+    "    pass\n"
+)
+
+
+def test_family_bases_drops_scanned_plain_and_same_root_family_bases(tmp_path: Path):
+    """Reproduces `agent-comms` `declared_family.py:145` (`FileContentRow` dropping
+    plain `TypedTable` and `FailedToStartOutcome` dropping `FamilyMeta` `ChildOutcome`)."""
+
+    main = (
+        "from pkg.families import DetachedOutcome, FileRow, Outcome, DurableFile\n"
+        "assert FileRow.family_root is DurableFile\n"
+        "assert DetachedOutcome.family_root is Outcome\n"
+        "print([c.__name__ for c in FileRow.__mro__], [c.__name__ for c in DetachedOutcome.__mro__])\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": DECLARED_FAMILIES, "main.py": main})
+    expected = _run(tmp_path)
+    findings = _findings(tmp_path)
+    by_symbol = {finding.primary_evidence.symbol: finding for finding in findings}
+    assert set(by_symbol) == {"FileRow", "DetachedOutcome"}
+    snapshot = _snapshot(tmp_path)
+    for symbol in ("FileRow", "DetachedOutcome"):
+        evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(by_symbol[symbol], snapshot)
+        assert evaluation.rejection_reason == "", f"{symbol}: {evaluation.rejection_reason}"
+    simulation = CodemodPlanSequence.from_operations(
+        RestatedBaseDetector().evaluate_recipe_for_finding(by_symbol["FileRow"], snapshot).required_recipe.operations
+    ).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    after = (tmp_path / "pkg/families.py").read_text()
+    assert "class FileRow(DurableTable):" in after
+    assert "class DetachedOutcome(FailedOutcome):" in after
+    assert _run(tmp_path) == expected
+    assert _findings(tmp_path) == []
+
+
+def test_family_bases_refuses_drop_across_rerooted_child_family(tmp_path: Path):
+    """When an intermediate base re-roots the family via `affix=...`, dropping the
+    grandparent base would silently remove the two-families `TypeError` and must refuse."""
+
+    rerooted = DECLARED_FAMILIES + (
+        "\n\nclass ChildRoot(Outcome, affix='Child'):\n    pass\n\n\n"
+        "class Conflict(ChildRoot, Outcome):\n    pass\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": rerooted})
+    finding = next(f for f in _findings(tmp_path) if f.primary_evidence.symbol == "Conflict")
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert evaluation.rejection_reason != ""
+    assert NeededInput.PROOF in evaluation.needs

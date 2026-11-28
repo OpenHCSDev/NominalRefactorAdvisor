@@ -2653,7 +2653,9 @@ class BaseDropReads(OrderPreservingReads):
         """`dataclasses.dataclass(cls, ...)` on the new class builds its fields from
         each class's own annotations along the order, which the drop keeps, and never
         reads the header's bases; `dir(cls)` is the names of every class in the order;
-        anything else is followed as before."""
+        a metaclass filter over `bases` consumed only by truthiness and a unique-root
+        set reduction stays identical when a retained base inherits each kept dropped
+        base without re-rooting; anything else is followed as before."""
 
         owner = self.code.owner
         if (
@@ -2662,6 +2664,8 @@ class BaseDropReads(OrderPreservingReads):
             and call.args[:1] == [node]
             and self.proof.resolved(owner, call.func, self.proof.module_end(owner)) in ORDER_READERS
         ):
+            return
+        if role is BASES and call.args == [node] and not call.keywords and self._reduced_metaclass_filter_kept(call):
             return
         super().follow(call, node, role)
 
@@ -2903,21 +2907,71 @@ class BaseDropReads(OrderPreservingReads):
                 return text is not None and not HEADER_BASES.startswith(text)
         return False
 
+    def metaclass_ancestors_of(self, symbol: str) -> frozenset[str] | None:
+        """Qualified non-`type`/`object` metaclass ancestors of `symbol` (native or scanned)."""
+
+        if (native := native_root_type(symbol)) is not None:
+            return frozenset(
+                f"{ancestor.__module__}.{ancestor.__qualname__}"
+                for ancestor in inspect.getmro(type(native))
+                if ancestor not in (type, object)
+            )
+        verdicts = self.proof.snapshot.class_overlap_verdicts
+        try:
+            order = verdicts.linearized(symbol)
+        except NeedsInput:
+            return None
+        ancestors: set[str] = set()
+        for current_symbol in order:
+            if (native := native_root_type(current_symbol)) is not None:
+                ancestors.update(
+                    f"{ancestor.__module__}.{ancestor.__qualname__}"
+                    for ancestor in inspect.getmro(type(native))
+                    if ancestor not in (type, object)
+                )
+                continue
+            indexed = verdicts.ancestor(current_symbol)
+            if indexed is None:
+                return None
+            node = self.proof.class_node(indexed)
+            for keyword in node.keywords:
+                if keyword.arg != "metaclass":
+                    continue
+                meta_symbol = self.proof.qualified(indexed, keyword.value, node.lineno)
+                if (native_meta := native_root_type(meta_symbol)) is not None:
+                    ancestors.update(
+                        f"{ancestor.__module__}.{ancestor.__qualname__}"
+                        for ancestor in inspect.getmro(native_meta)
+                        if ancestor not in (type, object)
+                    )
+                    continue
+                try:
+                    chain, _ = self.proof._walk_metaclasses((meta_symbol,))
+                except NeedsInput:
+                    return None
+                ancestors.add(meta_symbol)
+                for meta_cls in chain:
+                    ancestors.add(meta_cls.symbol)
+                    for base_ref in meta_cls.base_references:
+                        base_sym = ".".join(base_ref.resolved_parts)
+                        if (native_base := native_root_type(base_sym)) is not None:
+                            ancestors.update(
+                                f"{ancestor.__module__}.{ancestor.__qualname__}"
+                                for ancestor in inspect.getmro(native_base)
+                                if ancestor not in (type, object)
+                            )
+        return frozenset(ancestors)
+
     def dropped_reach_empty_plain_answer(self, table: ast.ClassDef) -> bool:
         answer = self.plain_answer(table)
         if answer is None or ast.literal_eval(answer) not in ((), [], None, frozenset(), set()):
             return False
-        metaclasses = tuple(
-            type(native) for symbol in self.proof.dropped if (native := native_root_type(symbol)) is not None
-        )
-        if len(metaclasses) != len(self.proof.dropped):
-            return False
-        ancestors = frozenset(
-            f"{ancestor.__module__}.{ancestor.__qualname__}"
-            for metaclass in metaclasses
-            for ancestor in inspect.getmro(metaclass)
-            if ancestor not in (type, object)
-        )
+        ancestors: set[str] = set()
+        for symbol in self.proof.dropped:
+            found = self.metaclass_ancestors_of(symbol)
+            if found is None:
+                return False
+            ancestors.update(found)
         return not any(
             self.handled_symbol(name, handler) in ancestors
             for names, handler in self.handlers(table)
@@ -2928,7 +2982,11 @@ class BaseDropReads(OrderPreservingReads):
     def handled_symbol(self, name: str, handler: ast.FunctionDef) -> str:
         """The qualified name a handler's `@handles` argument spells in its module."""
 
-        owner = self.code.owner
+        return self._handled_symbol_in(self.code.owner, name, handler)
+
+    def _handled_symbol_in(
+        self, owner: CompactIndexedClass | None, name: str, handler: ast.FunctionDef
+    ) -> str:
         if owner is None:
             return name
         module = self.proof.module(owner)
@@ -2936,6 +2994,392 @@ class BaseDropReads(OrderPreservingReads):
             module, ast.parse(name, mode="eval").body, line=handler.lineno
         )
         return name if witness is None else witness.qualified_name
+
+    def _metaclass_filter_kept_metas(self, callee: CreationCode) -> frozenset[str] | None:
+        """If `callee` is a pure metaclass filter flattening `cls.handler_for(type(b))(b)`
+        over its bases parameter (returning `()` for `type` and `(b,)` or `()` for every
+        other `@handles` handler), return the qualified metaclass symbols it keeps."""
+
+        if callee.owner is None:
+            return None
+        body = [
+            item
+            for item in callee.node.body
+            if not (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant))
+        ]
+        if len(body) != 1:
+            return None
+        params = [arg.arg for arg in (*callee.node.args.posonlyargs, *callee.node.args.args)]
+        if len(params) < 2:
+            return None
+        bases_param = params[1]
+        match body[0]:
+            case ast.Return(
+                value=ast.Call(
+                    func=ast.Name(id="tuple" | "list" | "set" | "frozenset"),
+                    args=[
+                        ast.GeneratorExp(
+                            elt=ast.Name(id=elem),
+                            generators=[
+                                ast.comprehension(
+                                    target=ast.Name(id=base_var),
+                                    iter=ast.Name(id=iter_name),
+                                    ifs=[],
+                                    is_async=0,
+                                ),
+                                ast.comprehension(
+                                    target=ast.Name(id=inner_var),
+                                    iter=ast.Call(
+                                        func=ast.Call(
+                                            func=ast.Attribute(
+                                                value=ast.Name(id="cls" | "self"),
+                                                attr="handler_for",
+                                            ),
+                                            args=[
+                                                ast.Call(
+                                                    func=ast.Name(id="type"),
+                                                    args=[ast.Name(id=typed_var)],
+                                                    keywords=[],
+                                                )
+                                            ],
+                                            keywords=[],
+                                        ),
+                                        args=[ast.Name(id=passed_var)],
+                                        keywords=[],
+                                    ),
+                                    ifs=[],
+                                    is_async=0,
+                                ),
+                            ],
+                        )
+                    ],
+                    keywords=[],
+                )
+            ) if (
+                iter_name == bases_param
+                and typed_var == passed_var == base_var
+                and elem == inner_var
+            ):
+                pass
+            case _:
+                return None
+        table = self.proof.class_node(callee.owner)
+        plain = self.plain_answer(table)
+        if plain is None or ast.literal_eval(plain) not in ((), [], None, frozenset(), set()):
+            return None
+        kept: set[str] = set()
+        for names, handler in self.handlers(table):
+            if names == ("type",):
+                continue
+            literal = self.answer(handler)
+            if literal is not None and ast.literal_eval(literal) in ((), [], None, frozenset(), set()):
+                continue
+            handler_body = [
+                item
+                for item in handler.body
+                if not (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant))
+            ]
+            handler_params = [arg.arg for arg in (*handler.args.posonlyargs, *handler.args.args)]
+            if len(handler_params) != 1 or len(handler_body) != 1:
+                return None
+            match handler_body[0]:
+                case ast.Return(value=ast.Tuple(elts=[ast.Name(id=ret)]) | ast.List(elts=[ast.Name(id=ret)])) if (
+                    ret == handler_params[0]
+                ):
+                    for name in names:
+                        kept.add(self._handled_symbol_in(callee.owner, name, handler))
+                case _:
+                    return None
+        return frozenset(kept) if kept else None
+
+    def _reduced_metaclass_filter_kept(self, call: ast.Call) -> bool:
+        """Whether `result = Filter.of(bases)` in this creation function is only consumed by
+        truthiness and unique-root set reductions whose values stay identical when dropping
+        each restated base."""
+
+        owner = self.code.owner
+        if owner is None:
+            return False
+        parent = self.parents.get(call)
+        match parent:
+            case ast.Assign(targets=[ast.Name(id=result_name)], value=assigned) if assigned is call:
+                pass
+            case ast.AnnAssign(target=ast.Name(id=result_name), value=assigned) if assigned is call:
+                pass
+            case _:
+                return False
+        stores = [
+            node
+            for node in ast.walk(self.code.node)
+            if isinstance(node, ast.Name) and node.id == result_name and isinstance(node.ctx, ast.Store)
+        ]
+        if len(stores) != 1:
+            return False
+        target = self.callee(call.func)
+        if not isinstance(target, CreationCode):
+            return False
+        kept_metas = self._metaclass_filter_kept_metas(target)
+        if kept_metas is None:
+            return False
+
+        reductions: list[tuple[str, str, str | None]] = []
+        for node in ast.walk(self.code.node):
+            if not (isinstance(node, ast.Name) and node.id == result_name and isinstance(node.ctx, ast.Load)):
+                continue
+            use = self.parents.get(node)
+            match use:
+                case ast.Call(func=ast.Name() as fn, args=[arg], keywords=[]) if (
+                    arg is node and self.is_builtin(fn, "builtins.bool")
+                ):
+                    continue
+                case ast.UnaryOp(op=ast.Not()) | ast.If() | ast.IfExp() | ast.BoolOp():
+                    continue
+                case ast.comprehension(target=ast.Name(id=elem_var), iter=iter_node, ifs=ifs, is_async=0) if (
+                    iter_node is node
+                ):
+                    comp = self.parents.get(use)
+                    if not isinstance(comp, ast.SetComp) or len(comp.generators) != 1:
+                        return False
+                    match comp.elt:
+                        case ast.Attribute(value=ast.Name(id=attr_base), attr=attr_name, ctx=ast.Load()) if (
+                            attr_base == elem_var
+                        ):
+                            pass
+                        case _:
+                            return False
+                    sentinel_symbol: str | None = None
+                    if ifs:
+                        if len(ifs) != 1:
+                            return False
+                        match ifs[0]:
+                            case ast.Compare(
+                                left=ast.Name(id=tested),
+                                ops=[ast.IsNot()],
+                                comparators=[sentinel_expr],
+                            ) if tested == elem_var:
+                                sentinel_symbol = self.proof.resolved(
+                                    owner, sentinel_expr, self.proof.module_end(owner)
+                                )
+                                if sentinel_symbol is None:
+                                    return False
+                            case _:
+                                return False
+                    comp_parent = self.parents.get(comp)
+                    match comp_parent:
+                        case ast.Assign(targets=[ast.Name(id=roots_name)], value=v) if v is comp:
+                            pass
+                        case ast.AnnAssign(target=ast.Name(id=roots_name), value=v) if v is comp:
+                            pass
+                        case _:
+                            return False
+                    reductions.append((roots_name, attr_name, sentinel_symbol))
+                case _:
+                    return False
+
+        verdicts = self.proof.snapshot.class_overlap_verdicts
+        dropped_set = frozenset(self.proof.dropped)
+        retained_direct = tuple(
+            ".".join(ref.resolved_parts)
+            for ref in self.proof.composer.base_references
+            if ".".join(ref.resolved_parts) not in dropped_set
+        )
+        for dropped_symbol in self.proof.dropped:
+            d_metas = self.metaclass_ancestors_of(dropped_symbol)
+            if d_metas is None:
+                return False
+            if d_metas.isdisjoint(kept_metas):
+                continue
+            covered = False
+            for retained in retained_direct:
+                try:
+                    retained_order = verdicts.linearized(retained)
+                except NeedsInput:
+                    continue
+                if dropped_symbol not in retained_order:
+                    continue
+                r_metas = self.metaclass_ancestors_of(retained)
+                if r_metas is None or r_metas.isdisjoint(kept_metas):
+                    continue
+                if all(
+                    (sentinel is not None and dropped_symbol == sentinel)
+                    or (
+                        dropped_symbol != sentinel
+                        and retained != sentinel
+                        and self._unique_root_attr_inherited(
+                            roots_name, attr_name, result_name, retained, dropped_symbol
+                        )
+                    )
+                    for roots_name, attr_name, sentinel in reductions
+                ):
+                    covered = True
+                    break
+            if not covered:
+                return False
+        return True
+
+    def _unique_root_attr_inherited(
+        self,
+        roots_name: str,
+        attr_name: str,
+        result_name: str,
+        retained: str,
+        dropped: str,
+    ) -> bool:
+        """Prove from this metaclass creation function that `retained.<attr_name>` equals
+        `dropped.<attr_name>` because the function enforces a single root in `roots_name`,
+        only sets `cls.<attr_name> = cls` under an inspectable `is_root` condition, and
+        otherwise propagates the unique root from `roots_name`, while no class between
+        `retained` and `dropped` triggers `is_root` or binds `attr_name` directly."""
+
+        has_uniqueness_guard = False
+        for stmt in ast.walk(self.code.node):
+            match stmt:
+                case ast.If(
+                    test=ast.Compare(
+                        left=ast.Call(func=ast.Name(id="len"), args=[ast.Name(id=checked)], keywords=[]),
+                        ops=[ast.Gt()],
+                        comparators=[ast.Constant(value=1)],
+                    ),
+                    body=[ast.Raise()],
+                ) if checked == roots_name:
+                    has_uniqueness_guard = True
+                    break
+        if not has_uniqueness_guard:
+            return False
+
+        new_class_names = frozenset(name for name, role in self.roles.items() if role is NEW_CLASS)
+        namespace_names = frozenset(name for name, role in self.roles.items() if role is NAMESPACE)
+        if not new_class_names:
+            return False
+        attr_assigns = [
+            stmt
+            for stmt in ast.walk(self.code.node)
+            if isinstance(stmt, ast.Assign)
+            and any(
+                isinstance(t, ast.Attribute)
+                and isinstance(t.value, ast.Name)
+                and t.value.id in new_class_names
+                and t.attr == attr_name
+                for t in stmt.targets
+            )
+        ]
+        if len(attr_assigns) != 2:
+            return False
+
+        root_expr: ast.expr | None = None
+        for stmt in ast.walk(self.code.node):
+            match stmt:
+                case ast.If(
+                    test=test_expr,
+                    body=[
+                        ast.Assign(
+                            targets=[ast.Attribute(value=ast.Name(id=lhs1), attr=a1)],
+                            value=ast.Name(id=rhs1),
+                        )
+                    ],
+                    orelse=[
+                        ast.For(
+                            target=ast.Name(id=loop_var),
+                            iter=ast.Name(id=iter_name),
+                            body=[
+                                ast.Assign(
+                                    targets=[ast.Attribute(value=ast.Name(id=lhs2), attr=a2)],
+                                    value=ast.Name(id=rhs2),
+                                )
+                            ],
+                            orelse=[],
+                        )
+                    ],
+                ) if (
+                    lhs1 in new_class_names
+                    and rhs1 == lhs1
+                    and lhs2 in new_class_names
+                    and a1 == a2 == attr_name
+                    and iter_name == roots_name
+                    and rhs2 == loop_var
+                ):
+                    root_expr = test_expr
+                    break
+        if root_expr is None:
+            return False
+        if isinstance(root_expr, ast.Name):
+            resolved = self.single_local_value(root_expr.id)
+            if resolved is None:
+                return False
+            root_expr = resolved
+
+        kwonly_params = frozenset(arg.arg for arg in self.code.node.args.kwonlyargs)
+        root_keywords: set[str] = set()
+        root_namespace_keys: set[str] = set()
+        terms = (
+            list(root_expr.values)
+            if isinstance(root_expr, ast.BoolOp) and isinstance(root_expr.op, ast.Or)
+            else [root_expr]
+        )
+        for term in terms:
+            match term:
+                case ast.Compare(
+                    left=ast.Name(id=kw), ops=[ast.IsNot()], comparators=[ast.Constant(value=None)]
+                ) if kw in kwonly_params:
+                    root_keywords.add(kw)
+                case ast.Name(id=kw) if kw in kwonly_params:
+                    root_keywords.add(kw)
+                case ast.Compare(
+                    left=ast.Constant(value=str() as key),
+                    ops=[ast.In()],
+                    comparators=[ast.Name(id=ns)],
+                ) if ns in namespace_names:
+                    root_namespace_keys.add(key)
+                case ast.BoolOp(
+                    op=ast.And(),
+                    values=[
+                        ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=empty_roots)),
+                        ast.Call(func=ast.Name(id="bool"), args=[ast.Name(id=nonempty)], keywords=[]),
+                    ],
+                ) if empty_roots == roots_name and nonempty == result_name:
+                    continue
+                case ast.UnaryOp(op=ast.Not(), operand=ast.Name(id=empty_roots)) if empty_roots == roots_name:
+                    continue
+                case _:
+                    return False
+
+        forbidden_body_names = root_namespace_keys | {attr_name}
+        verdicts = self.proof.snapshot.class_overlap_verdicts
+        try:
+            retained_order = verdicts.linearized(retained)
+        except NeedsInput:
+            return False
+        for current in retained_order:
+            if current == dropped:
+                continue
+            try:
+                current_order = verdicts.linearized(current)
+            except NeedsInput:
+                return False
+            if dropped not in current_order:
+                continue
+            indexed = verdicts.ancestor(current)
+            if indexed is None:
+                return False
+            node = self.proof.class_node(indexed)
+            if any(keyword.arg in root_keywords for keyword in node.keywords):
+                return False
+            for stmt in node.body:
+                match stmt:
+                    case ast.Assign(targets=targets):
+                        for target in targets:
+                            if any(
+                                isinstance(bound, ast.Name) and bound.id in forbidden_body_names
+                                for bound in ast.walk(target)
+                            ):
+                                return False
+                    case ast.AnnAssign(target=ast.Name(id=bound)) if bound in forbidden_body_names:
+                        return False
+                    case ast.FunctionDef(name=bound) | ast.AsyncFunctionDef(name=bound) | ast.ClassDef(
+                        name=bound
+                    ) if bound in forbidden_body_names:
+                        return False
+        return True
 
 
 @dataclass
