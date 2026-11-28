@@ -492,3 +492,54 @@ def test_declared_forbidden_import_edges_block_direct_and_transitive_promotion(
     ] == ["`pkg.app` hides 1 import(s) that close no cycle."]
 
 
+def test_hidden_import_recipe_reason_names_refused_count_when_partial(
+    tmp_path: Path,
+) -> None:
+    """When a module has both a safe hidden import and a forbidden-edge import,
+    the synthesized recipe promotes only the safe one and explicitly reports
+    the refused count in its reason."""
+
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                "[tool.nominal-refactor-advisor]\n"
+                "forbidden-imports = [\n"
+                "    { from = 'pkg.client', to = ['pkg.widgets'] },\n"
+                "]\n"
+            ),
+            "pkg/__init__.py": "",
+            "pkg/helper.py": "class SafeHelper:\n    pass\n",
+            "pkg/widgets/__init__.py": "",
+            "pkg/widgets/view.py": "class ForbiddenView:\n    pass\n",
+            "pkg/client/__init__.py": "",
+            "pkg/client/entry.py": "import pkg.shared\n",
+            "pkg/shared.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.helper import SafeHelper\n"
+                "    from pkg.widgets.view import ForbiddenView\n\n\n"
+                "def render(a: SafeHelper, b: ForbiddenView) -> tuple[object, object]:\n"
+                "    return (a, b)\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path, use_parse_cache=False)
+    )
+    evaluation = HiddenImportDetector().evaluate_recipe_for_finding(
+        findings[0], snapshot
+    )
+    recipe = evaluation.executable_recipe
+    assert recipe is not None, evaluation.rejection_reason
+    assert "Promote 1 accepted hidden import(s); leave 1 refused import(s) in place." in recipe.reason
+    rewritten = recipe.simulate(snapshot).simulation.rewritten_sources[
+        (tmp_path / "pkg/shared.py").as_posix()
+    ]
+    assert "\nfrom pkg.helper import SafeHelper\n" in rewritten
+    assert "    from pkg.widgets.view import ForbiddenView\n" in rewritten
+
+

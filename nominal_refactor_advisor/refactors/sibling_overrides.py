@@ -1303,6 +1303,17 @@ def _creation_keywords_for_intermediate(
     verdicts = snapshot.class_overlap_verdicts
     order = verdicts.linearized(parent.symbol)
     for symbol in order:
+        if symbol.rsplit(".", 1)[-1] == "DeclaredFamily":
+            return ("declared_name",)
+        indexed = index.class_for(symbol)
+        if indexed is None:
+            continue
+        if any(
+            base.rsplit(".", 1)[-1] == "DeclaredFamily"
+            for base in indexed.declared_base_names
+        ):
+            return ("declared_name",)
+    for symbol in order:
         indexed = index.class_for(symbol)
         if indexed is None:
             continue
