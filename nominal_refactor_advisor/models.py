@@ -33,6 +33,7 @@ from nominal_refactor_advisor.descriptor_algebra import AliasProperty, ConstantP
 from nominal_refactor_advisor.json_reports import (
     SemanticRecord as SemanticRecord,
 )
+from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.json_reports import (
     json_report_cached_property,
     json_report_property,
@@ -485,7 +486,32 @@ class DeclarationReferenceMetrics(FindingMetrics):
 
         return evaluator.rejected_evaluation(
             "every site of this finding needs a change before it can take the "
-            "reference where it stands"
+            "reference where it stands",
+            needs=(NeededInput.SOURCE_CHANGE,),
+        )
+
+
+@dataclass(frozen=True)
+class StoppedReferenceRewrites(DeclarationReferenceMetrics):
+    """A restated-identity finding whose sites have no mechanical rewrite yet, naming the
+    exact site kinds (`flattened`, `module`, `member`, `word`, ...) that stopped it."""
+
+    site_kinds: tuple[str, ...]
+
+    def uncarried_evaluation(
+        self, evaluator: FindingRecipeEvaluator
+    ) -> FindingRecipeEvaluation:
+        kinds = ", ".join(self.site_kinds)
+        if self.site_kinds == ("flattened",):
+            return evaluator.rejected_evaluation(
+                "reading a family member's spelling as text (`flattened`) needs callers "
+                "to pass the member directly instead of flattening it",
+                needs=(NeededInput.SOURCE_CHANGE,),
+            )
+        return evaluator.rejected_evaluation(
+            f"every site of this finding ({kinds}) needs a change before it can take "
+            "the reference where it stands",
+            needs=(NeededInput.SOURCE_CHANGE,),
         )
 
 

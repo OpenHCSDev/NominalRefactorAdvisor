@@ -156,12 +156,74 @@ def test_a_module_the_file_does_not_import_keeps_its_prescription(tmp_path: Path
     (record,) = records
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert record.reason == (
-        "every site of this finding needs a change before it can take the "
-        "reference where it stands"
+        "every site of this finding (module) needs a change before it can take "
+        "the reference where it stands"
     )
-    assert record.needs == (NeededInput.UNTYPED,)
+    assert record.needs == (NeededInput.SOURCE_CHANGE,)
     assert rewritten == {}
     assert "a site no recipe rewrites keeps this prescription" in finding.summary
+
+
+def test_flattened_declared_name_does_not_leak_unrelated_families_into_evidence(
+    tmp_path: Path,
+):
+    """Reading `.declared_name` on a typed receiver cites only that receiver's family,
+    and an untyped receiver does not attach unrelated `DeclaredFamily` classes from
+    other modules to its evidence."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/family": (
+                "class DeclaredFamily:\n"
+                "    def __init_subclass__(cls, *, declared_name=None):\n"
+                "        super().__init_subclass__()\n"
+            ),
+            "pkg/alpha": (
+                "from pkg.family import DeclaredFamily\n\n\n"
+                "class AlphaPolicy(DeclaredFamily, declared_name=None):\n    pass\n\n\n"
+                "class AlphaFast(AlphaPolicy, declared_name='alpha_fast'):\n    pass\n\n\n"
+                "class AlphaSlow(AlphaPolicy, declared_name='alpha_slow'):\n    pass\n"
+            ),
+            "pkg/beta": (
+                "from pkg.family import DeclaredFamily\n\n\n"
+                "class BetaModel(DeclaredFamily, declared_name=None):\n    pass\n\n\n"
+                "class BetaSmall(BetaModel, declared_name='beta_small'):\n    pass\n\n\n"
+                "class BetaLarge(BetaModel, declared_name='beta_large'):\n    pass\n\n\n"
+                "class Consumer:\n"
+                "    def read_typed(self, model: BetaModel) -> None:\n"
+                "        emit(model.declared_name)\n\n"
+                "    def read_untyped(self, objs) -> None:\n"
+                "        for obj in objs:\n"
+                "            emit(obj.declared_name)\n\n"
+                "    def read_leaf(self) -> None:\n"
+                "        emit(BetaSmall.declared_name)\n"
+            ),
+        },
+    )
+    findings = {
+        finding.primary_evidence.symbol: finding
+        for finding in _identity_findings(tmp_path)
+    }
+    typed = findings["Consumer.read_typed"]
+    assert all("alpha.py" not in loc.file_path for loc in typed.evidence)
+    assert {loc.symbol for loc in typed.evidence} == {
+        "Consumer.read_typed",
+        "BetaSmall",
+        "BetaLarge",
+    }
+
+    leaf = findings["Consumer.read_leaf"]
+    assert {loc.symbol for loc in leaf.evidence} == {
+        "Consumer.read_leaf",
+        "BetaSmall",
+    }
+
+    untyped = findings["Consumer.read_untyped"]
+    assert all("alpha.py" not in loc.file_path for loc in untyped.evidence)
+    assert [loc.symbol for loc in untyped.evidence] == ["Consumer.read_untyped"]
+    assert "Declared at ." not in untyped.summary
 
 
 FAMILY = (

@@ -1497,7 +1497,21 @@ class FlattenedSpelling(IdentitySpelling):
         found = identities.member_attribute(attribute, read)
         if found is None:
             return None
-        return found.read_off(read.text, identities.reads_any_member(read, found))
+        resolved = identities.resolved_class(read)
+        if resolved:
+            own = tuple(
+                location for _value, location in identities.own_spellings(resolved, found)
+            )
+            if not own and resolved in identities.classes:
+                own = identities.classes[resolved]
+            declared_at = own[:LISTED_DECLARATIONS]
+        else:
+            declared_at = ()
+        return found.read_off(
+            read.text,
+            identities.reads_any_member(read, found),
+            declared_at=declared_at,
+        )
 
 
 class ModuleSpelling(IdentitySpelling):
@@ -1683,7 +1697,13 @@ class MemberSpellings:
         " (codec boundary: needs judgment — the one wire decode may spell the tag)"
     )
 
-    def read_off(self, receiver: str, any_member: bool) -> ResolvedIdentity | None:
+    def read_off(
+        self,
+        receiver: str,
+        any_member: bool,
+        *,
+        declared_at: tuple[SourceLocation, ...] | None = None,
+    ) -> ResolvedIdentity | None:
         """A keyword spelling read as text; a class constant read is only a value.
 
         Reading it off one named member restates that member. Reading it off
@@ -1697,7 +1717,7 @@ class MemberSpellings:
         boundary = self.CODEC_BOUNDARY if any_member else ""
         return ResolvedIdentity(
             f"{self.identity}, read off `{receiver}` as text{boundary}",
-            self.declared_at[:LISTED_DECLARATIONS],
+            self.declared_at[:LISTED_DECLARATIONS] if declared_at is None else declared_at,
         )
 
     def spelled(self, literal: str) -> ResolvedIdentity | None:
