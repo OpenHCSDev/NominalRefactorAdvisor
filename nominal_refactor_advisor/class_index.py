@@ -4755,12 +4755,68 @@ class ClassBodyNormalForm:
             reads_its_class=bool(class_scope_names) or reads_class_cell_or_private_name(statement),
         )
 
+    _ANNOTATION_INDEPENDENT_METHOD_DECORATORS = frozenset(
+        {
+            "property",
+            "cached_property",
+            "classmethod",
+            "staticmethod",
+            "override",
+            "final",
+        }
+    )
+
+    @classmethod
+    def _is_annotation_independent_method_decorator(cls, decorator: ast.expr) -> bool:
+        return (
+            isinstance(decorator, (ast.Name, ast.Attribute))
+            and _terminal_reference_name(decorator)
+            in cls._ANNOTATION_INDEPENDENT_METHOD_DECORATORS
+        )
+
+    @classmethod
+    def _strip_method_header_annotations(
+        cls,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        """Clear parameter and return annotations on methods whose decorators never
+        inspect `__annotations__` at runtime (`property`, `classmethod`, etc.).
+
+        Abstract stubs (`@abstractmethod`), `@overload`, and custom decorators keep
+        their annotations intact because their signatures are part of the contract.
+        """
+
+        if not all(
+            cls._is_annotation_independent_method_decorator(decorator)
+            for decorator in method.decorator_list
+        ):
+            return method
+        args = copy.copy(method.args)
+        args.posonlyargs = [
+            replace_arg
+            for arg in args.posonlyargs
+            for replace_arg in (copy.copy(arg),)
+        ]
+        args.args = [copy.copy(arg) for arg in args.args]
+        args.kwonlyargs = [copy.copy(arg) for arg in args.kwonlyargs]
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+            arg.annotation = None
+        if args.vararg is not None:
+            args.vararg = copy.copy(args.vararg)
+            args.vararg.annotation = None
+        if args.kwarg is not None:
+            args.kwarg = copy.copy(args.kwarg)
+            args.kwarg.annotation = None
+        method.args = args
+        method.returns = None
+        return method
+
     @classmethod
     def _normalized_method(
         cls,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> ast.FunctionDef | ast.AsyncFunctionDef:
-        normalized = copy.copy(method)
+        normalized = cls._strip_method_header_annotations(copy.copy(method))
         normalized.body = _trim_leading_docstring(list(method.body)) or [ast.Pass()]
         positional = (*normalized.args.posonlyargs, *normalized.args.args)
         receiver_name = positional[0].arg if positional else None
