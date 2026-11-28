@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from nominal_refactor_advisor.analysis import analyze_path
+from nominal_refactor_advisor.analysis import AnalysisPathScope, analyze_path
 from nominal_refactor_advisor.patterns import PatternId
 
 
@@ -92,3 +92,29 @@ def test_a_narrower_set_of_unlike_classes_is_not_a_missed_case(tmp_path: Path):
     )
     assert len(findings) == 1
     assert "possible missed case" not in findings[0].summary
+
+
+def test_single_file_scan_in_namespace_package_recognizes_sibling_modules(tmp_path: Path):
+    """Reproduces personal-model `train_offbox/layer_program.py`: when `train_offbox/`
+    is a PEP 420 namespace package (no `__init__.py`) under a project root, scanning
+    one file must resolve sibling modules as `train_offbox.<mod>` so P26 does not
+    misclassify repository-declared classes as foreign."""
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
+    ns_pkg = tmp_path / "train_offbox"
+    ns_pkg.mkdir()
+    (ns_pkg / "linear.py").write_text("class QuantLinear:\n    pass\n")
+    for idx in range(3):
+        (ns_pkg / f"use_{idx}.py").write_text(
+            "from train_offbox.linear import QuantLinear\n"
+            "def check(x):\n"
+            "    return isinstance(x, QuantLinear)\n"
+        )
+    target = ns_pkg / "use_0.py"
+    scope = AnalysisPathScope.from_requested_roots((target,))
+    findings = [
+        finding
+        for finding in scope.filter_findings(analyze_path(scope.analysis_roots[0]))
+        if finding.detector_id == "foreign_type_switch"
+    ]
+    assert findings == []
