@@ -710,16 +710,68 @@ class ClassCreationProof:
     ) -> None:
         """A reversed MRO walk updating a dict with `{k: v for k, v in base.__dict__.items() if isinstance(v, T)}`
         produces the exact same dict in the exact same order when the sequence of
-        `(symbol, name)` bindings that could match `T` is identical before and after."""
+        `(symbol, name)` bindings that could match `T` is identical before and after,
+        or when moved bindings shift cleanly from the composer onto a gained base with
+        the exact same dict key order and winning declarations."""
 
         if self.type_filtered_bindings_unchanged(filter_symbol):
             return
         before = self._type_filtered_bindings(tuple(reversed(self.walk.before)), False, filter_symbol)
         after = self._type_filtered_bindings(tuple(reversed(self.walk.after)), True, filter_symbol)
+        if before == after:
+            return
+        before_winners: dict[str, str] = {}
+        for symbol, name in before:
+            before_winners[name] = symbol
+        after_winners: dict[str, str] = {}
+        for symbol, name in after:
+            after_winners[name] = symbol
+        before_set = frozenset(self.walk.before)
+        if list(before_winners.keys()) == list(after_winners.keys()) and all(
+            after_winners[name] == b_owner
+            or (
+                b_owner == self.walk.composer
+                and name in self.walk.deleted
+                and after_winners[name] not in before_set
+            )
+            for name, b_owner in before_winners.items()
+        ):
+            return
+        reads.refuse(
+            node,
+            f"collects `{filter_symbol}` bindings {list(before)}, and {list(after)} once composed,",
+        )
+
+    def require_prefixed_dict_member_walk_kept(
+        self, prefix: str, node: ast.AST, reads: CreationReads
+    ) -> None:
+        """A comprehension `(base for base in cls.__mro__ if key in base.__dict__ ...)`
+        where `key` always begins with constant `prefix` selects the same bases in the
+        same order when no moved name, no auto namespace key, and no gained or dropped
+        base binds any attribute starting with `prefix`, and the relative order of
+        existing bases binding `prefix*` stays identical."""
+
+        if any(auto.startswith(prefix) for auto in AUTO_CLASS_NAMESPACE_KEYS):
+            reads.refuse(node, f"checks `{prefix}*` in base namespaces, overlapping auto class keys")
+        matching_moved = sorted(name for name in self.moved if name.startswith(prefix))
+        if matching_moved:
+            reads.refuse(node, f"checks `{prefix}*` in base namespaces while moving {matching_moved}")
+
+        def _prefixed_binders(order: tuple[str, ...], composed: bool) -> tuple[str, ...]:
+            found: list[str] = []
+            for symbol in order:
+                if native_root_type(symbol) is not None:
+                    continue
+                if any(name.startswith(prefix) for name, _stmt in self.own_bindings(symbol, composed)):
+                    found.append(symbol)
+            return tuple(found)
+
+        before = _prefixed_binders(self.walk.before, False)
+        after = _prefixed_binders(self.walk.after, True)
         if before != after:
             reads.refuse(
                 node,
-                f"collects `{filter_symbol}` bindings {list(before)}, and {list(after)} once composed,",
+                f"checks `{prefix}*` in base namespaces: {list(before)} before, {list(after)} once composed",
             )
 
     def _class_dir_keys(self, symbol: str, composed: bool) -> frozenset[str]:
@@ -1737,6 +1789,7 @@ class CreationReads:
                 or self.binding_walk(parent)
                 or self.subclass_filtered_walk(parent)
                 or self.reversed_type_filtered_dict_walk(parent)
+                or self.prefixed_dict_member_walk(parent)
             ):
                 return
             case ast.Attribute(attr="__dict__", ctx=ast.Load()):
@@ -2139,6 +2192,55 @@ class CreationReads:
         self.proof.require_type_filtered_dict_walk_kept(filter_symbol, attribute, self)
         return True
 
+    def prefixed_dict_member_walk(self, attribute: ast.Attribute) -> bool:
+        """`(base for base in cls.__mro__ if name in base.__dict__ [and ...])` where
+        `name` is a single-assigned f-string with a constant prefix no moved or
+        gained/dropped base binds."""
+
+        comp = self.parents.get(attribute)
+        match comp:
+            case ast.comprehension(
+                target=ast.Name(id=visited), iter=iterated, ifs=[guard, *_], is_async=0
+            ) if iterated is attribute:
+                pass
+            case _:
+                return False
+        enclosing = self.parents.get(comp)
+        match enclosing:
+            case (
+                ast.GeneratorExp(elt=ast.Name(id=out), generators=[only])
+                | ast.ListComp(elt=ast.Name(id=out), generators=[only])
+                | ast.SetComp(elt=ast.Name(id=out), generators=[only])
+            ) if only is comp and out == visited:
+                pass
+            case _:
+                return False
+        first = (
+            guard.values[0]
+            if isinstance(guard, ast.BoolOp) and isinstance(guard.op, ast.And)
+            else guard
+        )
+        match first:
+            case ast.Compare(
+                left=ast.Name(id=key_name),
+                ops=[ast.In()],
+                comparators=[
+                    ast.Attribute(value=ast.Name(id=dict_owner), attr="__dict__", ctx=ast.Load())
+                    | ast.Call(func=ast.Name(id="vars"), args=[ast.Name(id=dict_owner)], keywords=[])
+                ],
+            ) if dict_owner == visited:
+                pass
+            case _:
+                return False
+        bound = self.single_local_value(key_name)
+        if not isinstance(bound, ast.JoinedStr) or not bound.values:
+            return False
+        first_part = bound.values[0]
+        if not (isinstance(first_part, ast.Constant) and isinstance(first_part.value, str) and first_part.value):
+            return False
+        self.proof.require_prefixed_dict_member_walk_kept(first_part.value, attribute, self)
+        return True
+
     def _leaked_loop_read(self, walk: ast.For, names: tuple[str, ...]) -> ast.Name | None:
         """A `Load` of any loop variable in `names` outside `walk` that is not
         shadowed by an enclosing comprehension or another `for` loop's body."""
@@ -2511,6 +2613,7 @@ class OrderPreservingReads(CreationReads):
             or self.binding_walk(attribute)
             or self.subclass_filtered_walk(attribute)
             or self.reversed_type_filtered_dict_walk(attribute)
+            or self.prefixed_dict_member_walk(attribute)
         )
 
     def require_new_class(self, node: ast.Name, parent: ast.AST | None) -> None:

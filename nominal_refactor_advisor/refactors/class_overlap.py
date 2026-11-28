@@ -1543,6 +1543,45 @@ def _name_only_used_in_deferred_positions(
     return True
 
 
+def _external_import_source_for_name(
+    source_module: ParsedModule,
+    name: str,
+    before_line: int,
+    expected_qualified_name: str,
+    repository_root_packages: frozenset[str],
+) -> str | None:
+    """Return the single absolute external/stdlib import statement from `source_module`
+    that binds `name` to `expected_qualified_name`, or `None` if it belongs to a
+    repository package or is not a direct top-level absolute import."""
+
+    if expected_qualified_name.partition(".")[0] in repository_root_packages:
+        return None
+    found: str | None = None
+    for stmt in source_module.module.body:
+        if stmt.lineno >= before_line:
+            break
+        match stmt:
+            case ast.Import(names=aliases):
+                for alias in aliases:
+                    bound = alias.asname or alias.name
+                    if bound == name and alias.name == expected_qualified_name:
+                        found = (
+                            f"import {alias.name} as {alias.asname}\n"
+                            if alias.asname
+                            else f"import {alias.name}\n"
+                        )
+            case ast.ImportFrom(module=str(mod), names=aliases, level=0):
+                for alias in aliases:
+                    bound = alias.asname or alias.name
+                    if bound == name and f"{mod}.{alias.name}" == expected_qualified_name:
+                        found = (
+                            f"from {mod} import {alias.name} as {alias.asname}\n"
+                            if alias.asname
+                            else f"from {mod} import {alias.name}\n"
+                        )
+    return found
+
+
 def required_name_imports(
     snapshot: CodemodSourceSnapshot,
     statements: tuple[ast.stmt, ...],
@@ -1580,6 +1619,11 @@ def required_name_imports(
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
         }
     )
+    repository_root_packages = frozenset(
+        module.module_name.partition(".")[0]
+        for module in snapshot.parsed_modules
+        if module.module_name
+    )
     for name in names:
         reference = ast.Name(id=name, ctx=ast.Load())
         expected = bindings.reference_or_builtin_witness_at(
@@ -1601,6 +1645,23 @@ def required_name_imports(
             expected.qualified_name
         )
         if len(targets) != 1:
+            if not targets:
+                external_import = _external_import_source_for_name(
+                    source_module,
+                    name,
+                    source.node.lineno,
+                    expected.qualified_name,
+                    repository_root_packages,
+                )
+                if external_import is not None:
+                    imports.append(
+                        ModuleImportMutation.from_source(
+                            file_path=destination.file_path,
+                            import_source=external_import,
+                            rationale=rationale,
+                        )
+                    )
+                    continue
             raise NeedsInput(f"`{expected.qualified_name}` has no single declaration", NeededInput.PROOF)
         imported_module = snapshot.module_import_graph.module_name_for_file_path(
             targets[0].file_path
