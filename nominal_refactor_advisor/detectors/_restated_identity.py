@@ -31,6 +31,7 @@ from nominal_refactor_advisor.models import (
     CoveredReferenceRewrites,
     RefactorFinding,
     SourceLocation,
+    StoppedReferenceRewrites,
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.observation_shapes import RestatingSite
@@ -327,6 +328,8 @@ class RestatedIdentityDetector(
 
     def owner(self, sites: Sequence[RestatingSite], context: DeclaredIdentities) -> str:
         declared = context.declarations_of(sites)
+        if not declared:
+            return self.restated.owner
         where = _listed(
             f"`{location.symbol}` ({location.file_path}:{location.line})"
             for location in declared
@@ -347,6 +350,9 @@ class RestatedIdentityDetector(
         covering = context.covering_rewrites(sites)
         if covering:
             return {"metrics": CoveredReferenceRewrites(covering)}
+        site_kinds = tuple(sorted({site.detail[0] for site in sites}))
+        if site_kinds:
+            return {"metrics": StoppedReferenceRewrites(site_kinds)}
         return {}
 
 

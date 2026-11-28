@@ -961,10 +961,17 @@ class RestatedOverrideDeletion:
         if len(inherited_statements) != 1:
             return
         inherited_annotations = method_header_annotations(inherited_statements[0])
+        generic_subst = _generic_type_parameter_map(overlap, inherited_overlap)
         changed = [
             f"{slot}: `{value}`"
             for slot, value in child_annotations.items()
-            if inherited_annotations.get(slot) != value
+            if not _annotation_preserved_by_inherited(
+                slot,
+                value,
+                inherited_annotations.get(slot),
+                child_class_name=overlap.node.name,
+                generic_subst=generic_subst,
+            )
         ]
         if changed:
             raise NeedsInput(
@@ -1091,6 +1098,95 @@ class RestatedOverrideFindingRecipeSynthesizer(
         except ValueError as error:
             return self.stopped_evaluation(error)
         return self.executable_evaluation(recipe)
+
+
+def _generic_params_of_class(node: ast.ClassDef) -> tuple[str, ...]:
+    """Type parameter names declared via `class Foo[T, U]` or `class Foo(Generic[T, U])`."""
+
+    params: list[str] = []
+    for tp in getattr(node, "type_params", ()):
+        name = getattr(tp, "name", None)
+        if isinstance(name, str) and name not in params:
+            params.append(name)
+    for base in node.bases:
+        if (
+            isinstance(base, ast.Subscript)
+            and (
+                (isinstance(base.value, ast.Name) and base.value.id == "Generic")
+                or (isinstance(base.value, ast.Attribute) and base.value.attr == "Generic")
+            )
+        ):
+            items = base.slice.elts if isinstance(base.slice, ast.Tuple) else (base.slice,)
+            for item in items:
+                if isinstance(item, ast.Name) and item.id not in params:
+                    params.append(item.id)
+    return tuple(params)
+
+
+def _generic_type_parameter_map(
+    overlap: OverlapClass,
+    inherited_overlap: OverlapClass,
+) -> dict[str, str]:
+    """Map type parameters on `inherited_overlap` to concrete type arguments bound by `overlap`."""
+
+    params = _generic_params_of_class(inherited_overlap.node)
+    if not params:
+        return {}
+    inherited_name = inherited_overlap.node.name
+    for base in overlap.node.bases:
+        if not isinstance(base, ast.Subscript):
+            continue
+        base_name = (
+            base.value.id
+            if isinstance(base.value, ast.Name)
+            else (base.value.attr if isinstance(base.value, ast.Attribute) else None)
+        )
+        if base_name != inherited_name:
+            continue
+        args = base.slice.elts if isinstance(base.slice, ast.Tuple) else (base.slice,)
+        if len(args) == len(params):
+            return {
+                param: ast.unparse(arg)
+                for param, arg in zip(params, args, strict=True)
+            }
+    return {}
+
+
+def _substitute_type_params(annotation: str, subst: dict[str, str]) -> str:
+    if not subst:
+        return annotation
+    try:
+        tree = ast.parse(annotation, mode="eval")
+    except SyntaxError:
+        return annotation
+
+    class _Subst(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            replacement = subst.get(node.id)
+            if replacement is None:
+                return node
+            return ast.parse(replacement, mode="eval").body
+
+    return ast.unparse(_Subst().visit(tree.body))
+
+
+def _annotation_preserved_by_inherited(
+    slot: str,
+    child_value: str,
+    inherited_value: str | None,
+    *,
+    child_class_name: str,
+    generic_subst: dict[str, str],
+) -> bool:
+    if inherited_value is None:
+        return False
+    if inherited_value == child_value:
+        return True
+    if slot == "return" and inherited_value in ("Self", "typing.Self") and child_value == child_class_name:
+        return True
+    if generic_subst and _substitute_type_params(inherited_value, generic_subst) == child_value:
+        return True
+    return False
 
 
 __all__ = (

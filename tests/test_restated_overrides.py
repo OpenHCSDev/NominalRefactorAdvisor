@@ -459,3 +459,36 @@ def test_abstractmethod_with_different_return_annotation_is_no_finding(tmp_path:
         },
     )
     assert _findings(tmp_path) == []
+
+
+def test_generic_specialization_and_self_return_allow_restated_override_deletion(
+    tmp_path: Path,
+):
+    """When the inherited method declares `-> Self` or `Generic[T]` (`-> T`) specialized
+    on the subclass (`class RootStore(Store[Root]):`), deleting the restated override
+    preserves the exact static return type."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/stores.py": (
+                "from typing import Generic, Self, TypeVar\n\n"
+                "T = TypeVar('T')\n\n\n"
+                "class Root:\n    pass\n\n\n"
+                "class Store(Generic[T]):\n"
+                "    def empty(self) -> T:\n"
+                "        return self._make()\n\n"
+                "    def refreshed(self) -> Self:\n"
+                "        return self\n\n\n"
+                "class RootStore(Store[Root]):\n"
+                "    def empty(self) -> Root:\n"
+                "        return self._make()\n\n"
+                "    def refreshed(self) -> RootStore:\n"
+                "        return self\n"
+            ),
+        },
+    )
+    assert [f.primary_evidence.symbol for f in _findings(tmp_path)] == ["RootStore"]
+    evaluation = _evaluation(tmp_path, "RootStore")
+    assert evaluation.recipe is not None, evaluation.rejection_reason

@@ -765,6 +765,19 @@ class PatternId(IntEnum):
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
         ),
     )
+    OWNED_SINGLEDISPATCH = _pattern(
+        stable_id=65,
+        display_name="Owned Single-Dispatch",
+        required_relation=(
+            "A `@functools.singledispatch` or `@singledispatchmethod` dispatcher "
+            "registers classes declared in this repository instead of placing the "
+            "default method on the family base and overrides on the subclasses (IMPL-3 / IMPL-4)."
+        ),
+        witness_capabilities=(
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.MRO_ORDERING,
+        ),
+    )
 
     def __new__(
         cls,
