@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import ast
 import copy
+import io
 import keyword as keyword_module
+import tokenize
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, replace
@@ -159,7 +161,7 @@ class SiblingOverrideCandidate:
         first.require_no_owner_bound_values(snapshot)
         cls._require_post_rebase_mro_safe(snapshot, verdicts, rebase, declaring, children, member_name, base_name, lifted_is_property=any((_is_property_statement(statement) for statement in first.statements)))
         names = frozenset((member_name,))
-        for child, restatement in zip(children, restated):
+        for child_index, (child, restatement) in enumerate(zip(children, restated)):
             ancestry = require_static_c3(snapshot, child.facts)
             order = verdicts.linearized(child.symbol)
             proof = MemberDeletionCreationProof(
@@ -171,7 +173,7 @@ class SiblingOverrideCandidate:
                 frozenset(),
                 MroWalk(order, order, child.symbol, names),
                 bases_modified=True,
-                changed_direct_bases=rebase.changed_direct_bases(),
+                changed_direct_bases=rebase.changed_direct_bases_for(child_index),
             )
             for statement in restatement.statements:
                 RestatedOverrideDeletion.require_once_per_class(proof, child, statement)
@@ -858,8 +860,6 @@ class HeaderAnnotationPlan:
         imports_typing_self = False
         for slot in slots_order:
             spellings = by_slot[slot]
-            if len(spellings) <= 1:
-                continue
             if slot == "return":
                 forms = {
                     _self_return_form(slot_map["return"], child.node.name)
@@ -867,6 +867,13 @@ class HeaderAnnotationPlan:
                     if "return" in slot_map
                 }
                 if len(forms) == 1 and (aligned := next(iter(forms))) is not None:
+                    names_own_class = any(
+                        _self_return_form(slot_map["return"], "") is None
+                        for slot_map in annotations_by_index
+                        if "return" in slot_map
+                    )
+                    if len(spellings) <= 1 and not names_own_class:
+                        continue
                     dest_module = snapshot.parsed_module_for_source_path(destination.file_path)
                     actual = snapshot.module_binding_proof.reference_or_builtin_witness_at(
                         dest_module,
@@ -883,6 +890,10 @@ class HeaderAnnotationPlan:
                         )
                     overrides.append(("return", aligned))
                     continue
+                if len(spellings) <= 1:
+                    continue
+            elif len(spellings) <= 1:
+                continue
             elif slot.startswith(("arg:", "posonly:", "kwonly:")):
                 aligned_param = _aligned_contravariant_param_annotation(
                     snapshot, children, annotations_by_index, slot
@@ -981,6 +992,36 @@ class HeaderAnnotationPlan:
         )
 
 
+def _insert_return_annotation_before_colon(source: str, return_annotation: str) -> str:
+    """Insert ` -> <return_annotation>` before the header `:` of a rendered `def`."""
+
+    lines = source.splitlines(keepends=True)
+    offsets: list[int] = []
+    pos = 0
+    for line in lines:
+        offsets.append(pos)
+        pos += len(line)
+    seen_def = False
+    seen_params = False
+    depth = 0
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if not seen_def:
+            if token.type == tokenize.NAME and token.string == "def":
+                seen_def = True
+            continue
+        if token.type == tokenize.OP:
+            if token.string in ("(", "[", "{"):
+                depth += 1
+                seen_params = True
+            elif token.string in (")", "]", "}"):
+                depth -= 1
+            elif token.string == ":" and seen_params and depth == 0:
+                line_index, col = token.start
+                insert_at = offsets[line_index - 1] + col
+                return f"{source[:insert_at]} -> {return_annotation}{source[insert_at:]}"
+    return source
+
+
 class HomePlacement(ABC):
     """How the lifted declaration lands in `home`: inserted anew or replacing a stub."""
 
@@ -994,6 +1035,27 @@ class HomePlacement(ABC):
         annotation_plan: HeaderAnnotationPlan = HeaderAnnotationPlan(),
     ) -> SourceTextSpanReplacement:
         raise NotImplementedError
+
+    def lifted_statements_for_imports(
+        self,
+        home: OverlapClass,
+        first: RestatedDeclarations,
+        annotation_plan: HeaderAnnotationPlan,
+    ) -> tuple[ast.stmt, ...]:
+        del home
+        return annotation_plan.rewritten_statements(
+            first.statements, strip_typing_self=True
+        )
+
+    def effective_extra_imports(
+        self,
+        home: OverlapClass,
+        first: RestatedDeclarations,
+        annotation_plan: HeaderAnnotationPlan,
+        rationale: str,
+    ) -> tuple[ModuleImportMutation, ...]:
+        del first
+        return annotation_plan.extra_imports(home.file_path, rationale)
 
     @abstractmethod
     def obsolete_home_edits(
@@ -1041,6 +1103,68 @@ class ReplaceHomeStub(HomePlacement):
 
     stub: ast.stmt
 
+    def _preserves_ann_assign_stub(self, first: RestatedDeclarations) -> bool:
+        return (
+            isinstance(self.stub, ast.AnnAssign)
+            and self.stub.value is None
+            and isinstance(self.stub.target, ast.Name)
+            and len(first.statements) == 1
+            and isinstance(first.statements[0], ast.Assign)
+            and len(first.statements[0].targets) == 1
+            and isinstance(first.statements[0].targets[0], ast.Name)
+            and first.statements[0].targets[0].id == self.stub.target.id
+        )
+
+    def _preserves_method_return_stub(
+        self,
+        home: OverlapClass,
+        first: RestatedDeclarations,
+        annotation_plan: HeaderAnnotationPlan,
+    ) -> bool:
+        if not (
+            isinstance(self.stub, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and self.stub.returns is not None
+            and len(first.statements) == 1
+            and isinstance(first.statements[0], (ast.FunctionDef, ast.AsyncFunctionDef))
+        ):
+            return False
+        stub_ret = ast.unparse(self.stub.returns)
+        override_ret = dict(annotation_plan.overrides).get("return")
+        if override_ret is not None:
+            if _self_return_form(stub_ret, home.node.name) == override_ret:
+                return False
+            return override_ret != stub_ret
+        stmt = first.statements[0]
+        if stmt.returns is None:
+            return True
+        return ast.unparse(stmt.returns) != stub_ret
+
+    def lifted_statements_for_imports(
+        self,
+        home: OverlapClass,
+        first: RestatedDeclarations,
+        annotation_plan: HeaderAnnotationPlan,
+    ) -> tuple[ast.stmt, ...]:
+        statements = super().lifted_statements_for_imports(home, first, annotation_plan)
+        if not self._preserves_method_return_stub(home, first, annotation_plan):
+            return statements
+        stmt = statements[0]
+        assert isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+        copied = copy.copy(stmt)
+        copied.returns = None
+        return (copied,)
+
+    def effective_extra_imports(
+        self,
+        home: OverlapClass,
+        first: RestatedDeclarations,
+        annotation_plan: HeaderAnnotationPlan,
+        rationale: str,
+    ) -> tuple[ModuleImportMutation, ...]:
+        if self._preserves_method_return_stub(home, first, annotation_plan):
+            return ()
+        return annotation_plan.extra_imports(home.file_path, rationale)
+
     def replacement(
         self,
         snapshot: CodemodSourceSnapshot,
@@ -1052,12 +1176,49 @@ class ReplaceHomeStub(HomePlacement):
         home_source = snapshot.sources_by_file_path[home.file_path]
         body = ClassBodySourceAuthority(home.node, home_source)
         start, end = body.geometry.node_span_offsets(SourceNodeSpan(self.stub, Include))
-        member_sources = annotation_plan.member_sources(
-            snapshot, first, body.indentation, documentation
-        )
-        rendered = self._rendered_replacement(
-            home_source, body.indentation, first, member_sources
-        )
+        if self._preserves_method_return_stub(home, first, annotation_plan):
+            assert isinstance(self.stub, (ast.FunctionDef, ast.AsyncFunctionDef))
+            assert self.stub.returns is not None
+            stmt = first.statements[0]
+            assert isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+            r_start, r_end = SourceTextGeometry(home_source).required_node_offsets(
+                self.stub.returns
+            )
+            stub_ret_src = home_source[r_start:r_end]
+            non_return = tuple(
+                (slot, rep)
+                for slot, rep in annotation_plan.overrides
+                if slot != "return"
+            )
+            if stmt.returns is not None:
+                effective_plan = HeaderAnnotationPlan(
+                    overrides=(*non_return, ("return", stub_ret_src)),
+                    imports_typing_self=False,
+                )
+                member_sources = effective_plan.member_sources(
+                    snapshot, first, body.indentation, documentation
+                )
+                rendered = "".join(text for text, _is_fn in member_sources)
+            else:
+                effective_plan = HeaderAnnotationPlan(
+                    overrides=non_return,
+                    imports_typing_self=False,
+                )
+                member_sources = effective_plan.member_sources(
+                    snapshot, first, body.indentation, documentation
+                )
+                head, head_is_fn = member_sources[0]
+                del head_is_fn
+                patched_head = _insert_return_annotation_before_colon(head, stub_ret_src)
+                extras = "".join(text for text, _is_fn in member_sources[1:])
+                rendered = f"{patched_head}{extras}"
+        else:
+            member_sources = annotation_plan.member_sources(
+                snapshot, first, body.indentation, documentation
+            )
+            rendered = self._rendered_replacement(
+                home_source, body.indentation, first, member_sources
+            )
         return SourceTextSpanReplacement.from_offsets(
             start_offset=start,
             end_offset=end,
@@ -1074,16 +1235,10 @@ class ReplaceHomeStub(HomePlacement):
         # Preserve an unvalued contract annotation (e.g. `kind: ClassVar[type]`) when
         # replacing it with a plain assignment (`kind = Export`), so dataclass/type
         # checkers keep the ClassVar or declared type contract.
-        if (
-            isinstance(self.stub, ast.AnnAssign)
-            and self.stub.value is None
-            and isinstance(self.stub.target, ast.Name)
-            and len(first.statements) == 1
-            and isinstance(first.statements[0], ast.Assign)
-            and len(first.statements[0].targets) == 1
-            and isinstance(first.statements[0].targets[0], ast.Name)
-            and first.statements[0].targets[0].id == self.stub.target.id
-        ):
+        if self._preserves_ann_assign_stub(first):
+            assert isinstance(self.stub, ast.AnnAssign)
+            assert isinstance(self.stub.target, ast.Name)
+            assert isinstance(first.statements[0], ast.Assign)
             stub_line = home_source.splitlines(keepends=True)[self.stub.lineno - 1]
             newline = "\r\n" if stub_line.endswith("\r\n") else "\n"
             annotation = ast.unparse(self.stub.annotation)
@@ -1099,9 +1254,17 @@ class ReplaceHomeStub(HomePlacement):
         lifted_statements: tuple[ast.stmt, ...],
         rationale: str,
     ) -> tuple[NominalSourceEdit, ...]:
+        kept_nodes: list[ast.AST] = list(lifted_statements)
+        if isinstance(self.stub, ast.AnnAssign) and self.stub.value is None:
+            kept_nodes.append(self.stub.annotation)
+        elif (
+            isinstance(self.stub, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and self.stub.returns is not None
+        ):
+            kept_nodes.append(self.stub.returns)
         lifted_names = {
             node.id
-            for statement in lifted_statements
+            for statement in kept_nodes
             for node in ast.walk(statement)
             if isinstance(node, ast.Name)
         }
@@ -1495,14 +1658,16 @@ class SiblingOverrideLift(SiblingOverrideMove):
             ),
             *required_name_imports(
                 snapshot,
-                self.annotation_plan.rewritten_statements(
-                    first.statements, strip_typing_self=True
+                self.placement.lifted_statements_for_imports(
+                    home, first, self.annotation_plan
                 ),
                 first.restating,
                 home,
                 rationale,
             ),
-            *self.annotation_plan.extra_imports(home.file_path, rationale),
+            *self.placement.effective_extra_imports(
+                home, first, self.annotation_plan, rationale
+            ),
             *self.placement.obsolete_home_edits(
                 snapshot,
                 home,
@@ -1688,37 +1853,32 @@ def _require_no_direct_subclass_reads(
         )
 
 
-class SiblingBaseRebase(ABC):
-    """How each answering sibling inherits the newly extracted intermediate base."""
+class ChildBaseRebase(ABC):
+    """How one answering sibling inherits the newly extracted intermediate base."""
 
-    parent: OverlapClass
+    replaces_parent: bool = False
 
     @abstractmethod
-    def new_base_items_for(
+    def new_base_items(
         self,
-        child_index: int,
         header: ClassHeaderSpanSourceAuthority,
         base_name: str,
     ) -> tuple[str, ...]:
         raise NotImplementedError
 
     @abstractmethod
-    def replaced_base_nodes(self, child_index: int) -> tuple[ast.AST, ...]:
+    def replaced_base_nodes(self) -> tuple[ast.AST, ...]:
         raise NotImplementedError
 
     @abstractmethod
-    def new_base_symbols_for(
+    def new_base_symbols(
         self,
-        child: OverlapClass,
+        current_bases: tuple[str, ...],
         new_symbol: str,
     ) -> tuple[str, ...]:
         raise NotImplementedError
 
-    def require_parent_safe(self, snapshot: CodemodSourceSnapshot) -> None:
-        del snapshot
-
-    def direct_base_spelling_for(self, child_index: int) -> str | None:
-        del child_index
+    def direct_base_spelling(self) -> str | None:
         return None
 
     def changed_direct_bases(self) -> frozenset[str]:
@@ -1726,52 +1886,71 @@ class SiblingBaseRebase(ABC):
 
 
 @dataclass(frozen=True)
-class DirectBaseRebase(SiblingBaseRebase):
-    """Every answering sibling directly inherits `parent`: replace `parent` with `base_name`."""
+class ReplaceDirectBase(ChildBaseRebase):
+    """This sibling directly lists `parent`: replace `parent` with `base_name`."""
 
-    parent: OverlapClass
-    base_exprs: tuple[ast.expr, ...]
+    base_expr: ast.expr
+    parent_symbol: str
+    replaces_parent: bool = True
 
-    def new_base_items_for(
+    def new_base_items(
         self,
-        child_index: int,
         header: ClassHeaderSpanSourceAuthority,
         base_name: str,
     ) -> tuple[str, ...]:
-        target_expr = self.base_exprs[child_index]
         return tuple(
-            base_name if base is target_expr else header.item_source(base)
+            base_name if base is self.base_expr else header.item_source(base)
             for base in header.node.bases
         )
 
-    def replaced_base_nodes(self, child_index: int) -> tuple[ast.AST, ...]:
-        return (self.base_exprs[child_index],)
+    def replaced_base_nodes(self) -> tuple[ast.AST, ...]:
+        return (self.base_expr,)
 
-    def new_base_symbols_for(
+    def new_base_symbols(
         self,
-        child: OverlapClass,
+        current_bases: tuple[str, ...],
         new_symbol: str,
     ) -> tuple[str, ...]:
         return tuple(
-            new_symbol if symbol == self.parent.symbol else symbol
-            for symbol in child.facts.resolved_base_symbols
+            new_symbol if symbol == self.parent_symbol else symbol
+            for symbol in current_bases
         )
 
-    def require_parent_safe(self, snapshot: CodemodSourceSnapshot) -> None:
-        _require_no_direct_subclass_reads(snapshot, self.parent.facts.simple_name)
-
-    def direct_base_spelling_for(self, child_index: int) -> str | None:
-        return ast.unparse(self.base_exprs[child_index])
+    def direct_base_spelling(self) -> str | None:
+        return ast.unparse(self.base_expr)
 
     def changed_direct_bases(self) -> frozenset[str]:
-        return frozenset((self.parent.symbol,))
+        return frozenset((self.parent_symbol,))
 
 
 @dataclass(frozen=True)
-class PrependBaseRebase(SiblingBaseRebase):
-    """Answering siblings inherit `parent` through distinct branches: prepend `base_name`."""
+class PrependIntermediateBase(ChildBaseRebase):
+    """This sibling inherits `parent` indirectly: prepend `base_name`."""
+
+    def new_base_items(
+        self,
+        header: ClassHeaderSpanSourceAuthority,
+        base_name: str,
+    ) -> tuple[str, ...]:
+        return (base_name, *(header.item_source(base) for base in header.node.bases))
+
+    def replaced_base_nodes(self) -> tuple[ast.AST, ...]:
+        return ()
+
+    def new_base_symbols(
+        self,
+        current_bases: tuple[str, ...],
+        new_symbol: str,
+    ) -> tuple[str, ...]:
+        return (new_symbol, *current_bases)
+
+
+@dataclass(frozen=True)
+class SiblingBaseRebase:
+    """Per-sibling rebase plan onto the newly extracted intermediate base."""
 
     parent: OverlapClass
+    children_rebases: tuple[ChildBaseRebase, ...]
 
     def new_base_items_for(
         self,
@@ -1779,19 +1958,31 @@ class PrependBaseRebase(SiblingBaseRebase):
         header: ClassHeaderSpanSourceAuthority,
         base_name: str,
     ) -> tuple[str, ...]:
-        del child_index
-        return (base_name, *(header.item_source(base) for base in header.node.bases))
+        return self.children_rebases[child_index].new_base_items(header, base_name)
 
     def replaced_base_nodes(self, child_index: int) -> tuple[ast.AST, ...]:
-        del child_index
-        return ()
+        return self.children_rebases[child_index].replaced_base_nodes()
 
     def new_base_symbols_for(
         self,
+        child_index: int,
         child: OverlapClass,
         new_symbol: str,
+        verdicts: ClassOverlapVerdicts,
     ) -> tuple[str, ...]:
-        return (new_symbol, *child.facts.resolved_base_symbols)
+        return self.children_rebases[child_index].new_base_symbols(
+            verdicts.bases(child.symbol), new_symbol
+        )
+
+    def require_parent_safe(self, snapshot: CodemodSourceSnapshot) -> None:
+        if any(child_rebase.replaces_parent for child_rebase in self.children_rebases):
+            _require_no_direct_subclass_reads(snapshot, self.parent.facts.simple_name)
+
+    def direct_base_spelling_for(self, child_index: int) -> str | None:
+        return self.children_rebases[child_index].direct_base_spelling()
+
+    def changed_direct_bases_for(self, child_index: int) -> frozenset[str]:
+        return self.children_rebases[child_index].changed_direct_bases()
 
 
 class NewBasePlacement(ABC):
@@ -2093,7 +2284,35 @@ class SiblingOverrideBaseExtraction(SiblingOverrideMove):
             )
 
     @staticmethod
+    def _direct_base_expr_for(
+        snapshot: CodemodSourceSnapshot,
+        verdicts: ClassOverlapVerdicts,
+        child: OverlapClass,
+        parent: OverlapClass,
+    ) -> ast.expr | None:
+        if parent.symbol not in verdicts.bases(child.symbol):
+            return None
+        parsed = snapshot.parsed_module_for_source_path(child.file_path)
+        simple = parent.facts.simple_name
+        matches: list[ast.expr] = []
+        for base in child.node.bases:
+            if isinstance(base, ast.Subscript):
+                continue
+            witness = snapshot.module_binding_proof.reference_or_builtin_witness_at(
+                parsed, base, line=child.node.lineno
+            )
+            if witness is not None:
+                if witness.qualified_name == parent.symbol:
+                    matches.append(base)
+                continue
+            declared = ClassSymbolResolutionAuthority.declared_base_name(base)
+            if declared is not None and declared.rsplit(".", 1)[-1] == simple:
+                matches.append(base)
+        return matches[0] if len(matches) == 1 else None
+
+    @classmethod
     def _select_rebase(
+        cls,
         snapshot: CodemodSourceSnapshot,
         verdicts: ClassOverlapVerdicts,
         declaring: OverlapClass,
@@ -2102,13 +2321,13 @@ class SiblingOverrideBaseExtraction(SiblingOverrideMove):
         index = verdicts.class_index
         shared_direct = [
             symbol
-            for symbol in children[0].facts.resolved_base_symbols
+            for symbol in verdicts.bases(children[0].symbol)
             if symbol in index.classes_by_symbol
             and (
                 symbol == declaring.symbol
                 or declaring.symbol in index.ancestor_symbols(symbol)
             )
-            and all(symbol in child.facts.resolved_base_symbols for child in children)
+            and all(symbol in verdicts.bases(child.symbol) for child in children)
         ]
         if shared_direct:
             parent_symbol = max(
@@ -2116,21 +2335,28 @@ class SiblingOverrideBaseExtraction(SiblingOverrideMove):
                 key=lambda sym: (len(index.ancestor_symbols(sym)), sym),
             )
             parent = OverlapClass.for_symbol(snapshot, parent_symbol)
-            simple = parent.facts.simple_name
-            base_exprs: list[ast.expr] = []
-            for child in children:
-                matches = [
-                    base
-                    for base in child.node.bases
-                    if (declared := ClassSymbolResolutionAuthority.declared_base_name(base))
-                    is not None
-                    and declared.rsplit(".", 1)[-1] == simple
-                ]
-                if len(matches) != 1:
-                    return PrependBaseRebase(declaring)
-                base_exprs.append(matches[0])
-            return DirectBaseRebase(parent, tuple(base_exprs))
-        return PrependBaseRebase(declaring)
+            direct_exprs = [
+                cls._direct_base_expr_for(snapshot, verdicts, child, parent)
+                for child in children
+            ]
+            if all(expr is not None for expr in direct_exprs):
+                return SiblingBaseRebase(
+                    parent,
+                    tuple(
+                        ReplaceDirectBase(expr, parent.symbol)
+                        for expr in direct_exprs
+                        if expr is not None
+                    ),
+                )
+        per_child: list[ChildBaseRebase] = []
+        for child in children:
+            expr = cls._direct_base_expr_for(snapshot, verdicts, child, declaring)
+            per_child.append(
+                ReplaceDirectBase(expr, declaring.symbol)
+                if expr is not None
+                else PrependIntermediateBase()
+            )
+        return SiblingBaseRebase(declaring, tuple(per_child))
 
     @staticmethod
     def _select_placement(
@@ -2208,7 +2434,7 @@ class SiblingOverrideBaseExtraction(SiblingOverrideMove):
             new_symbol: (new_symbol, *parent_mro),
         }
         answering_by_symbol = {child.symbol: child for child in children}
-        for child in children:
+        for child_index, child in enumerate(children):
             old_order = verdicts.linearized(child.symbol)
             if declaring.symbol not in old_order:
                 raise NeedsInput(
@@ -2223,7 +2449,9 @@ class SiblingOverrideBaseExtraction(SiblingOverrideMove):
                     f"and `{declaring.qualname}`",
                     NeededInput.PROOF,
                 )
-            rebased_bases = rebase.new_base_symbols_for(child, new_symbol)
+            rebased_bases = rebase.new_base_symbols_for(
+                child_index, child, new_symbol, verdicts
+            )
             base_mros = [
                 list(new_mros[b] if b in new_mros else verdicts.linearized(b))
                 for b in rebased_bases
@@ -2254,11 +2482,12 @@ class SiblingOverrideBaseExtraction(SiblingOverrideMove):
             desc = OverlapClass.for_symbol(snapshot, desc_symbol)
             require_static_c3(snapshot, desc.facts)
             old_order = verdicts.linearized(desc_symbol)
+            desc_bases = verdicts.bases(desc_symbol)
             base_mros = [
                 list(new_mros[b] if b in new_mros else verdicts.linearized(b))
-                for b in desc.facts.resolved_base_symbols
+                for b in desc_bases
             ]
-            merged = _c3_merge([*base_mros, list(desc.facts.resolved_base_symbols)])
+            merged = _c3_merge([*base_mros, list(desc_bases)])
             if merged is None:
                 raise NeedsInput(
                     f"inserting `{base_name}` produces an inconsistent C3 MRO for descendant `{desc.qualname}`",
@@ -2489,7 +2718,7 @@ class SiblingOverrideFindingRecipeSynthesizer(
 
 
 __all__ = (
-    "DirectBaseRebase",
+    "ChildBaseRebase",
     "ExtractSiblingOverrideBaseOperation",
     "HomePlacement",
     "InsertIntoHome",
@@ -2497,7 +2726,8 @@ __all__ = (
     "NewBasePlacement",
     "Override",
     "ParentModuleAfterParent",
-    "PrependBaseRebase",
+    "PrependIntermediateBase",
+    "ReplaceDirectBase",
     "ReplaceHomeStub",
     "SameModuleBeforeFirstSibling",
     "SameModuleImportingParent",

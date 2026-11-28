@@ -1833,3 +1833,59 @@ def test_compose_existing_refuses_cooperative_super_owner_with_unwanted_ancestor
     )
     with pytest.raises(CodemodOperationPreflightError, match=r"AutoHeight"):
         operation.source_edits(snapshot)
+
+
+def test_installed_classvar_list_append_and_inspect_isabstract_creation_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduces `formbridge.key_declarations.KeyDeclaration._declared.append(cls)`
+    and `KeyFamilyMeta.__init__` calling `inspect.isabstract(cls)` on `comms-tui`:
+    `builtin_container` resolves installed-package classes via `verdicts.ancestor`,
+    and `inspect.isabstract(cls)` is proved unchanged when no abstract methods move
+    or are gained/dropped."""
+
+    _write(
+        tmp_path,
+        {
+            "site/extkeys.py": (
+                "from typing import ClassVar\n\n\n"
+                "class KeyDeclarationType(type):\n"
+                "    def __init__(cls, name, bases, namespace, **kwargs):\n"
+                "        super().__init__(name, bases, namespace, **kwargs)\n"
+                "        if bases:\n"
+                "            KeyDeclaration._declared.append(cls)\n\n\n"
+                "class KeyDeclaration(metaclass=KeyDeclarationType):\n"
+                "    _declared: ClassVar[list[type]] = []\n"
+            ),
+            "repo/pkg/__init__.py": "",
+            "repo/pkg/actions.py": (
+                "import inspect\n"
+                "from abc import ABCMeta, abstractmethod\n"
+                "from extkeys import KeyDeclaration, KeyDeclarationType\n\n\n"
+                "class KeyMeta(ABCMeta, KeyDeclarationType):\n"
+                "    def __init__(cls, name, bases, namespace, **kwargs):\n"
+                "        super().__init__(name, bases, namespace, **kwargs)\n"
+                "        if inspect.isabstract(cls):\n"
+                "            return\n\n\n"
+                "class BaseAction(KeyDeclaration, metaclass=KeyMeta):\n"
+                "    @abstractmethod\n"
+                "    def perform(self) -> str: ...\n\n\n"
+                "class SharedHintMixin:\n"
+                "    def perform(self) -> str:\n"
+                "        return 'hint'\n\n\n"
+                "class OpenHintsAction(BaseAction):\n"
+                "    def perform(self) -> str:\n"
+                "        return 'hint'\n"
+            ),
+        },
+    )
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    path = (tmp_path / "repo/pkg/actions.py").as_posix()
+    _apply(
+        tmp_path / "repo",
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="OpenHintsAction"),
+            owner=SourceRewriteTarget(file_path=path, qualname="SharedHintMixin"),
+        ),
+    )
+    assert "class OpenHintsAction(SharedHintMixin, BaseAction):" in Path(path).read_text()
