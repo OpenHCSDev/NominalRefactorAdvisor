@@ -352,6 +352,17 @@ class SourceModuleImportGraph:
     ) -> str:
         """Prove and return the canonical module reference for one import."""
 
+        importing_file = self.source_file_for_path(importing_file_path)
+        imported_file = self.source_file_for_path(imported_file_path)
+        if (
+            importing_file is not None
+            and imported_file is not None
+            and importing_file.module_name == imported_file.module_name
+        ):
+            raise ValueError(
+                f"Importing {imported_name!r} from {imported_file_path!r} into itself "
+                f"would create a self-import cycle"
+            )
         if self.import_would_create_cycle(
             importing_file_path=importing_file_path,
             imported_file_path=imported_file_path,

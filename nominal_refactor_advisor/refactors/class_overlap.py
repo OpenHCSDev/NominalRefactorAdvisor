@@ -1486,6 +1486,63 @@ def obsolete_import_edits(
     )
 
 
+def _loads_name(node: ast.AST | None, name: str) -> bool:
+    if node is None:
+        return False
+    return any(
+        isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load) and item.id == name
+        for item in ast.walk(node)
+    )
+
+
+def _has_future_annotations(module_tree: ast.Module) -> bool:
+    for statement in module_tree.body:
+        match statement:
+            case ast.ImportFrom(module="__future__", names=aliases):
+                if any(alias.name == "annotations" for alias in aliases):
+                    return True
+    return False
+
+
+def _name_only_used_in_deferred_positions(
+    statements: tuple[ast.stmt, ...],
+    name: str,
+    *,
+    deferred_annotations: bool,
+) -> bool:
+    for statement in statements:
+        match statement:
+            case ast.FunctionDef() | ast.AsyncFunctionDef():
+                eager_nodes: list[ast.AST | None] = [
+                    *statement.decorator_list,
+                    *statement.args.defaults,
+                    *statement.args.kw_defaults,
+                    *statement.type_params,
+                ]
+                if not deferred_annotations:
+                    eager_nodes.append(statement.returns)
+                    for arg in (
+                        *statement.args.posonlyargs,
+                        *statement.args.args,
+                        *statement.args.kwonlyargs,
+                        statement.args.vararg,
+                        statement.args.kwarg,
+                    ):
+                        if arg is not None:
+                            eager_nodes.append(arg.annotation)
+                if any(_loads_name(node, name) for node in eager_nodes):
+                    return False
+            case ast.AnnAssign(annotation=annotation, value=value):
+                if _loads_name(value, name):
+                    return False
+                if not deferred_annotations and _loads_name(annotation, name):
+                    return False
+            case _:
+                if _loads_name(statement, name):
+                    return False
+    return True
+
+
 def required_name_imports(
     snapshot: CodemodSourceSnapshot,
     statements: tuple[ast.stmt, ...],
@@ -1495,14 +1552,25 @@ def required_name_imports(
 ) -> tuple[ModuleImportMutation, ...]:
     """Bind every free name of moved statements at the destination as at the source.
 
-    A name already bound to the same declaration needs nothing; an unbound one
-    is imported from the repository module declaring it, refused when that
-    import would close a module cycle; one bound to something else refuses.
+    A name already bound to the same declaration needs nothing; one declared later
+    in the destination module itself needs no import when every reference sits in a
+    deferred position (function body, or annotation under `from __future__ import
+    annotations`); an unbound name from another module is imported from the
+    repository module declaring it, refused when that import would close a module
+    cycle; one bound to something else refuses.
     """
 
     bindings = snapshot.module_binding_proof
     source_module = snapshot.parsed_module_for_source_path(source.file_path)
     destination_module = snapshot.parsed_module_for_source_path(destination.file_path)
+    importing_module = snapshot.module_import_graph.module_name_for_file_path(
+        destination.file_path
+    )
+    module_end = max(
+        (stmt.end_lineno or stmt.lineno for stmt in destination_module.module.body),
+        default=destination.node.lineno,
+    )
+    deferred_annotations = _has_future_annotations(destination_module.module)
     imports: list[ModuleImportMutation] = []
     names = sorted(
         {
@@ -1534,6 +1602,30 @@ def required_name_imports(
         )
         if len(targets) != 1:
             raise NeedsInput(f"`{expected.qualified_name}` has no single declaration", NeededInput.PROOF)
+        imported_module = snapshot.module_import_graph.module_name_for_file_path(
+            targets[0].file_path
+        )
+        if targets[0].file_path == destination.file_path or (
+            importing_module is not None and importing_module == imported_module
+        ):
+            end_actual = bindings.reference_or_builtin_witness_at(
+                destination_module, reference, line=module_end
+            )
+            if end_actual is None or end_actual.qualified_name != expected.qualified_name:
+                raise NeedsInput(
+                    f"`{name}` is declared in {destination.file_path} but not bound to "
+                    f"`{expected.qualified_name}` at module end",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            if not _name_only_used_in_deferred_positions(
+                statements, name, deferred_annotations=deferred_annotations
+            ):
+                raise NeedsInput(
+                    f"`{name}` is declared later in {destination.file_path} and evaluated "
+                    f"before its definition",
+                    NeededInput.PROOF,
+                )
+            continue
         imports.append(
             ModuleImportMutation.from_source(
                 file_path=destination.file_path,
