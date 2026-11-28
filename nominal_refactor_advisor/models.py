@@ -846,6 +846,23 @@ class SiblingOverrideMetrics(DeclaredBasePickMetrics):
 
 
 @dataclass(frozen=True)
+class HiddenImportCycleMetrics(DeclaredBasePickMetrics):
+    """One hub whose cycle-refused hidden imports sit above their readers."""
+
+    hub: str
+    readers: tuple[str, ...] = ()
+
+    def base_pick_owner_name(
+        self, authority_evidence: SourceLocation | None
+    ) -> str | None:
+        del authority_evidence
+        return self.hub
+
+    def base_pick_owner_label(self) -> str:
+        return "cycle hub"
+
+
+@dataclass(frozen=True)
 class OwnTypeTestMetrics(DeclaredBasePickMetrics):
     """One type-test site on a scanned class family, ready for a method-name pick when embedded."""
 

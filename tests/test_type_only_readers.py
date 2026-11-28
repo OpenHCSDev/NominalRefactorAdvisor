@@ -15,6 +15,8 @@ from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceS
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._hidden_import_cuts import HiddenImportCycleDetector
 from nominal_refactor_advisor.hidden_imports import HiddenImportPlan
+from nominal_refactor_advisor.needed_input import NeededInput
+from nominal_refactor_advisor.owner_picks import OwnerPicks
 from nominal_refactor_advisor.refactors.hidden_import_cuts import HiddenImportCuts, HubRetype, HubStays
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.type_checker_session import (
@@ -293,3 +295,284 @@ def test_forked_fine_grained_type_errors_keep_parent_engine_at_baseline(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+def _write_files(root: Path, files: dict[str, str]) -> None:
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+
+
+def _apply_with_pick(root: Path, *, owner: str, name: str, judgement: str):
+    import json
+
+    detector = HiddenImportCycleDetector()
+    with ScanCache.scope():
+        modules = parse_python_modules(root, use_parse_cache=False)
+        findings = list(detector.detect(modules, DetectorConfig()))
+    target_finding = next(f for f in findings if f.primary_evidence and f.primary_evidence.symbol == owner)
+    picks_path = root / "picks.json"
+    picks_path.write_text(
+        json.dumps(
+            {
+                "picks": [
+                    {
+                        "finding": target_finding.stable_id,
+                        "owner": owner,
+                        "because": "nominal contract base below readers",
+                        "name": name,
+                        "judgement": judgement,
+                    }
+                ]
+            }
+        )
+    )
+    picked_findings, report = OwnerPicks.read(picks_path).applied(findings)
+    picks_path.unlink()
+    picked = next(f for f in picked_findings if f.stable_id == target_finding.stable_id)
+    snapshot = _snapshot(root)
+    evaluation = detector.evaluate_recipe_for_finding(picked, snapshot)
+    return evaluation, snapshot, report
+
+
+def test_declare_contract_base_in_single_reader_with_method_property_and_dataclass_field(
+    tmp_path: Path,
+):
+    _write_files(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/reader.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.hub import Hub\n\n\n"
+                "def summarize(hub: Hub) -> str:\n"
+                "    return f'{hub.label}:{hub.count}:{hub.ping()}'\n"
+            ),
+            "pkg/hub.py": (
+                "from __future__ import annotations\n\n"
+                "from dataclasses import dataclass\n"
+                "from pkg.reader import summarize\n\n\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class Hub:\n"
+                "    count: int\n\n"
+                "    @property\n"
+                "    def label(self) -> str:\n"
+                "        return 'hub'\n\n"
+                "    def ping(self) -> int:\n"
+                "        return self.count + 1\n\n\n"
+                "def main() -> str:\n"
+                "    item = Hub(3)\n"
+                "    assert not hasattr(item, '__dict__')\n"
+                "    return summarize(item)\n"
+            ),
+            "main.py": "from pkg.hub import main\n\nprint(main())\n",
+        },
+    )
+    expected = _run(tmp_path)
+    assert expected.strip() == "hub:3:4"
+
+    unpicked, _ = _evaluation(tmp_path)
+    assert unpicked.needs == (NeededInput.OWNER_PICK,)
+    assert "pkg.hub.Hub" in unpicked.rejection_reason
+
+    evaluation, snapshot, report = _apply_with_pick(
+        tmp_path,
+        owner="pkg.hub",
+        name="HubContract",
+        judgement="Nominal contract for Hub readers.",
+    )
+    assert evaluation.rejection_reason == ""
+    assert any(o.outcome == "picked" for o in report.outcomes)
+    simulation = CodemodPlanSequence.from_operations(
+        evaluation.required_recipe.operations
+    ).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+
+    reader_text = (tmp_path / "pkg/reader.py").read_text()
+    hub_text = (tmp_path / "pkg/hub.py").read_text()
+    assert "from pkg.hub import Hub" not in reader_text
+    assert "class HubContract(ABC):" in reader_text
+    assert "count: int" in reader_text
+    assert "def summarize(hub: HubContract) -> str:" in reader_text
+    assert "from pkg.reader import HubContract" in hub_text
+    assert "class Hub(HubContract):" in hub_text
+    assert _run(tmp_path) == expected
+    assert HiddenImportPlan.derive(parse_python_modules(tmp_path, use_parse_cache=False)).refused == ()
+
+
+def test_declare_contract_base_creates_new_module_for_multiple_readers_and_opaque_handle(
+    tmp_path: Path,
+):
+    _write_files(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/reader_a.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.hub import Handle\n\n\n"
+                "def tag_a(item: Handle) -> tuple[str, Handle]:\n"
+                "    return ('a', item)\n"
+            ),
+            "pkg/reader_b.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.hub import Handle\n\n\n"
+                "def tag_b(item: Handle) -> tuple[str, Handle]:\n"
+                "    return ('b', item)\n"
+            ),
+            "pkg/hub.py": (
+                "from __future__ import annotations\n\n"
+                "from dataclasses import dataclass\n"
+                "from pkg.reader_a import tag_a\n"
+                "from pkg.reader_b import tag_b\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Handle:\n"
+                "    name: str\n\n"
+                "    def tags(self) -> str:\n"
+                "        return f'{tag_a(self)[0]}:{tag_b(self)[0]}:{self.name}'\n\n\n"
+                "def main() -> str:\n"
+                "    return Handle('ok').tags()\n"
+            ),
+            "main.py": "from pkg.hub import main\n\nprint(main())\n",
+        },
+    )
+    expected = _run(tmp_path)
+    assert expected.strip() == "a:b:ok"
+
+    evaluation, snapshot, _report = _apply_with_pick(
+        tmp_path,
+        owner="pkg.hub",
+        name="HandleContract",
+        judgement="Nominal contract for opaque handles.",
+    )
+    assert evaluation.rejection_reason == ""
+    simulation = CodemodPlanSequence.from_operations(
+        evaluation.required_recipe.operations
+    ).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+
+    contract_path = tmp_path / "pkg/handle_contract.py"
+    assert contract_path.exists()
+    assert "class HandleContract(ABC):" in contract_path.read_text()
+    assert "from pkg.handle_contract import HandleContract" in (tmp_path / "pkg/hub.py").read_text()
+    assert "from pkg.handle_contract import HandleContract" in (tmp_path / "pkg/reader_a.py").read_text()
+    assert "from pkg.handle_contract import HandleContract" in (tmp_path / "pkg/reader_b.py").read_text()
+    assert _run(tmp_path) == expected
+    assert HiddenImportPlan.derive(parse_python_modules(tmp_path, use_parse_cache=False)).refused == ()
+
+
+def test_declare_contract_base_refines_downstream_attribute_and_refuses_cyclic_or_enum(
+    tmp_path: Path,
+):
+    refine_root = tmp_path / "refine"
+    _write_files(
+        refine_root,
+        {
+            "pkg/__init__.py": "",
+            "pkg/reader.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.hub import Hub\n\n\n"
+                "def relay(hub: Hub) -> Hub:\n"
+                "    return hub\n"
+            ),
+            "pkg/hub.py": (
+                "from __future__ import annotations\n\n"
+                "from pkg.reader import relay\n\n\n"
+                "class Hub:\n"
+                "    def only(self) -> int:\n"
+                "        return 7\n\n\n"
+                "def main() -> int:\n"
+                "    return relay(Hub()).only()\n"
+            ),
+            "main.py": "from pkg.hub import main\n\nprint(main())\n",
+        },
+    )
+    expected = _run(refine_root)
+    assert expected.strip() == "7"
+    evaluation, snapshot, _report = _apply_with_pick(
+        refine_root,
+        owner="pkg.hub",
+        name="HubContract",
+        judgement="Nominal contract for relayed Hub values.",
+    )
+    assert evaluation.rejection_reason == ""
+    simulation = CodemodPlanSequence.from_operations(
+        evaluation.required_recipe.operations
+    ).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    assert "def only(self) -> int:" in (refine_root / "pkg/reader.py").read_text()
+    assert _run(refine_root) == expected
+
+    enum_root = tmp_path / "enum_case"
+    _write_files(
+        enum_root,
+        {
+            "pkg/__init__.py": "",
+            "pkg/reader.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.hub import Color\n\n\n"
+                "def describe(color: Color) -> str:\n"
+                "    return str(color)\n"
+            ),
+            "pkg/hub.py": (
+                "from __future__ import annotations\n\n"
+                "from enum import StrEnum\n"
+                "from pkg.reader import describe\n\n\n"
+                "class Color(StrEnum):\n"
+                "    RED = 'red'\n\n"
+                "    def label(self) -> str:\n"
+                "        return describe(self)\n\n\n"
+                "def main() -> str:\n"
+                "    return Color.RED.label()\n"
+            ),
+            "main.py": "from pkg.hub import main\n\nprint(main())\n",
+        },
+    )
+    enum_eval, _ = _evaluation(enum_root)
+    assert enum_eval.needs == (NeededInput.SOURCE_CHANGE,)
+    assert "enum.StrEnum" in enum_eval.rejection_reason
+
+    cyclic_root = tmp_path / "cyclic_case"
+    _write_files(
+        cyclic_root,
+        {
+            "pkg/__init__.py": "",
+            "pkg/reader.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.hub import Hub\n\n\n"
+                "def read(hub: Hub) -> object:\n"
+                "    return hub.sibling()\n"
+            ),
+            "pkg/hub.py": (
+                "from __future__ import annotations\n\n"
+                "from pkg.reader import read\n\n\n"
+                "class Sibling:\n"
+                "    pass\n\n\n"
+                "class Hub:\n"
+                "    def sibling(self) -> Sibling:\n"
+                "        return Sibling()\n\n"
+                "    def check(self) -> object:\n"
+                "        return read(self)\n\n\n"
+                "def main() -> object:\n"
+                "    return Hub().check()\n"
+            ),
+            "main.py": "from pkg.hub import main\n\nprint(main())\n",
+        },
+    )
+    cyclic_eval, _ = _evaluation(cyclic_root)
+    assert cyclic_eval.needs == (NeededInput.SOURCE_CHANGE,)
+    assert "Sibling" in cyclic_eval.rejection_reason

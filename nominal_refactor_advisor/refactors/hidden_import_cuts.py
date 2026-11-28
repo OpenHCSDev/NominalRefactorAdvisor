@@ -42,9 +42,11 @@ from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorCo
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.composition_layering import CompositionRootLayering
 from nominal_refactor_advisor.hidden_imports import ClosesCycle, HiddenImportPlan
-from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.models import DeclaredBasePickMetrics, RefactorFinding
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.refactors.type_only_readers import (
+    ContractBaseCandidate,
+    DeclareContractBaseOperation,
     RetypeTypeOnlyReadsOperation,
     TypeOnlyRead,
     TypeOnlyReadRefused,
@@ -857,6 +859,11 @@ class HiddenImportCutFindingRecipeSynthesizer(
                 HubRetype,
             ):
                 has_retype = True
+            elif (
+                isinstance(finding.metrics, DeclaredBasePickMetrics)
+                and finding.metrics.picked_base is not None
+            ):
+                has_retype = True
         if has_retype:
             _ = snapshot.type_errors
 
@@ -889,6 +896,67 @@ class HiddenImportCutFindingRecipeSynthesizer(
         if not plans:
             return self.rejected_evaluation(f"`{evidence.symbol}` keeps no cycle a hidden import closes")
         plan = next((plan for plan in plans if isinstance(plan, HubCut | HubRetype)), plans[-1])
+        if isinstance(plan, HubStays):
+            picked = (
+                finding.metrics.picked_base
+                if isinstance(finding.metrics, DeclaredBasePickMetrics)
+                else None
+            )
+            try:
+                candidate = ContractBaseCandidate.for_needs(
+                    snapshot,
+                    cuts.imports,
+                    plan.hub,
+                    plan.needs,
+                    contract_name=None if picked is None else picked.name,
+                )
+            except NeedsInput as error:
+                return self.stopped_evaluation(error)
+            if candidate is not None:
+                if picked is None:
+                    members_note = (
+                        f" (contract members: {', '.join(f'`{m}`' for m in candidate.accessed_members)})"
+                        if candidate.accessed_members
+                        else " (no attributes read)"
+                    )
+                    dest_note = (
+                        f"in `{candidate.destination_module}`"
+                        if candidate.destination_module is not None
+                        else "in a new module below its readers"
+                    )
+                    return self.stopped_evaluation(
+                        NeedsInput(
+                            f"declare a nominal contract base for `{candidate.owner_module}.{candidate.class_name}` "
+                            f"{dest_note} for {', '.join(f'`{r}`' for r in candidate.reader_modules)}"
+                            f"{members_note}: pick `owner={plan.hub!r}`, `name`, and `judgement`",
+                            NeededInput.OWNER_PICK,
+                        )
+                    )
+                assert candidate.destination_module is not None
+                operation = DeclareContractBaseOperation(
+                    target=SourceRewriteTarget(
+                        file_path=candidate.owner_file_path,
+                        qualname=candidate.class_name,
+                    ),
+                    readers=candidate.readers,
+                    hubs=candidate.read_hubs,
+                    class_name=candidate.class_name,
+                    contract_name=picked.name,
+                    docstring=picked.judgement,
+                    destination_module=candidate.destination_module,
+                )
+                try:
+                    recipe = RefactorRecipe(
+                        recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
+                        reason=(
+                            f"Declaring nominal contract base `{picked.name}` in "
+                            f"`{candidate.destination_module}` for `{candidate.class_name}` "
+                            f"lets {len(candidate.readers)} guarded import(s) load with no cycle."
+                        ),
+                    ).with_proved_operation(operation, context)
+                except (NeedsInput, ValueError) as error:
+                    return self.stopped_evaluation(error)
+                return self.executable_evaluation(recipe)
         return plan.evaluate_plan_recipe(context, self, finding)
 
 
