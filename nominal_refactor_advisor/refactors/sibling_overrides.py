@@ -69,6 +69,10 @@ from nominal_refactor_advisor.models import (
 )
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.refactor_concepts import SiblingOverrideConcept
+from nominal_refactor_advisor.class_creation_store import (
+    ABSTRACT_HOOKS_META,
+    AUTO_REGISTER_META,
+)
 from nominal_refactor_advisor.refactors.class_creation import (
     MroWalk,
     declared_names,
@@ -1456,6 +1460,13 @@ class SiblingOverrideLift(SiblingOverrideMove):
         )
         RestatedOverrideDeletion.require_plain_decorators(home_proof, home)
         home_proof.require_unchanged()
+        if (
+            isinstance(placement, ReplaceHomeStub)
+            and member_name in home.facts.abstract_method_names
+        ):
+            cls._require_home_abstractness_preserved_for_creation(
+                verdicts, home, home_order, member_name, home_proof
+            )
         NamespaceReaders(snapshot).require_unread(home.facts, names)
         return cls(
             candidate=candidate,
@@ -1466,6 +1477,57 @@ class SiblingOverrideLift(SiblingOverrideMove):
             home=home,
             placement=placement,
         )
+
+    @staticmethod
+    def _require_home_abstractness_preserved_for_creation(
+        verdicts: ClassOverlapVerdicts,
+        home: OverlapClass,
+        home_order: tuple[str, ...],
+        member_name: str,
+        home_proof: MemberDeletionCreationProof,
+    ) -> None:
+        """Replacing an `@abstractmethod` on `home` with a concrete method drops
+        `member_name` from `home.__abstractmethods__`. If no other unimplemented
+        abstract method remains, `inspect.isabstract(home)` flips from True to False,
+        changing `AutoRegisterMeta` registration and any creation hook reading
+        `__abstractmethods__` or `isabstract`."""
+
+        remaining_abstract: set[str] = set()
+        for symbol in reversed(home_order):
+            indexed = verdicts.ancestor(symbol)
+            if indexed is None:
+                continue
+            declared = frozenset(decl.name for decl in indexed.direct_member_declarations)
+            abstract_names = frozenset(indexed.abstract_method_names)
+            remaining_abstract -= declared - abstract_names
+            if symbol == home.symbol:
+                remaining_abstract.discard(member_name)
+                remaining_abstract |= abstract_names - {member_name}
+            else:
+                remaining_abstract |= abstract_names
+        if remaining_abstract:
+            return
+        _, models = home_proof._walk_metaclasses(home_proof.metaclasses())
+        if AUTO_REGISTER_META in models or ABSTRACT_HOOKS_META in models:
+            raise NeedsInput(
+                f"replacing `@abstractmethod` `{home.qualname}.{member_name}` makes "
+                f"`{home.qualname}` concrete, changing registration under `{AUTO_REGISTER_META}`",
+                NeededInput.PROOF,
+            )
+        for code, _roles in home_proof.creation_code():
+            for node in ast.walk(code.node):
+                match node:
+                    case (
+                        ast.Constant(value="__abstractmethods__")
+                        | ast.Attribute(attr="__abstractmethods__" | "isabstract")
+                        | ast.Name(id="isabstract")
+                    ):
+                        owner_name = code.owner.qualname if code.owner is not None else "creation"
+                        raise NeedsInput(
+                            f"replacing `@abstractmethod` `{home.qualname}.{member_name}` makes "
+                            f"`{home.qualname}` concrete, which `{owner_name}` reads",
+                            NeededInput.PROOF,
+                        )
 
     @classmethod
     def _require_home_placement(

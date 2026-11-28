@@ -1503,3 +1503,91 @@ def test_cross_module_lift_refuses_eager_forward_ref_in_destination_module(tmp_p
     assert evaluation.recipe is None
     assert "declared later" in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
+
+
+def test_replace_home_stub_refuses_making_autoregister_or_isabstract_home_concrete(
+    tmp_path: Path,
+):
+    """Reproduces `CodingTool._parse_resource` (`agent-comms/transport/native_tools.py`):
+    replacing the sole `@abstractmethod` on a home class governed by a registry /
+    `isabstract` creation hook flips `inspect.isabstract(home)` from True to False
+    and registers the intermediate base as a concrete member."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/tools.py": (
+                "import inspect\n"
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class RegisteredTool(ABC):\n"
+                "    _members: list[type] = []\n"
+                "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+                "        super().__init_subclass__(**kwargs)\n"
+                "        if not inspect.isabstract(cls):\n"
+                "            RegisteredTool._members.append(cls)\n\n\n"
+                "class CodingTool(RegisteredTool):\n"
+                "    @abstractmethod\n"
+                "    def parse_resource(self) -> str | None: ...\n\n\n"
+                "class ReadTool(CodingTool):\n"
+                "    def parse_resource(self) -> None:\n"
+                "        return None\n\n\n"
+                "class BashTool(CodingTool):\n"
+                "    def parse_resource(self) -> None:\n"
+                "        return None\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        findings[0], _snapshot(tmp_path)
+    )
+    assert evaluation.recipe is None
+    assert "makes `CodingTool` concrete" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs
+
+
+def test_replace_home_stub_allows_lift_when_another_abstractmethod_keeps_home_abstract(
+    tmp_path: Path,
+):
+    """When `CodingTool` retains another unimplemented `@abstractmethod`, replacing one
+    `@abstractmethod` with a concrete default keeps `inspect.isabstract(CodingTool)` True."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/tools.py": (
+                "import inspect\n"
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class RegisteredTool(ABC):\n"
+                "    _members: list[type] = []\n"
+                "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+                "        super().__init_subclass__(**kwargs)\n"
+                "        if not inspect.isabstract(cls):\n"
+                "            RegisteredTool._members.append(cls)\n\n\n"
+                "class CodingTool(RegisteredTool):\n"
+                "    @abstractmethod\n"
+                "    def parse_resource(self) -> str | None: ...\n"
+                "    @abstractmethod\n"
+                "    def run(self) -> str: ...\n\n\n"
+                "class ReadTool(CodingTool):\n"
+                "    def parse_resource(self) -> None:\n"
+                "        return None\n"
+                "    def run(self) -> str:\n"
+                "        return 'read'\n\n\n"
+                "class BashTool(CodingTool):\n"
+                "    def parse_resource(self) -> None:\n"
+                "        return None\n"
+                "    def run(self) -> str:\n"
+                "        return 'bash'\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        findings[0], _snapshot(tmp_path)
+    )
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
