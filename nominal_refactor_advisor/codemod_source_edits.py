@@ -2628,6 +2628,14 @@ class PlannedRewriteConflictError(ValueError):
             f"{second.target.target_id!r}"
         )
 
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type[PlannedRewriteConflictError],
+        tuple[ResolvedSourceRewrite, ResolvedSourceRewrite],
+    ]:
+        return (type(self), (self.first, self.second))
+
 
 @dataclass(frozen=True)
 class PlannedRewriteSelectionAuthority:

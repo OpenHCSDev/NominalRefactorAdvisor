@@ -65,10 +65,19 @@ class HiddenImportFindingRecipeSynthesizer(
         if context is None or evidence is None:
             return self.rejected_evaluation("promoting hidden imports needs source context and its module")
         operation = PromoteHiddenImportsOperation(target=SourceRewriteTarget(file_path=evidence.file_path))
+        plan = context.module_set.fact(HiddenImportPlan)
+        accepted = plan.accepted_in(evidence.file_path)
+        refused = plan.refused_in(evidence.file_path)
+        reason = (
+            f"Promote {len(accepted)} accepted hidden import(s); leave {len(refused)} "
+            "refused import(s) in place."
+            if refused
+            else "Each moved import closes no load-time cycle, even with every other accepted one in place."
+        )
         try:
             recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
-                reason="Each moved import closes no load-time cycle, even with every other accepted one in place.",
+                reason=reason,
             ).with_proved_operation(operation, context)
         except ValueError as error:
             return self.stopped_evaluation(error)

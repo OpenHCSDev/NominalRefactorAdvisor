@@ -32,6 +32,11 @@ class CodemodOperationPreflightError(NeedsInput):
         super().__init__(report.message, *report.needs)
         self.report = report
 
+    def __reduce__(
+        self,
+    ) -> tuple[type[CodemodOperationPreflightError], tuple[CodemodOperationPreflightReport]]:
+        return (type(self), (self.report,))
+
     @property
     def reports(self) -> tuple[CodemodOperationPreflightReport, ...]:
         """Every failed preflight this error carries."""
@@ -56,6 +61,11 @@ class CodemodPlanPreflightError(CodemodOperationPreflightError):
         self.args = ("; ".join(report.message for report in failed),)
         self.needs = NeededInput.distinct(need for report in failed for need in report.needs)
         self.plan = plan
+
+    def __reduce__(
+        self,
+    ) -> tuple[type[CodemodPlanPreflightError], tuple[CodemodPlanPreflightReport]]:
+        return (type(self), (self.plan,))
 
     @property
     def reports(self) -> tuple[CodemodOperationPreflightReport, ...]:

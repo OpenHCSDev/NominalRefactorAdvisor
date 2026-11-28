@@ -823,3 +823,67 @@ def test_sibling_property_with_conflicting_return_annotations_is_found_and_refus
     assert evaluation.recipe is None
     assert "annotate `question` differently" in evaluation.rejection_reason
     assert NeededInput.SOURCE_CHANGE in evaluation.needs
+
+
+def test_extracts_declared_family_intermediate_with_declared_name_none(
+    tmp_path: Path,
+):
+    """Reproduces Toad#2373 (`LineLink` / `SurfaceBinding`): inserting an intermediate
+    base under a concrete `DeclaredFamily` must pass `declared_name=None` so the
+    intermediate does not silently register as a live family member."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/links.py": (
+                "class DeclaredFamily:\n"
+                "    _members: list[type] = []\n"
+                "    def __init_subclass__(cls, affix: str | None = None, declared_name: str | None = '', **kwargs):\n"
+                "        super().__init_subclass__(**kwargs)\n"
+                "        if affix is None and declared_name is not None:\n"
+                "            DeclaredFamily._members.append(cls)\n\n\n"
+                'class LineLink(DeclaredFamily, affix="Link"):\n'
+                "    def inline(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class PathLink(LineLink):\n"
+                "    def inline(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class UrlLink(LineLink):\n"
+                "    def inline(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class AnchorLink(LineLink):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="LineLink",
+                because="path and url links share inline rendering",
+                name="PlainInlineLink",
+                judgement="Inline line links.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(tuple(findings))
+    assert [outcome.outcome for outcome in report.outcomes] == ["picked"]
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    recipe = evaluation.executable_recipe
+    assert recipe is not None, evaluation.rejection_reason
+    _apply(tmp_path, recipe)
+    after = (tmp_path / "pkg/links.py").read_text()
+    assert "class PlainInlineLink(LineLink, declared_name=None):" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    members = ns["LineLink"]._members  # type: ignore[attr-defined]
+    assert [m.__name__ for m in members] == ["PathLink", "UrlLink", "AnchorLink"]
+    assert "PlainInlineLink" not in [m.__name__ for m in members]

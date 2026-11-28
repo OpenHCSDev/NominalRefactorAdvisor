@@ -45,6 +45,9 @@ class NeedsInput(ValueError):
         super().__init__(message)
         self.needs = NeededInput.distinct(needs)
 
+    def __reduce__(self) -> tuple[type[NeedsInput], tuple[object, ...]]:
+        return (type(self), (self.args[0], *self.needs))
+
     @classmethod
     def every(cls, *checks: Callable[[], object]) -> None:
         """Run each independent check and refuse once, naming every check that
