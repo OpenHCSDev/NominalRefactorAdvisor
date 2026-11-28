@@ -782,6 +782,32 @@ class ClassCreationProof:
                 f"checks `{prefix}*` in base namespaces: {list(before)} before, {list(after)} once composed",
             )
 
+    def require_generic_origin_bases_walk_kept(
+        self, target_symbol: str, node: ast.AST, reads: CreationReads
+    ) -> None:
+        """A walk over `types.get_original_bases(cls)` that skips every base whose
+        `typing.get_origin(base)` is `None` or not a subclass of `target_symbol`
+        sees the exact same parameterized bases in the exact same order when no
+        existing subscripted `target_symbol` base of `composer` is dropped or
+        removed (composing/extracting unsubscripted bases adds `get_origin(b) is None`)."""
+
+        changed = self.changed_direct_bases_for_membership()
+        for base in self.class_node(self.composer).bases:
+            if not isinstance(base, ast.Subscript):
+                continue
+            origin = self.resolved(self.composer, base.value, base.lineno)
+            if origin is None:
+                reads.refuse(
+                    node,
+                    "iterates `get_original_bases(cls)` with an unresolved subscripted base",
+                )
+            if self.is_subclass_of(origin, target_symbol):
+                if (changed is not None and origin in changed) or origin not in self.walk.after:
+                    reads.refuse(
+                        node,
+                        f"drops subscripted `{target_symbol}` base `{origin}`",
+                    )
+
     def _class_dir_keys(self, symbol: str, composed: bool) -> frozenset[str]:
         """The keys `type.__dir__` collects from `symbol.__dict__`."""
 
@@ -1841,6 +1867,12 @@ class CreationReads:
                 # unless it asks for one of them or reads all of it.
                 self.require_namespace(parent, self.parents.get(parent))
                 return
+            case ast.Call(func=ast.Name() | ast.Attribute() as func, args=[value], keywords=[]) if (
+                value is node
+                and self.is_builtin(func, "types.get_original_bases")
+                and self.generic_origin_bases_walk(parent)
+            ):
+                return
             case ast.Call() if node in parent.args:
                 self.follow(parent, node, NEW_CLASS)
                 return
@@ -1885,7 +1917,7 @@ class CreationReads:
                 raise
             return tuple(defined)
 
-    def is_builtin(self, func: ast.Name, qualified_name: str) -> bool:
+    def is_builtin(self, func: ast.Name | ast.Attribute, qualified_name: str) -> bool:
         """Whether `func` names this builtin where the function body runs: its
         module's final binding of the name, in a scanned module or an installed
         one's source."""
@@ -2249,6 +2281,73 @@ class CreationReads:
         if not (isinstance(first_part, ast.Constant) and isinstance(first_part.value, str) and first_part.value):
             return False
         self.proof.require_prefixed_dict_member_walk_kept(first_part.value, attribute, self)
+        return True
+
+    def generic_origin_bases_walk(self, call: ast.Call) -> bool:
+        """`for base in get_original_bases(cls): origin = get_origin(base);
+        if origin is None or not issubclass(origin, Target): continue; ...`
+        skips every unsubscripted base and every subscripted base outside `Target`."""
+
+        walk = self.parents.get(call)
+        match walk:
+            case ast.For(
+                target=ast.Name(id=base_var),
+                iter=iterated,
+                body=[
+                    ast.Assign(
+                        targets=[ast.Name(id=origin_var)],
+                        value=ast.Call(
+                            func=ast.Name() | ast.Attribute() as origin_fn,
+                            args=[ast.Name(id=base_arg)],
+                            keywords=[],
+                        ),
+                    ),
+                    ast.If(
+                        test=ast.BoolOp(
+                            op=ast.Or(),
+                            values=[
+                                ast.Compare(
+                                    left=ast.Name(id=none_lhs),
+                                    ops=[ast.Is()],
+                                    comparators=[ast.Constant(value=None)],
+                                ),
+                                ast.UnaryOp(
+                                    op=ast.Not(),
+                                    operand=ast.Call(
+                                        func=ast.Name() as issub_fn,
+                                        args=[ast.Name(id=sub_lhs), target_expr],
+                                        keywords=[],
+                                    ),
+                                ),
+                            ],
+                        ),
+                        body=[ast.Continue()],
+                        orelse=[],
+                    ),
+                    *_,
+                ],
+                orelse=[],
+            ) if (
+                iterated is call
+                and base_arg == base_var
+                and none_lhs == origin_var
+                and sub_lhs == origin_var
+                and self.is_builtin(origin_fn, "typing.get_origin")
+                and self.is_builtin(issub_fn, "builtins.issubclass")
+            ):
+                pass
+            case _:
+                return False
+        assert isinstance(walk, ast.For)
+        owner = self.code.owner
+        if owner is None:
+            return False
+        target_symbol = self.proof.resolved(owner, target_expr, self.proof.module_end(owner))
+        if target_symbol is None:
+            return False
+        if (leaked := self._leaked_loop_read(walk, (base_var, origin_var))) is not None:
+            self.refuse(leaked, "reads what the `get_original_bases` walk left behind")
+        self.proof.require_generic_origin_bases_walk_kept(target_symbol, call, self)
         return True
 
     def _leaked_loop_read(self, walk: ast.For, names: tuple[str, ...]) -> ast.Name | None:
