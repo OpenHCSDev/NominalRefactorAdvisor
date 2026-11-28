@@ -2018,3 +2018,50 @@ def test_extract_mixin_proves_reversed_dict_walk_moved_binding_and_prefixed_mro_
         ),
     )
     assert "class Left(SharedSize, Holder):" in Path(path).read_text()
+
+
+def test_compose_existing_proves_get_original_bases_generic_origin_walk(
+    tmp_path: Path,
+) -> None:
+    """Composing an unsubscripted mixin onto a class whose `__init_subclass__`
+    iterates `types.get_original_bases(cls)` and skips every base whose
+    `typing.get_origin(base)` is `None` or not a subclass of `RenderExecution`
+    leaves the walk unchanged."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/tasks.py": (
+                "from abc import ABC\n"
+                "from types import get_original_bases\n"
+                "from typing import Generic, TypeVar, get_args, get_origin\n\n"
+                "ResultT = TypeVar('ResultT')\n\n\n"
+                "class RenderExecution(ABC, Generic[ResultT]):\n"
+                "    def __init_subclass__(cls, **kwargs) -> None:\n"
+                "        for base in get_original_bases(cls):\n"
+                "            origin = get_origin(base)\n"
+                "            if origin is None or not issubclass(origin, RenderExecution):\n"
+                "                continue\n"
+                "            result_type, = get_args(base)\n"
+                "            cls._result_type = result_type\n"
+                "            break\n"
+                "        super().__init_subclass__(**kwargs)\n\n\n"
+                "class RetainedBytesStorage(Generic[ResultT]):\n"
+                "    def result_size(self, result: ResultT) -> int:\n"
+                "        return len(result)\n\n\n"
+                "class RichTask(RenderExecution[str]):\n"
+                "    def result_size(self, result: str) -> int:\n"
+                "        return len(result)\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/tasks.py").as_posix()
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="RichTask"),
+            owner=SourceRewriteTarget(file_path=path, qualname="RetainedBytesStorage"),
+        ),
+    )
+    assert "class RichTask(RetainedBytesStorage, RenderExecution[str]):" in Path(path).read_text()
