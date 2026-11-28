@@ -25,6 +25,7 @@ from nominal_refactor_advisor.detectors._hidden_import_cuts import HiddenImportC
 from nominal_refactor_advisor.detectors._hidden_imports import HiddenImportDetector
 from nominal_refactor_advisor.hidden_imports import (
     ClosesCycle,
+    CrossesForbiddenImportEdge,
     GuardedImport,
     HiddenImportPlan,
     LocalImport,
@@ -385,4 +386,109 @@ def test_commented_type_checking_guard_is_not_promoted_to_dead_pass(tmp_path: Pa
     assert "carries a comment" in str(refusal.need)
     assert refusal.need.needs == (NeededInput.SOURCE_CHANGE,)
     assert _findings(tmp_path) == []
+
+
+def test_module_level_script_setup_guards_local_import_promotion(tmp_path: Path):
+    """Reproduces Toad `tools/qt_drive.py`, `tools/drive_sweep.py`, and
+    `tools/physical_ui_remote.py`: module-level `sys.path` or `os.environ`
+    setup (bare or inside `if __name__ == '__main__':`) blocks promoting later
+    hidden imports above that setup."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/target.py": "VALUE = 7\n",
+            "pkg/env_script.py": (
+                "import os\nimport sys\nfrom pathlib import Path\n\n"
+                "if __name__ == '__main__' and len(sys.argv) > 1:\n"
+                "    os.environ['XDG_CONFIG_HOME'] = str(Path(sys.argv[1]))\n\n\n"
+                "def run() -> int:\n"
+                "    from pkg.target import VALUE\n\n"
+                "    return VALUE\n"
+            ),
+            "pkg/path_script.py": (
+                "import sys\nfrom pathlib import Path\n\n"
+                "if __name__ == '__main__':\n"
+                "    sys.path.insert(0, str(Path(__file__).parent))\n\n\n"
+                "def run() -> int:\n"
+                "    from pkg.target import VALUE\n\n"
+                "    return VALUE\n"
+            ),
+        },
+    )
+    plan = _plan(tmp_path)
+    assert plan.accepted == ()
+    assert len(plan.refused) == 2
+    reasons = {refusal.hidden.module.module_name: str(refusal.need) for refusal in plan.refused}
+    assert "changes `os.environ` at line 6" in reasons["pkg.env_script"]
+    assert "changes `sys.path` at line 5" in reasons["pkg.path_script"]
+    assert all(
+        isinstance(refusal, UnpromotableImport) and NeededInput.SOURCE_CHANGE in refusal.need.needs
+        for refusal in plan.refused
+    )
+    assert _findings(tmp_path) == []
+
+
+def test_declared_forbidden_import_edges_block_direct_and_transitive_promotion(
+    tmp_path: Path,
+):
+    """Repository-declared `[tool.nominal-refactor-advisor] forbidden-imports`
+    keeps architectural layer isolation (e.g. `toad.client` free of `textual`
+    and `toad.widgets`) even when no import cycle exists."""
+
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                "[tool.nominal-refactor-advisor]\n"
+                "forbidden-imports = [\n"
+                "    { from = 'pkg.client', to = ['textual', 'pkg.widgets'] },\n"
+                "]\n"
+            ),
+            "pkg/client/__init__.py": "",
+            "pkg/widgets/__init__.py": "",
+            "pkg/widgets/view.py": "class NativeHistory:\n    pass\n",
+            "pkg/bridge.py": "import textual.app\n\nclass Bridge:\n    pass\n",
+            "pkg/shared.py": (
+                "def open_view():\n"
+                "    from pkg.widgets.view import NativeHistory\n\n"
+                "    return NativeHistory()\n"
+            ),
+            "pkg/client/entry.py": "import pkg.shared\n",
+            "pkg/client/details.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.widgets.view import NativeHistory\n\n\n"
+                "def render(history: NativeHistory) -> object:\n"
+                "    from pkg.bridge import Bridge\n\n"
+                "    return (history, Bridge)\n"
+            ),
+            "pkg/app.py": (
+                "def make_view():\n"
+                "    from pkg.widgets.view import NativeHistory\n\n"
+                "    return NativeHistory()\n"
+            ),
+        },
+    )
+    plan = _plan(tmp_path)
+    assert [hidden.module.module_name for hidden in plan.accepted] == ["pkg.app"]
+    by_mod = {
+        (refusal.hidden.module.module_name, refusal.hidden.statement.lineno): refusal
+        for refusal in plan.refused
+    }
+    assert len(by_mod) == 3
+    for refusal in by_mod.values():
+        assert isinstance(refusal, CrossesForbiddenImportEdge)
+        assert NeededInput.SOURCE_CHANGE in refusal.need.needs
+    assert by_mod[("pkg.client.details", 6)].loaded == "pkg.widgets.view"
+    assert by_mod[("pkg.client.details", 10)].loaded == "textual.app"
+    shared_refusal = by_mod[("pkg.shared", 2)]
+    assert shared_refusal.importer == "pkg.client.entry"
+    assert shared_refusal.loaded == "pkg.widgets.view"
+    findings = _findings(tmp_path)
+    assert [finding.title for finding in findings] == ["pkg.app hides 1 import(s) that close no cycle"] or [
+        finding.summary for finding in findings
+    ] == ["`pkg.app` hides 1 import(s) that close no cycle."]
+
 

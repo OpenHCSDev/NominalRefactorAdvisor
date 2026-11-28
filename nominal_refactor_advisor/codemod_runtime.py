@@ -3433,6 +3433,27 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
     def application_block_reason(self) -> str:
         return self.report.application_block_reason
 
+    @property
+    def exportable_plan_document(self) -> CodemodPlanDocument | None:
+        """The unique clean plan document safe to emit for `--codemod-plan-out`.
+
+        Returns the full document when unblocked; otherwise the single clean
+        trajectory frontier branch or the proved conflict-free candidate batch
+        when non-empty, leaving `needs_input`, `needs_operation`, and
+        conflicting sibling findings reported beside it.
+        """
+
+        if not self.application_blocked:
+            return self.document
+        if (
+            len(self.trajectory_frontier.branches) == 1
+            and self.trajectory_frontier.branches[0].document.has_recipes
+        ):
+            return self.trajectory_frontier.branches[0].document
+        if self.document.has_recipes:
+            return self.document
+        return None
+
     def simulate(
         self,
         snapshot: CodemodSourceSnapshot,

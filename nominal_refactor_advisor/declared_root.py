@@ -84,6 +84,46 @@ class DerivedValue(ValueCarrier):
 
 
 @dataclass(frozen=True)
+class ForbiddenImportEdge:
+    """One architectural layer boundary declared in ``[tool.nominal-refactor-advisor]``:
+    no module under ``source_prefix`` may load any module under ``target_prefix``
+    at import time, directly or transitively."""
+
+    source_prefix: str
+    target_prefix: str
+
+    def applies_to(self, module_name: str) -> bool:
+        return _module_matches_prefix(module_name, self.source_prefix)
+
+    def forbids(self, module_name: str) -> bool:
+        return _module_matches_prefix(module_name, self.target_prefix)
+
+    @classmethod
+    def from_table_entry(
+        cls, pyproject: Path, entry: object
+    ) -> tuple[ForbiddenImportEdge, ...]:
+        match entry:
+            case {"from": str(source), "to": str(target)} if source and target:
+                return (cls(source, target),)
+            case {"from": str(source), "to": list(targets)} if source and targets:
+                parsed: list[ForbiddenImportEdge] = []
+                for target in targets:
+                    if not isinstance(target, str) or not target:
+                        raise ValueError(
+                            f"{pyproject}: forbidden-imports target must be a non-empty string; got {target!r}"
+                        )
+                    parsed.append(cls(source, target))
+                return tuple(parsed)
+        raise ValueError(
+            f"{pyproject}: each forbidden-imports entry requires non-empty `from` and `to`; got {entry!r}"
+        )
+
+
+def _module_matches_prefix(module_name: str, prefix: str) -> bool:
+    return module_name == prefix or module_name.startswith(f"{prefix}.")
+
+
+@dataclass(frozen=True)
 class DerivedSpelling:
     """A family whose members' spellings the repository's own function derives.
 
@@ -202,6 +242,33 @@ class DeclaredRoot:
         """
 
         return cls.declared_names_for(path, "keyword-binders")
+
+    @classmethod
+    def forbidden_imports_for(cls, path: Path) -> tuple[ForbiddenImportEdge, ...]:
+        """The cross-layer import edges ``path``'s repository forbids at load time::
+
+            [tool.nominal-refactor-advisor]
+            forbidden-imports = [
+                { from = "pkg.client", to = ["textual", "pkg.widgets"] },
+            ]
+        """
+
+        pyproject = cls.nearest_pyproject(path)
+        if pyproject is None:
+            return ()
+        table_data = (
+            _pyproject_table(pyproject)
+            if ScanCache.active() is not None
+            else tomllib.loads(pyproject.read_text())
+        )
+        match table_data:
+            case {"tool": {"nominal-refactor-advisor": {"forbidden-imports": list(entries)}}}:
+                return tuple(
+                    edge
+                    for entry in entries
+                    for edge in ForbiddenImportEdge.from_table_entry(pyproject, entry)
+                )
+        return ()
 
     @classmethod
     def declared_names_for(cls, path: Path, key: str) -> frozenset[str]:
