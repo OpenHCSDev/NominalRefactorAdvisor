@@ -1591,3 +1591,72 @@ def test_replace_home_stub_allows_lift_when_another_abstractmethod_keeps_home_ab
         findings[0], _snapshot(tmp_path)
     )
     assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+
+
+def test_sibling_override_covariant_return_supertype_and_external_import_lifts(tmp_path: Path):
+    """When one sibling returns a subclass (`SpecialList`) and another returns its
+    supertype (`collections.UserList`, including an external stdlib/installed import),
+    lifting widens covariantly to the supertype and carries the external import to the destination."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/base.py": (
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class BaseWidget(ABC):\n"
+                "    @abstractmethod\n"
+                "    def owner(self):\n"
+                "        raise NotImplementedError\n"
+            ),
+            "pkg/a.py": (
+                "from collections import UserList\n"
+                "from pkg.base import BaseWidget\n\n\n"
+                "class SpecialList(UserList):\n"
+                "    pass\n\n\n"
+                "class AlphaWidget(BaseWidget):\n"
+                "    def owner(self) -> SpecialList:\n"
+                "        return self.items\n"
+            ),
+            "pkg/b.py": (
+                "import collections\n"
+                "from pkg.base import BaseWidget\n\n\n"
+                "class BetaWidget(BaseWidget):\n"
+                "    def owner(self) -> collections.UserList:\n"
+                "        return self.items\n"
+            ),
+            "pkg/c.py": (
+                "from pkg.base import BaseWidget\n\n\n"
+                "class GammaWidget(BaseWidget):\n"
+                "    def owner(self):\n"
+                "        return None\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="BaseWidget",
+                because="widgets whose owner is their items list",
+                name="ItemsOwnerWidget",
+                judgement="Widgets whose owner is their items list.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
+    simulation = evaluation.executable_recipe.simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    base_after = (tmp_path / "pkg/base.py").read_text()
+    assert "import collections" in base_after
+    assert "def owner(self) -> collections.UserList:" in base_after
+    assert _findings(tmp_path) == []

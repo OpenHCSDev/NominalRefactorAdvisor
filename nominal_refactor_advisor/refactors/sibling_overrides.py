@@ -789,16 +789,27 @@ def _set_slot_annotation(
         args.kwarg = arg
 
 
-def _aligned_contravariant_param_annotation(
+def _canonical_annotation_symbol(
+    snapshot: CodemodSourceSnapshot,
+    qualified_name: str,
+) -> str:
+    verdicts = snapshot.class_overlap_verdicts
+    ancestor = verdicts.ancestor(qualified_name)
+    if ancestor is not None:
+        return ancestor.symbol
+    return qualified_name
+
+
+def _aligned_supertype_annotation(
     snapshot: CodemodSourceSnapshot,
     children: tuple[OverlapClass, ...],
     annotations_by_index: list[dict[str, str]],
     slot: str,
 ) -> str | None:
-    """Return a sibling's parameter annotation that is a supertype of every other sibling's
-    annotation on `slot` (either `object`, or a scanned class ancestor of all other siblings'
-    parameter types), so widening to it is contravariantly sound for every caller and already
-    typechecked on the shared body."""
+    """Return a sibling's annotation that is a supertype of every other sibling's
+    annotation on `slot` (either `object`, or a scanned/installed class ancestor of all
+    other siblings' types): contravariantly sound for parameters and covariantly sound
+    for returns."""
 
     annotated = [
         (children[index], slot_map[slot])
@@ -808,7 +819,8 @@ def _aligned_contravariant_param_annotation(
     if any(spelling == "object" for _child, spelling in annotated):
         return "object"
     bindings = snapshot.module_binding_proof
-    class_index = snapshot.class_overlap_verdicts.class_index
+    verdicts = snapshot.class_overlap_verdicts
+    class_index = verdicts.class_index
     resolved: list[tuple[str, str]] = []
     for child, spelling in annotated:
         try:
@@ -821,15 +833,25 @@ def _aligned_contravariant_param_annotation(
         witness = bindings.reference_or_builtin_witness_at(
             parsed, expr, line=child.node.lineno
         )
-        if witness is None or witness.qualified_name not in class_index.classes_by_symbol:
+        if witness is None:
             return None
-        resolved.append((witness.qualified_name, spelling))
+        symbol = _canonical_annotation_symbol(snapshot, witness.qualified_name)
+        if verdicts.ancestor(symbol) is None:
+            return None
+        resolved.append((symbol, spelling))
+
+    def _is_ancestor(candidate_sym: str, other_sym: str) -> bool:
+        if other_sym == candidate_sym:
+            return True
+        if other_sym in class_index.classes_by_symbol and candidate_sym in class_index.ancestor_symbols(other_sym):
+            return True
+        try:
+            return candidate_sym in verdicts.linearized(other_sym)
+        except NeedsInput:
+            return False
+
     for candidate_sym, candidate_spelling in resolved:
-        if all(
-            other_sym == candidate_sym
-            or candidate_sym in class_index.ancestor_symbols(other_sym)
-            for other_sym, _other_spelling in resolved
-        ):
+        if all(_is_ancestor(candidate_sym, other_sym) for other_sym, _other_spelling in resolved):
             return candidate_spelling
     return None
 
@@ -896,10 +918,16 @@ class HeaderAnnotationPlan:
                     continue
                 if len(spellings) <= 1:
                     continue
+                aligned_ret = _aligned_supertype_annotation(
+                    snapshot, children, annotations_by_index, "return"
+                )
+                if aligned_ret is not None:
+                    overrides.append(("return", aligned_ret))
+                    continue
             elif len(spellings) <= 1:
                 continue
             elif slot.startswith(("arg:", "posonly:", "kwonly:")):
-                aligned_param = _aligned_contravariant_param_annotation(
+                aligned_param = _aligned_supertype_annotation(
                     snapshot, children, annotations_by_index, slot
                 )
                 if aligned_param is not None:

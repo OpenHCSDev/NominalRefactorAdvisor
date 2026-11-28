@@ -1970,3 +1970,51 @@ def test_reversed_type_filtered_dict_walk_ignores_class_references_and_container
         ),
     )
     assert "class FieldView(SharedFieldType, DOMNode):" in Path(path).read_text()
+
+
+def test_extract_mixin_proves_reversed_dict_walk_moved_binding_and_prefixed_mro_check(
+    tmp_path: Path,
+) -> None:
+    """Moving class attributes from the composer onto a new base preserves both:
+    (1) `for base in reversed(cls.__mro__): d.update({k: v for k, v in base.__dict__.items() if isinstance(v, T)})`
+        when the resulting dict key order and winning values stay identical, and
+    (2) `tuple(base for base in cls.__mro__ if name in base.__dict__ ...)` when `name`
+        is an f-string with a constant prefix no moved/gained base binds."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/views.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Marker:\n"
+                "    value: int\n\n\n"
+                "class Holder:\n"
+                "    def __init_subclass__(cls, **kwargs):\n"
+                "        super().__init_subclass__(**kwargs)\n"
+                "        collected = {}\n"
+                "        for base in reversed(cls.__mro__):\n"
+                "            collected.update({k: v for k, v in base.__dict__.items() if isinstance(v, Marker)})\n"
+                "        cls._markers = collected\n"
+                "        for tag in ('open',):\n"
+                "            name = f'action_{tag}'\n"
+                "            _ = tuple(base for base in cls.__mro__ if name in base.__dict__)\n\n\n"
+                "class SharedSize:\n"
+                "    width = Marker(1)\n"
+                "    height = Marker(2)\n\n\n"
+                "class Left(Holder):\n"
+                "    width = Marker(1)\n"
+                "    height = Marker(2)\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/views.py").as_posix()
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="Left"),
+            owner=SourceRewriteTarget(file_path=path, qualname="SharedSize"),
+        ),
+    )
+    assert "class Left(SharedSize, Holder):" in Path(path).read_text()
