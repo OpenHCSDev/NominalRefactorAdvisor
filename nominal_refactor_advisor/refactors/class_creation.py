@@ -392,6 +392,17 @@ class ClassCreationProof:
 
         return CreationReads(self, code, roles)
 
+    def bases_unchanged(self) -> bool:
+        """Whether this move leaves `composer.__bases__` identical."""
+
+        return False
+
+    def changed_direct_bases_for_membership(self) -> frozenset[str] | None:
+        """Existing class symbols whose direct presence in `composer.__bases__`
+        changes under this move, or `None` when any class's membership may change."""
+
+        return None
+
     @classmethod
     def dropping(
         cls,
@@ -1671,6 +1682,10 @@ class CreationReads:
                 # `cls.__dict__` is the new class's own namespace, identical to `vars(cls)`.
                 self.require_namespace(parent, self.parents.get(parent))
                 return
+            case ast.Attribute(attr="__bases__", ctx=ast.Load()) if (
+                self.proof.bases_unchanged() or self.bases_membership_unchanged(parent)
+            ):
+                return
             case ast.Attribute(attr=attr) if attr in INTROSPECTION:
                 self.refuse(parent, "introspects the new class")
             case ast.Attribute(attr=attr):
@@ -1740,6 +1755,27 @@ class CreationReads:
             owner is not None
             and self.proof.resolved(owner, func, self.proof.module_end(owner)) == qualified_name
         )
+
+    def bases_membership_unchanged(self, attribute: ast.Attribute) -> bool:
+        """Whether `Root in cls.__bases__` or `Root not in cls.__bases__` tests an
+        existing resolved class whose direct membership in `composer.__bases__` is
+        unaffected by the move."""
+
+        changed = self.proof.changed_direct_bases_for_membership()
+        if changed is None:
+            return False
+        owner = self.code.owner
+        if owner is None:
+            return False
+        match self.parents.get(attribute):
+            case ast.Compare(
+                left=tested,
+                ops=[ast.In() | ast.NotIn()],
+                comparators=[comparator],
+            ) if comparator is attribute:
+                root = self.proof.resolved(owner, tested, self.proof.module_end(owner))
+                return root is not None and root not in changed
+        return False
 
     def first_found_walk(self, attribute: ast.Attribute) -> bool:
         """`for o in cls.__mro__: for n, v in vars(o).items(): found.setdefault(n, v)`:
@@ -2357,6 +2393,9 @@ class BaseDropCreationProof(ClassCreationProof):
 
     def reads(self, code: CreationCode, roles: dict[str, Role]) -> CreationReads:
         return BaseDropReads(self, code, roles)
+
+    def changed_direct_bases_for_membership(self) -> frozenset[str] | None:
+        return frozenset(self.dropped)
 
 
 @dataclass

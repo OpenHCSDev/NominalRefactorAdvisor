@@ -844,8 +844,17 @@ class MemberDeletionCreationProof(ClassCreationProof):
     """Deleting restated members leaves the class's creation unchanged: its order
     stays, and only creation code reading its own namespace can see them go."""
 
+    bases_modified: bool = False
+    changed_direct_bases: frozenset[str] = frozenset()
+
     def reads(self, code: CreationCode, roles: dict[str, Role]) -> CreationReads:
         return MemberDeletionReads(self, code, roles)
+
+    def bases_unchanged(self) -> bool:
+        return not self.bases_modified
+
+    def changed_direct_bases_for_membership(self) -> frozenset[str] | None:
+        return self.changed_direct_bases
 
 
 @dataclass

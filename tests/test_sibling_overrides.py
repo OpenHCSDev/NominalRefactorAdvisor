@@ -887,3 +887,156 @@ def test_extracts_declared_family_intermediate_with_declared_name_none(
     members = ns["LineLink"]._members  # type: ignore[attr-defined]
     assert [m.__name__ for m in members] == ["PathLink", "UrlLink", "AnchorLink"]
     assert "PlainInlineLink" not in [m.__name__ for m in members]
+
+
+def test_extracts_intermediate_base_under_root_in_bases_guard(tmp_path: Path):
+    """Reproduces `CoordinatorVocabulary` / `JsonShapeFamily` (`if Root in cls.__bases__:`):
+    inserting an intermediate base strictly below `Root` preserves `Root in cls.__bases__`,
+    while inserting directly beneath `Root` still refuses because direct membership flips."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/vocab.py": (
+                "class VocabRoot:\n"
+                "    _roots: list[type] = []\n"
+                "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+                "        super().__init_subclass__(**kwargs)\n"
+                "        if VocabRoot in cls.__bases__:\n"
+                "            VocabRoot._roots.append(cls)\n\n"
+                "    def needs_sync(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class ResponseState(VocabRoot):\n"
+                "    pass\n\n\n"
+                "class PendingResponse(ResponseState):\n"
+                "    def needs_sync(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class PublishingResponse(ResponseState):\n"
+                "    def needs_sync(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class IdleResponse(ResponseState):\n"
+                "    def needs_sync(self) -> bool:\n"
+                "        return False\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="VocabRoot",
+                because="pending and publishing responses both sync",
+                name="ActiveResponse",
+                judgement="Responses that require sync.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    recipe = evaluation.recipe
+    assert recipe is not None, evaluation.rejection_reason
+    _apply(tmp_path, recipe)
+    after = (tmp_path / "pkg/vocab.py").read_text()
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert [c.__name__ for c in ns["VocabRoot"]._roots] == ["ResponseState"]  # type: ignore[attr-defined]
+
+
+def test_refuses_intermediate_base_directly_beneath_root_in_bases_guard(tmp_path: Path):
+    """Inserting an intermediate base directly beneath `VocabRoot` changes
+    `VocabRoot in cls.__bases__` from True to False on the rebased children and
+    must still refuse."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/direct_vocab.py": (
+                "class VocabRoot:\n"
+                "    _roots: list[type] = []\n"
+                "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+                "        super().__init_subclass__(**kwargs)\n"
+                "        if VocabRoot in cls.__bases__:\n"
+                "            VocabRoot._roots.append(cls)\n\n"
+                "    def needs_sync(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class AlphaVocab(VocabRoot):\n"
+                "    def needs_sync(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class BetaVocab(VocabRoot):\n"
+                "    def needs_sync(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class GammaVocab(VocabRoot):\n"
+                "    def needs_sync(self) -> bool:\n"
+                "        return False\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=findings[0].stable_id,
+                owner="VocabRoot",
+                because="alpha and beta sync",
+                name="SyncVocab",
+                judgement="Syncing vocabularies.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(tuple(findings))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    assert evaluation.recipe is None
+    assert "cls.__bases__" in evaluation.rejection_reason
+
+
+def test_lift_onto_existing_home_allows_bases_read_when_bases_unchanged(tmp_path: Path):
+    """Reproduces `Sealed.__init_subclass__` (`ObservedProcess`): lifting onto an
+    existing home does not modify any class's `__bases__`, so reading `cls.__bases__`
+    in `__init_subclass__` cannot observe a change."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/sealed.py": (
+                "class Sealed:\n"
+                "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+                "        super().__init_subclass__(**kwargs)\n"
+                "        mechanisms = tuple(\n"
+                "            base for base in cls.__bases__\n"
+                "            if base is not Sealed and issubclass(base, Sealed)\n"
+                "        )\n"
+                "        if not mechanisms:\n"
+                "            cls._sealed_home = cls.__module__\n\n"
+                "    def wait(self) -> int:\n"
+                "        return 0\n\n\n"
+                "class SyncProc(Sealed):\n"
+                "    pass\n\n\n"
+                "class ObservedProc(SyncProc):\n"
+                "    def wait(self) -> int:\n"
+                "        return 1\n\n\n"
+                "class CapturedProc(SyncProc):\n"
+                "    def wait(self) -> int:\n"
+                "        return 1\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 1
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        findings[0], _snapshot(tmp_path)
+    )
+    assert evaluation.executable_recipe is not None, evaluation.rejection_reason
